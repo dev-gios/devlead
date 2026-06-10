@@ -30,6 +30,14 @@ ln -sf "$REPO_DIR/.devlead/scripts/state.sh" "$DEVLEAD_DIR/scripts/state.sh"
 chmod +x "$REPO_DIR/.devlead/scripts/state.sh"
 _ok "~/.devlead/scripts/state.sh → $REPO_DIR/.devlead/scripts/state.sh"
 
+ln -sf "$REPO_DIR/.devlead/scripts/branch.sh" "$DEVLEAD_DIR/scripts/branch.sh"
+chmod +x "$REPO_DIR/.devlead/scripts/branch.sh"
+_ok "~/.devlead/scripts/branch.sh → symlinked"
+
+ln -sf "$REPO_DIR/.devlead/scripts/ref-resolver.sh" "$DEVLEAD_DIR/scripts/ref-resolver.sh"
+chmod +x "$REPO_DIR/.devlead/scripts/ref-resolver.sh"
+_ok "~/.devlead/scripts/ref-resolver.sh → symlinked"
+
 # ---------------------------------------------------------------------------
 # ~/.devlead/today.md — journal (no sobreescribir si ya existe)
 # ---------------------------------------------------------------------------
@@ -55,13 +63,65 @@ fi
 ln -sf "$REPO_DIR/.claude/commands/arranquemos.md" "$CLAUDE_COMMANDS_DIR/arranquemos.md"
 _ok "~/.claude/commands/arranquemos.md → $REPO_DIR/.claude/commands/arranquemos.md"
 
+ln -sf "$REPO_DIR/.claude/commands/cerremos.md" "$CLAUDE_COMMANDS_DIR/cerremos.md"
+_ok "~/.claude/commands/cerremos.md → $REPO_DIR/.claude/commands/cerremos.md"
+
+# ---------------------------------------------------------------------------
+# ~/.devlead/hooks/ — post-edit.sh + gate-check.sh
+# ---------------------------------------------------------------------------
+_section "Hooks"
+
+mkdir -p "$DEVLEAD_DIR/hooks"
+_info "mkdir ~/.devlead/hooks/"
+
+ln -sf "$REPO_DIR/.claude/hooks/post-edit.sh" "$DEVLEAD_DIR/hooks/post-edit.sh"
+chmod +x "$REPO_DIR/.claude/hooks/post-edit.sh"
+_ok "~/.devlead/hooks/post-edit.sh → $REPO_DIR/.claude/hooks/post-edit.sh"
+
+ln -sf "$REPO_DIR/.claude/hooks/gate-check.sh" "$DEVLEAD_DIR/hooks/gate-check.sh"
+chmod +x "$REPO_DIR/.claude/hooks/gate-check.sh"
+_ok "~/.devlead/hooks/gate-check.sh → $REPO_DIR/.claude/hooks/gate-check.sh"
+
+# ---------------------------------------------------------------------------
+# ~/.claude/settings.json — registrar hooks (merge, no sobreescribir)
+# ---------------------------------------------------------------------------
+_section "Claude settings"
+
+GLOBAL_SETTINGS="$HOME/.claude/settings.json"
+HOOKS_FRAGMENT='{"hooks":{"PostToolUse":[{"matcher":"Write|Edit","hooks":[{"type":"command","command":"bash ~/.devlead/hooks/post-edit.sh"}]}],"Stop":[{"hooks":[{"type":"command","command":"bash ~/.devlead/hooks/gate-check.sh"}]}]}}'
+
+if [[ -f "$GLOBAL_SETTINGS" ]]; then
+  if command -v jq &>/dev/null; then
+    _tmp=$(mktemp)
+    if jq -s '.[0] * .[1]' "$GLOBAL_SETTINGS" <(echo "$HOOKS_FRAGMENT") > "$_tmp"; then
+      mv "$_tmp" "$GLOBAL_SETTINGS"
+      _ok "Hooks mergeados en ~/.claude/settings.json"
+    else
+      rm -f "$_tmp"
+      _warn "jq merge falló — hooks NO registrados. Agregálos manualmente."
+      _warn "Fragmento: $HOOKS_FRAGMENT"
+    fi
+  else
+    _warn "jq no encontrado — hooks NO registrados en settings.json. Agregálos manualmente."
+    _warn "Fragmento a agregar: $HOOKS_FRAGMENT"
+  fi
+else
+  if command -v jq &>/dev/null; then
+    echo "$HOOKS_FRAGMENT" | jq . > "$GLOBAL_SETTINGS"
+    _ok "~/.claude/settings.json creado con hooks"
+  else
+    echo "$HOOKS_FRAGMENT" > "$GLOBAL_SETTINGS"
+    _ok "~/.claude/settings.json creado con hooks (sin pretty-print — jq ausente)"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # Verificar dependencias
 # ---------------------------------------------------------------------------
 _section "Dependencias"
 
 _missing=()
-for _cmd in git gh jq; do
+for _cmd in git gh jq shellcheck; do
   if command -v "$_cmd" &>/dev/null; then
     _ok "$_cmd encontrado"
   else
@@ -85,7 +145,13 @@ else
 fi
 
 echo ""
-echo "  Journal: ~/.devlead/today.md"
-echo "  Script:  ~/.devlead/scripts/state.sh"
-echo "  Comando: ~/.claude/commands/arranquemos.md"
+echo "  Journal:   ~/.devlead/today.md"
+echo "  Scripts:   ~/.devlead/scripts/state.sh"
+echo "             ~/.devlead/scripts/branch.sh"
+echo "             ~/.devlead/scripts/ref-resolver.sh"
+echo "  Hooks:     ~/.devlead/hooks/post-edit.sh"
+echo "             ~/.devlead/hooks/gate-check.sh"
+echo "  Comandos:  ~/.claude/commands/arranquemos.md"
+echo "             ~/.claude/commands/cerremos.md"
+echo "  Settings:  ~/.claude/settings.json (hooks mergeados)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

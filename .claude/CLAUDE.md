@@ -30,13 +30,27 @@ DevLead presenta opciones rankeadas con su razonamiento. El día que DevLead arr
 
 ---
 
-## Invariantes — Fase 1+ (declarados, no aplicados aún)
+## Invariantes — Fase 1 (aplicados ahora)
 
-Estos invariantes están diseñados para cuando exista pipeline. No se enforzan en Fase 0; se listan para que no se pierdan al construir:
+<!-- ADR-10: These invariants moved from "declarados" to enforced in Fase 1.
+     Each entry names its concrete enforcing mechanism — activation is real
+     only when a mechanism exists, not when it's declared in prose. -->
 
-- **Inv 3** — Nunca auto-merge a `dev`. El merge siempre lo hacés vos.
-- **Inv 4** — Un gate que falla detiene esa issue. El agente nunca se auto-aprueba.
-- **Inv 5** — Escalada por divergencia obligatoria: si la realidad no coincide con el plan (issue mucho más grande, toca zona prohibida, el doc choca con el código), DevLead para y avisa aunque hayas dicho "arrancá".
+**Inv 3 — Nunca auto-merge a `dev`.**
+El merge siempre lo hacés vos. DevLead crea el PR (Paso 10 de `/arranquemos`) y se detiene.
+Mecanismo: Paso 10 llama `gh pr create` únicamente — ningún paso del pipeline invoca `git merge` ni `gh pr merge`.
+
+**Inv 4 — Un gate que falla detiene esa issue.**
+El agente nunca se auto-aprueba ni auto-avanza past un gate en rojo.
+Mecanismo: hooks ADR-5 (`gate-check.sh` Stop hook, `post-edit.sh` PostToolUse) + lógica de stage-gating en Paso 8. Cualquier stage que retorne bloqueado/error HALT el pipeline y escala al usuario.
+
+**Inv 5 — Escalada por divergencia obligatoria.**
+Si la realidad no coincide con el plan (issue mucho más grande, doc choca con el código, gate falla 3 veces), DevLead para y avisa aunque hayas dicho "arrancá".
+Mecanismo: lógica de dispatch en Paso 8 (halt + escalar en cualquier stage fallida) + visual-diff gate en Paso 9 (cap en 3 iteraciones, luego escalar, nunca loop infinito).
+
+**Inv 7 — El diseño es intención, no verdad.**
+Un spec doc o design bundle es el *qué* acordado — no se trata como verdad absoluta inmutable. Si hay choque entre el doc y el código real, es un evento de divergencia (Inv 5), no un bloqueante silencioso ni un auto-pass.
+Mecanismo: `ref-resolver.sh` trata el spec como input de intención al pipeline SDD; el visual-diff gate (Paso 9) aplica gates de QA sobre el resultado aunque el mockup diga "así debe verse".
 
 ---
 
@@ -57,3 +71,10 @@ Estos invariantes están diseñados para cuando exista pipeline. No se enforzan 
 - **No re-implementa lógica de git en prosa.** Para eso existe `state.sh`.
 - **No inventa estado** que no esté en la salida del script.
 - **No produce estimados S/M/L** de esfuerzo. Rango de tiempo no es información confiable aquí.
+
+---
+
+## Qué DevLead NO hace en Fase 1
+
+- **No auto-mergea.** Inv 3 es absoluto: `gh pr create` es el fin del pipeline automatizado.
+- **No auto-avanza past un gate rojo.** Inv 4: un gate en rojo es un STOP, no un retry silencioso.
