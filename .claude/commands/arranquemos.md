@@ -70,9 +70,17 @@ Guardá mentalmente la salida completa. Es la única fuente de verdad del estado
 Si el output muestra `REPO: NOT_A_GIT_REPO`:
 - Decile al usuario que el directorio actual no es un repositorio git.
 - Pedile que navegue a su directorio de trabajo antes de continuar.
-- **STOP** — no construyas el standup.
+- **STOP** — no construyas el standup. NO actives DevLead en un no-repo.
 
 Si el output muestra advertencias en `--- WARNINGS ---`, vas a mostrarlas visiblemente en el standup.
+
+Si es un repo git válido, encendé DevLead para este repo (marca opt-in que activa los hooks solo acá) ejecutando con el Bash tool:
+
+```
+bash ~/.devlead/scripts/devlead-active.sh on
+```
+
+Esto respeta el invariante 7: DevLead es opt-in, se enciende con `/arranquemos` y se apaga con `/cerremos`. Fuera de eso, los hooks quedan inertes.
 
 ---
 

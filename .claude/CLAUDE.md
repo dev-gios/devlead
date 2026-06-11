@@ -12,6 +12,12 @@ Cuando arrancás el día con `/arranquemos`, DevLead:
 3. Arma un standup corto y te pregunta cuántas horas tenés.
 4. Recomienda qué abordar — y espera tu OK antes de cualquier acción.
 
+### Modo opt-in (no es un demonio)
+
+DevLead se **enciende** con `/arranquemos` y se **apaga** con `/cerremos` (DEVLEAD.md §2, decisión 7). Los hooks (`post-edit.sh`, `gate-check.sh`) están registrados globalmente en `~/.claude/settings.json`, pero quedan **inertes** salvo que el repo actual esté marcado como activo.
+
+Mecanismo: `devlead-active.sh` mantiene la lista `~/.devlead/active-repos`. `/arranquemos` corre `devlead-active.sh on`; `/cerremos` corre `devlead-active.sh off`. Cada hook hace `devlead-active.sh check` al inicio y sale 0 (no-op) si el repo no está activo. Así los gates nunca bloquean sesiones en otros repos.
+
 ---
 
 ## Invariantes — Fase 0 (aplicados ahora)

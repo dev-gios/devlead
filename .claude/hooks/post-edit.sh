@@ -7,6 +7,15 @@
 set -uo pipefail
 
 # ---------------------------------------------------------------------------
+# DevLead opt-in guard — inert unless /arranquemos activated THIS repo.
+# DevLead is an opt-in mode, not an always-on daemon (DEVLEAD.md §2, decision 7).
+# Without this guard the linter would fire on every edit in every repo.
+# ---------------------------------------------------------------------------
+if ! bash "$HOME/.devlead/scripts/devlead-active.sh" check 2>/dev/null; then
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # Parse file path from stdin JSON (primary: tool_input.file_path,
 # fallback: tool_response.filePath — documented in Claude Code hooks schema)
 # ---------------------------------------------------------------------------

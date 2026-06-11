@@ -42,6 +42,10 @@ ln -sf "$REPO_DIR/.devlead/scripts/forbidden-check.sh" "$DEVLEAD_DIR/scripts/for
 chmod +x "$REPO_DIR/.devlead/scripts/forbidden-check.sh"
 _ok "~/.devlead/scripts/forbidden-check.sh → symlinked"
 
+ln -sf "$REPO_DIR/.devlead/scripts/devlead-active.sh" "$DEVLEAD_DIR/scripts/devlead-active.sh"
+chmod +x "$REPO_DIR/.devlead/scripts/devlead-active.sh"
+_ok "~/.devlead/scripts/devlead-active.sh → symlinked"
+
 # ---------------------------------------------------------------------------
 # ~/.devlead/today.md — journal (no sobreescribir si ya existe)
 # ---------------------------------------------------------------------------

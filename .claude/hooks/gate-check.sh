@@ -11,6 +11,15 @@
 set -uo pipefail
 
 # ---------------------------------------------------------------------------
+# DevLead opt-in guard — inert unless /arranquemos activated THIS repo.
+# DevLead is an opt-in mode, not an always-on daemon (DEVLEAD.md §2, decision 7).
+# Without this guard a global Stop hook would block every session in every repo.
+# ---------------------------------------------------------------------------
+if ! bash "$HOME/.devlead/scripts/devlead-active.sh" check 2>/dev/null; then
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # Accumulator — failures collected here, never thrown immediately
 # ---------------------------------------------------------------------------
 _failures=()
