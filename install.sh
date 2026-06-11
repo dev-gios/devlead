@@ -38,6 +38,10 @@ ln -sf "$REPO_DIR/.devlead/scripts/ref-resolver.sh" "$DEVLEAD_DIR/scripts/ref-re
 chmod +x "$REPO_DIR/.devlead/scripts/ref-resolver.sh"
 _ok "~/.devlead/scripts/ref-resolver.sh → symlinked"
 
+ln -sf "$REPO_DIR/.devlead/scripts/forbidden-check.sh" "$DEVLEAD_DIR/scripts/forbidden-check.sh"
+chmod +x "$REPO_DIR/.devlead/scripts/forbidden-check.sh"
+_ok "~/.devlead/scripts/forbidden-check.sh → symlinked"
+
 # ---------------------------------------------------------------------------
 # ~/.devlead/today.md — journal (no sobreescribir si ya existe)
 # ---------------------------------------------------------------------------
@@ -65,6 +69,9 @@ _ok "~/.claude/commands/arranquemos.md → $REPO_DIR/.claude/commands/arranquemo
 
 ln -sf "$REPO_DIR/.claude/commands/cerremos.md" "$CLAUDE_COMMANDS_DIR/cerremos.md"
 _ok "~/.claude/commands/cerremos.md → $REPO_DIR/.claude/commands/cerremos.md"
+
+ln -sf "$REPO_DIR/.claude/commands/batch.md" "$CLAUDE_COMMANDS_DIR/batch.md"
+_ok "~/.claude/commands/batch.md → symlinked"
 
 # ---------------------------------------------------------------------------
 # ~/.devlead/hooks/ — post-edit.sh + gate-check.sh
@@ -149,9 +156,11 @@ echo "  Journal:   ~/.devlead/today.md"
 echo "  Scripts:   ~/.devlead/scripts/state.sh"
 echo "             ~/.devlead/scripts/branch.sh"
 echo "             ~/.devlead/scripts/ref-resolver.sh"
+echo "             ~/.devlead/scripts/forbidden-check.sh"
 echo "  Hooks:     ~/.devlead/hooks/post-edit.sh"
 echo "             ~/.devlead/hooks/gate-check.sh"
 echo "  Comandos:  ~/.claude/commands/arranquemos.md"
 echo "             ~/.claude/commands/cerremos.md"
+echo "             ~/.claude/commands/batch.md"
 echo "  Settings:  ~/.claude/settings.json (hooks mergeados)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

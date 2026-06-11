@@ -54,6 +54,49 @@ Mecanismo: `ref-resolver.sh` trata el spec como input de intención al pipeline 
 
 ---
 
+## Invariantes — Fase 2 (aplicados ahora)
+
+<!-- ADR-style: cada invariante nombra su mecanismo concreto de enforcement.
+     Sin mecanismo = solo declaración; el enforcement real está en batch.md. -->
+
+**Inv 1 forma batch — El trigger es la autorización única.**
+`/batch` o "haz #12 #15..." es la autorización para TODAS las issues declaradas. No se pide confirmación por issue durante el loop. El Paso 7 de arranquemos.md NO corre en contexto batch.
+<!-- Mecanismo: batch.md Paso B0 — confirmación UNA vez, luego loop sin Paso 7. -->
+
+**Inv 3 heredado (absoluto) — Cada issue resulta en un PR, nunca en un merge.**
+batch.md llega hasta `gh pr create` por issue y se detiene. Ningún paso del batch invoca `git merge` ni `gh pr merge`.
+<!-- Mecanismo: batch.md B2.d → Paso 8.5 (`gh pr create`) es el fin del pipeline por issue. -->
+
+**Inv 4 traducido — Gate rojo en batch = PARK + continuar. Nunca auto-aprueba.**
+En modo single-task, un gate en rojo es HALT+escalar. En batch, la misma señal es PARK (registrá razón exacta, seguí con la próxima). PARK ≠ pass: la razón del gate queda registrada y visible en el reporte B3.
+<!-- Mecanismo: batch.md B2.c — tabla de traducción HALT→PARK con razones exactas. -->
+
+**Inv 5 zona prohibida — Pre-check escala la issue; post-impl diff la aparca sin PR.**
+Si el pre-check (labels/spec) detecta una zona prohibida → la issue se ESCALA (nunca se procesa). Si la implementación terminó tocando una zona no predicha → PARK sin abrir PR (capa 2, B2.d sobre diff real).
+<!-- Mecanismo: batch.md B2.a (forbidden-check.sh sobre paths derivados) + B2.d (forbidden-check.sh sobre git diff --name-only origin/dev...HEAD). -->
+
+**Inv Fase 2 — El sobre se lee UNA vez (B0).**
+Los parámetros del batch (cola, presupuesto, zonas, política) se leen y confirman en B0. Son inmutables durante el loop. Issues mencionadas mid-batch no se agregan a la cola.
+<!-- Mecanismo: batch.md B0 — confirmación explícita antes del loop; cola fija tras B0. -->
+
+**Inv Fase 2 — Solo catástrofe de entorno para el batch entero.**
+El fallo de UNA issue (gate rojo, zona prohibida, spec faltante) nunca para el batch — es PARK de esa issue. Solo `NOT_A_GIT_REPO` o gh auth perdido paran el batch completo.
+<!-- Mecanismo: batch.md B2.c — tabla ADR-3; señales catastróficas son las únicas que producen STOP batch. -->
+
+---
+
+## Qué DevLead NO hace en Fase 2
+
+- **No auto-mergea.** Inv 3 absoluto heredado: `gh pr create` es el fin del pipeline por issue. El batch nunca mergea.
+- **No reintenta gates fallidos.** PARK es final para esa issue en ese batch. No hay retry silencioso.
+- **No procesa issues en zona prohibida.** Pre-check → escala (no se toca). Post-impl → aparca sin PR.
+- **No persiste estado del batch a disco.** El tracking es en-memoria en la conversación. Sin `batch-state.json`. El estado real vive en GitHub; `state.sh` es la fuente de verdad del *qué*.
+- **No infiere dependencias entre issues.** El orden declarado en la invocación ES el contrato de dependencias para v1.
+- **No paraleliza issues.** Cola secuencial — una issue a la vez, en orden.
+- **No extiende la cola mid-batch.** El sobre es fijo tras la confirmación B0.
+
+---
+
 ## Tono
 
 - Calmado, directo, par senior.
