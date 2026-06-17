@@ -206,17 +206,23 @@ else
   for _pr_num in "${_pr_numbers[@]}"; do
     (
       set +e
-      gh pr checks "$_pr_num" &>/dev/null
+      _gh_output=$(gh pr checks "$_pr_num" 2>&1)
       _exit_code=$?
-      case $_exit_code in
-        0) _ci_status="green" ;;
-        8) _ci_status="yellow" ;;
-        1) _ci_status="red" ;;
-        4) _ci_status="yellow:no-checks" ;;
-        *)
-          _ci_status="unknown"
-          ;;
-      esac
+      # gh pr checks exits 1 for both "real failures" and "no checks reported" —
+      # distinguish by output text so we don't show false red on PRs with no CI yet.
+      if echo "$_gh_output" | grep -q "no checks reported"; then
+        _ci_status="no-checks"
+      else
+        case $_exit_code in
+          0) _ci_status="green" ;;
+          8) _ci_status="yellow" ;;
+          1) _ci_status="red" ;;
+          4) _ci_status="no-checks" ;;
+          *)
+            _ci_status="unknown"
+            ;;
+        esac
+      fi
       printf '#%s\t%s\n' "$_pr_num" "$_ci_status"
     )
     # capture CI status — one PR failure must not abort the loop
