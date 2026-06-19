@@ -141,6 +141,89 @@ _check_tests() {
     return
   fi
 
+  # --- Scoped pytest: narrow the run to tests relevant to the changed files. ---
+  # --- Only pytest runners are scoped; npm/make/go are left untouched. When  ---
+  # --- scoping cannot be PROVEN safe we fall back to the full suite. Speed    ---
+  # --- never comes at the cost of silently under-testing.                     ---
+  if [[ "$_runner" == *pytest* ]] && git rev-parse --is-inside-work-tree &>/dev/null; then
+    local _changed=()
+    while IFS= read -r _cf; do
+      [[ -n "$_cf" ]] && _changed+=("$_cf")
+    done < <(
+      { git diff --name-only HEAD 2>/dev/null; git diff --cached --name-only HEAD 2>/dev/null; } \
+        | sort -u
+    )
+
+    # Defensive: if the changed set is empty here (no git / no HEAD / detached
+    # weirdness) yet the cache/clean-tree guards let us through, prove nothing
+    # and run everything.
+    if [[ ${#_changed[@]} -eq 0 ]]; then
+      echo "gate-check: pytest scope — no changed files resolved vs HEAD — running full suite" >&2
+    else
+      # Broad/core change patterns: anything that can affect tests globally.
+      # Conservative and repo-agnostic — when matched, scope is abandoned.
+      local _broad_re='(^|/)(pyproject\.toml|uv\.lock|requirements[^/]*\.txt|setup\.cfg|tox\.ini|conftest\.py)$|(^|/)(core|shared|common|db|database|config)/|^(app|src)/main\.py$|(^|/)migrations/'
+
+      local _broad_hit="" _unmapped="" _f
+      local _targets=()
+      for _f in "${_changed[@]}"; do
+        if [[ "$_f" =~ $_broad_re ]]; then
+          _broad_hit="$_f"
+          break
+        fi
+      done
+
+      if [[ -n "$_broad_hit" ]]; then
+        echo "gate-check: broad/core change ($_broad_hit) — running full suite" >&2
+      else
+        for _f in "${_changed[@]}"; do
+          # A changed test file: target it directly if it still exists.
+          if [[ "$_f" =~ (^|/)tests?/ ]]; then
+            [[ -f "$_f" ]] && _targets+=("$_f")
+            continue
+          fi
+
+          # A changed source file: derive a generic test directory candidate.
+          #   app/modules/<X>/...  -> tests/<X>/
+          #   app/<X>/...          -> tests/<X>/
+          #   src/<X>/...          -> tests/<X>/
+          local _cand=""
+          if [[ "$_f" =~ ^app/modules/([^/]+)/ ]]; then
+            _cand="tests/${BASH_REMATCH[1]}/"
+          elif [[ "$_f" =~ ^(app|src)/([^/]+)/ ]]; then
+            _cand="tests/${BASH_REMATCH[2]}/"
+          fi
+
+          if [[ -n "$_cand" && -d "$_cand" ]]; then
+            _targets+=("$_cand")
+          else
+            # Source file we cannot map to an existing test target → unsafe to
+            # scope; we must not silently skip whatever it might break.
+            _unmapped="$_f"
+            break
+          fi
+        done
+
+        if [[ -n "$_unmapped" ]]; then
+          echo "gate-check: unmapped change ($_unmapped) — running full suite" >&2
+        elif [[ ${#_targets[@]} -eq 0 ]]; then
+          echo "gate-check: no test targets resolved — running full suite" >&2
+        else
+          # Deduplicate targets while preserving order.
+          local _seen=" " _deduped=() _t
+          for _t in "${_targets[@]}"; do
+            if [[ "$_seen" != *" $_t "* ]]; then
+              _deduped+=("$_t")
+              _seen+="$_t "
+            fi
+          done
+          _runner="$_runner ${_deduped[*]}"
+          echo "gate-check: scoped tests to: ${_deduped[*]}" >&2
+        fi
+      fi
+    fi
+  fi
+
   echo "gate-check: running tests: $_runner" >&2
   local _log="$_cache_dir/last-run.log"
   if eval "$_runner" >"$_log" 2>&1; then
