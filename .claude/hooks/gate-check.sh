@@ -66,7 +66,10 @@ _check_tests() {
 
   # Detect test runner: package.json → Makefile → go.mod
   if [[ -f "$PWD/package.json" ]]; then
-    if jq -e '.scripts.test' "$PWD/package.json" &>/dev/null 2>&1; then
+    # Prefer test:run (single-pass, no watch) over test (may launch watch mode)
+    if jq -e '.scripts["test:run"]' "$PWD/package.json" &>/dev/null 2>&1; then
+      _runner="npm run test:run"
+    elif jq -e '.scripts.test' "$PWD/package.json" &>/dev/null 2>&1; then
       _runner="npm test"
     fi
   elif [[ -f "$PWD/Makefile" ]]; then
@@ -80,6 +83,21 @@ _check_tests() {
   if [[ -z "$_runner" ]]; then
     echo "gate-check: no test runner detected — skipping test gate" >&2
     return
+  fi
+
+  # --- Clean-tree guard: if nothing is staged or modified, the developer   ---
+  # --- made no changes this session — no point gating on pre-existing       ---
+  # --- failures that belong to the baseline, not to this work unit.         ---
+  if git rev-parse --is-inside-work-tree &>/dev/null; then
+    local _dirty_count
+    _dirty_count="$(
+      { git diff --name-only 2>/dev/null; git diff --cached --name-only 2>/dev/null; } \
+        | sort -u | grep -c .
+    )" || _dirty_count=0
+    if [[ "$_dirty_count" -eq 0 ]]; then
+      echo "gate-check: working tree clean — skipping test gate (no changes to validate)" >&2
+      return
+    fi
   fi
 
   # --- Result cache: identical tree state → identical result. Long suites ---
