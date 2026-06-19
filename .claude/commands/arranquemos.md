@@ -367,7 +367,27 @@ gh pr create --title "{conventional_commit_title}" --body "Closes #{issue_num}
 
 El título DEBE seguir el formato conventional commit: `type(scope): descripción`.
 
-DevLead crea el PR y **SE DETIENE**. Inv 3 absoluto: ningún paso del pipeline invoca `git merge` ni `gh pr merge`. El merge es responsabilidad del usuario.
+Capturá la URL y el número del PR del output.
+
+### Step 8.6 — Mergear a `dev` (preferencia del usuario — reemplaza el viejo Inv 3)
+
+<!-- 2026-06-18: el usuario delegó el merge a `dev` a DevLead tras revisar y aprobar el flujo
+     ("me gustó cómo mergeaste; al terminar algo, después de probar local, vos mergeás a dev").
+     Esto SUPERSEDE el viejo "el merge es responsabilidad del usuario / DevLead se detiene en el PR". -->
+
+Con el PR abierto, **QA gates verdes (Step 8.4)** y, si se corrió, **verify adversarial SHIP-READY**, DevLead mergea el PR a `dev` por su cuenta:
+
+```
+gh pr merge {pr_num} --merge --delete-branch
+```
+
+Luego **cerrá la issue a mano** (`gh issue close {issue_num}` con comentario de trazabilidad) — el merge a `dev` (no a la default branch) NO auto-cierra el `Closes #N`.
+
+Reglas del merge (no negociables):
+- **Solo `dev`.** NUNCA mergear a `main`/`prod`/default branch — eso queda decisión del usuario.
+- **El merge es server-side vía `gh pr merge` — DevLead NO hace `git push` directo a `dev` ni a ramas compartidas.** El único `git push` permitido es el de la rama de feature para abrir el PR (Step 8.5); nunca `git push origin dev`.
+- **HALT y escalá** (no fuerces) si: el merge tiene conflictos reales, el CI está rojo, o el verify dejó algún CRITICAL sin resolver.
+- **PRs stacked:** re-apuntá los downstream a `dev` (`gh pr edit {n} --base dev`) ANTES de mergear/borrar cada uno, en orden — `gh pr merge --delete-branch` CIERRA el siguiente PR si su base era la rama borrada (y un PR cerrado con base borrada no se puede reabrir).
 
 ---
 
@@ -414,18 +434,20 @@ Llevá la cuenta explícita: "Iteración 1 de 3", "Iteración 2 de 3", "Iteraci�
 
 ## Paso 10 — Cierre del pipeline
 
-<!-- Task 3.9 — PR-only close. Inv 3 enforced: no merge commands. -->
+<!-- 2026-06-18: ya NO es PR-only close. DevLead mergea a `dev` y cierra la issue (Step 8.6).
+     Merge a `main`/`prod` sigue siendo del usuario. -->
 
 Mostrá un resumen del pipeline:
 
 ```
 ## Pipeline completado
 
-- Rama creada: {branch_name}
-- PR abierto: {pr_url}
+- Rama: {branch_name}
+- PR: {pr_url} → mergeado a `dev` ✅
+- Issue #{issue_num}: cerrada
 - CI status: pendiente de GitHub Actions (revisá en unos minutos)
 
-El merge es tuyo — DevLead se detiene acá.
+Mergeado a `dev`. El merge a `main`/`prod` queda tuyo.
 ```
 
 Hacé **UNA** sola pregunta:
