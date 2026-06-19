@@ -64,7 +64,7 @@ $(echo "$_dirty_files" | sed 's/^/    /')"
 _check_tests() {
   local _runner=""
 
-  # Detect test runner: package.json → Makefile → go.mod
+  # Detect test runner: package.json → Makefile → go.mod → pyproject.toml
   if [[ -f "$PWD/package.json" ]]; then
     # Prefer test:run (single-pass, no watch) over test (may launch watch mode)
     if jq -e '.scripts["test:run"]' "$PWD/package.json" &>/dev/null 2>&1; then
@@ -78,6 +78,18 @@ _check_tests() {
     fi
   elif [[ -f "$PWD/go.mod" ]]; then
     _runner="go test ./..."
+  elif [[ -f "$PWD/pyproject.toml" ]]; then
+    # Python: only gate if pytest is actually configured/declared — otherwise
+    # `pytest` would error on a project that uses a different runner.
+    if grep -qE '\[tool\.pytest|pytest' "$PWD/pyproject.toml" 2>/dev/null; then
+      # Prefer uv (lockfile or binary present) for hermetic deps; else fall
+      # back to the active interpreter's module invocation.
+      if [[ -f "$PWD/uv.lock" ]] || command -v uv &>/dev/null; then
+        _runner="uv run pytest"
+      else
+        _runner="python -m pytest"
+      fi
+    fi
   fi
 
   if [[ -z "$_runner" ]]; then
