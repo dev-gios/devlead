@@ -101,12 +101,39 @@ _section "Claude settings"
 GLOBAL_SETTINGS="$HOME/.claude/settings.json"
 HOOKS_FRAGMENT='{"hooks":{"PostToolUse":[{"matcher":"Write|Edit","hooks":[{"type":"command","command":"bash ~/.devlead/hooks/post-edit.sh"}]}],"Stop":[{"hooks":[{"type":"command","command":"bash ~/.devlead/hooks/gate-check.sh"}]}]}}'
 
+# Comandos que identifican unívocamente a los hooks de devlead. Sirven para
+# deduplicar: si ya existe una entrada con el mismo command, no se vuelve a
+# agregar (idempotente). Deben coincidir con los commands del fragmento.
+POST_EDIT_CMD="bash ~/.devlead/hooks/post-edit.sh"
+GATE_CHECK_CMD="bash ~/.devlead/hooks/gate-check.sh"
+
+# Programa jq idempotente: parte del settings existente ($base, primer input) y
+# le agrega SOLO las entradas devlead que falten, dedup por command string.
+# - Defaults: .hooks, .hooks.PostToolUse y .hooks.Stop arrancan en [] si faltan.
+# - PostToolUse: append del matcher "Write|Edit" -> post-edit.sh solo si ningún
+#   grupo existente ya contiene ese command.
+# - Stop: append de gate-check.sh solo si ningún grupo existente lo contiene.
+# Cualquier otro hook preexistente queda intacto.
+JQ_MERGE_PROGRAM='
+  .hooks //= {} |
+  .hooks.PostToolUse //= [] |
+  .hooks.Stop //= [] |
+  ( [ .hooks.PostToolUse[]?.hooks[]?.command ] ) as $postCmds |
+  ( [ .hooks.Stop[]?.hooks[]?.command ] ) as $stopCmds |
+  ( if ($postCmds | index($pe)) then . else
+      .hooks.PostToolUse += [ { "matcher": "Write|Edit", "hooks": [ { "type": "command", "command": $pe } ] } ]
+    end ) |
+  ( if ($stopCmds | index($gc)) then . else
+      .hooks.Stop += [ { "hooks": [ { "type": "command", "command": $gc } ] } ]
+    end )
+'
+
 if [[ -f "$GLOBAL_SETTINGS" ]]; then
   if command -v jq &>/dev/null; then
     _tmp=$(mktemp)
-    if jq -s '.[0] * .[1]' "$GLOBAL_SETTINGS" <(echo "$HOOKS_FRAGMENT") > "$_tmp"; then
+    if jq --arg pe "$POST_EDIT_CMD" --arg gc "$GATE_CHECK_CMD" "$JQ_MERGE_PROGRAM" "$GLOBAL_SETTINGS" > "$_tmp"; then
       mv "$_tmp" "$GLOBAL_SETTINGS"
-      _ok "Hooks mergeados en ~/.claude/settings.json"
+      _ok "Hooks devlead asegurados en ~/.claude/settings.json (sin duplicar)"
     else
       rm -f "$_tmp"
       _warn "jq merge falló — hooks NO registrados. Agregálos manualmente."
