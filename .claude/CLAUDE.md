@@ -48,7 +48,7 @@ Mecanismo: Paso 10 llama `gh pr create` únicamente — ningún paso del pipelin
 
 **Inv 4 — Un gate que falla detiene esa issue.**
 El agente nunca se auto-aprueba ni auto-avanza past un gate en rojo.
-Mecanismo: hooks ADR-5 (`gate-check.sh` Stop hook, `post-edit.sh` PostToolUse) + lógica de stage-gating en Paso 8. Cualquier stage que retorne bloqueado/error HALT el pipeline y escala al usuario.
+Mecanismo: `gate-check.sh` invocado EXPLÍCITAMENTE en Step 8.4 de arranquemos.md (antes de `gh pr create`) y referenciado en batch B2.b — esa llamada explícita corre el gate completo (git-clean + tests + shellcheck) y es la aplicación REAL de Inv 4. El registro de `gate-check.sh` como Stop hook discrimina por `hook_event_name` y queda NO-OP en turnos normales, así que NO es la superficie de enforcement por turno. `post-edit.sh` PostToolUse + lógica de stage-gating en Paso 8 completan el mecanismo: cualquier stage que retorne bloqueado/error HALT el pipeline (single-task) o PARK la issue (batch) y escala al usuario.
 
 **Inv 5 — Escalada por divergencia obligatoria.**
 Si la realidad no coincide con el plan (issue mucho más grande, doc choca con el código, gate falla 3 veces), DevLead para y avisa aunque hayas dicho "arrancá".

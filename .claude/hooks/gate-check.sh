@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Stop hook — gate check before session closes
+# Dual-mode gate.
+#   1. Implicit Stop hook (stdin carries hook_event_name=="Stop") -> cheap
+#      NO-OP on every turn. The full gate never runs per-turn.
+#   2. Explicit `bash gate-check.sh` (arranquemos Step 8.4 / batch B2.b, empty
+#      stdin) -> full blocking gate: git-clean + tests + shellcheck.
 # Accumulates ALL failures (never short-circuits) and reports them together.
-# Escape hatch: DEVLEAD_FORCE_CLOSE=1 emits warning and exits 0.
+# Escape hatch (explicit path only): DEVLEAD_FORCE_CLOSE=1 emits warning, exits 0.
 #
 # Gates:
 #   1. No uncommitted changes (unstaged + staged)
@@ -32,6 +36,23 @@ fi
 # Without this guard a global Stop hook would block every session in every repo.
 # ---------------------------------------------------------------------------
 if ! bash "$HOME/.devlead/scripts/devlead-active.sh" check 2>/dev/null; then
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Caller discriminator — implicit Stop hook vs explicit pipeline gate.
+# The Stop hook delivers event JSON on stdin (captured in $_hook_input,
+# line 21) carrying hook_event_name=="Stop". The explicit `bash gate-check.sh`
+# calls from arranquemos Step 8.4 / batch B2.b run with empty/closed stdin.
+# Implicit per-turn runs are NO-OP (exit 0 = allow the Stop); the real Inv 4
+# enforcement is the explicit pre-PR call, not this every-turn surface.
+# Fail-safe: jq absent / empty / malformed / non-Stop stdin all fall through
+# to the FULL gate below (never a false pass). Reuses $_hook_input — no second
+# stdin read.
+# ---------------------------------------------------------------------------
+if [[ -n "$_hook_input" ]] && command -v jq &>/dev/null \
+   && jq -e '.hook_event_name == "Stop"' <<<"$_hook_input" &>/dev/null; then
+  echo "gate-check: implicit Stop-hook context — gate is no-op (explicit Step 8.4 / batch enforces Inv 4)" >&2
   exit 0
 fi
 
