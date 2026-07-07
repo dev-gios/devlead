@@ -117,7 +117,7 @@ La issue **apunta a su spec por path relativo** (línea `Spec: docs/facturacion/
 | Persona DevLead | CLAUDE.md | `.claude/CLAUDE.md` | Define tono, reglas, invariantes (sección 2) |
 | Script de ensamblado de estado | Script (bash/py) | `.devlead/scripts/` | Re-deriva el *qué* en vivo: git + GitHub |
 | Script de branching | Script | `.devlead/scripts/` | Rama desde el tag más cercano de dev (`git describe --tags`), determinista |
-| Journal | Plantilla + estado | `.devlead/today.md` (o `state.json`) | Guarda solo el *porqué* y notas |
+| Journal | Estado per-repo | `~/.devlead/journals/<repo-key>.md` (per-repo, clave = git root) | Guarda solo el *porqué* y notas |
 | Resolver de referencia por-issue | Lógica en el command + script | `.devlead/scripts/` | Sigue el path/link/doc-id de la issue y carga *solo ese doc* en el paso del SDD |
 | Ingesta de bundle Claude Design | Handoff / lógica | `.claude/` | Consume el bundle *Handoff to Claude Code* como input del pipeline de front |
 | Gate de diff visual (front) | Hook / paso de pipeline | `.claude/hooks/` | Chrome MCP screenshot → compara contra el diseño → bloquea/itera si diverge |

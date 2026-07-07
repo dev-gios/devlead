@@ -4,7 +4,7 @@
 #   - borra los symlinks devlead bajo ~/.devlead/scripts, ~/.devlead/hooks
 #     y ~/.claude/commands (solo si son symlinks que apuntan a ESTE repo),
 #   - saca SOLO las entradas de hooks devlead de ~/.claude/settings.json,
-#   - PRESERVA ~/.devlead/today.md (es journal del usuario).
+#   - PRESERVA ~/.devlead/journals/ (son journals del usuario, uno por repo).
 # Corré desde el directorio raíz del repo devlead.
 # Uso: bash uninstall.sh
 
@@ -134,18 +134,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# ~/.devlead/today.md — journal del usuario (NO se borra)
+# ~/.devlead/journals/ — journals per-repo del usuario (NO se borran)
 # ---------------------------------------------------------------------------
 _section "Journal"
 
-if [[ -e "$DEVLEAD_DIR/today.md" ]]; then
-  _warn "journal preservado en ~/.devlead/today.md — es data tuya"
-  _info "si querés borrarlo: rm ~/.devlead/today.md"
+if [[ -d "$DEVLEAD_DIR/journals" ]] && [[ -n "$(ls -A "$DEVLEAD_DIR/journals")" ]]; then
+  _warn "journals preservados en ~/.devlead/journals/ — son data tuya"
+  _info "si querés borrarlos: rm -rf ~/.devlead/journals/"
+elif [[ -d "$DEVLEAD_DIR/journals" ]]; then
+  rmdir "$DEVLEAD_DIR/journals"
+  _ok "borrado directorio vacío ~/.devlead/journals/"
 else
-  _info "journal ~/.devlead/today.md no existe — nada que preservar"
+  _info "directorio ~/.devlead/journals/ no existe — nada que preservar"
 fi
 
-# Borrar ~/.devlead solo si quedó completamente vacío (sin journal ni nada).
+# Borrar ~/.devlead solo si quedó completamente vacío.
 if [[ -d "$DEVLEAD_DIR" ]] && [[ -z "$(ls -A "$DEVLEAD_DIR")" ]]; then
   rmdir "$DEVLEAD_DIR"
   _ok "borrado directorio vacío ~/.devlead/"

@@ -86,7 +86,17 @@ Esto respeta el invariante 7: DevLead es opt-in, se enciende con `/arranquemos` 
 
 ## Paso 2 — Leer el journal
 
-Leé el archivo `~/.devlead/today.md` usando el Read tool.
+Primero derivá la ruta del journal per-repo ejecutando con el Bash tool:
+
+```bash
+_dl_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+_dl_key="${_dl_root//\//_}"
+_dl_journal="$HOME/.devlead/journals/${_dl_key}.md"
+mkdir -p "$HOME/.devlead/journals"
+echo "$_dl_journal"
+```
+
+Luego leé el archivo a la ruta absoluta que imprimió ese comando usando el Read tool.
 
 - Si el archivo no existe o sigue siendo la plantilla en blanco (sin entradas reales): tratá el contexto previo como vacío. No muestres error.
 - Si tiene contenido real: usalo SOLO para contexto de *por qué* (blockers, próximo paso, qué quedó a medias). NUNCA uses el journal como fuente de qué existe técnicamente — eso lo sabe solo `state.sh`.

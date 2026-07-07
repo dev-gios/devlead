@@ -47,16 +47,12 @@ chmod +x "$REPO_DIR/.devlead/scripts/devlead-active.sh"
 _ok "~/.devlead/scripts/devlead-active.sh → symlinked"
 
 # ---------------------------------------------------------------------------
-# ~/.devlead/today.md — journal (no sobreescribir si ya existe)
+# ~/.devlead/journals/ — directorio de journals per-repo
 # ---------------------------------------------------------------------------
 _section "Journal"
 
-if [[ -f "$DEVLEAD_DIR/today.md" ]]; then
-  _warn "~/.devlead/today.md ya existe — no se sobreescribe"
-else
-  cp "$REPO_DIR/.devlead/today.md" "$DEVLEAD_DIR/today.md"
-  _ok "~/.devlead/today.md creado desde plantilla"
-fi
+mkdir -p "$DEVLEAD_DIR/journals"
+_ok "~/.devlead/journals/ listo (journal per-repo, se crea al primer /cerremos)"
 
 # ---------------------------------------------------------------------------
 # ~/.claude/commands/arranquemos.md
@@ -183,7 +179,7 @@ else
 fi
 
 echo ""
-echo "  Journal:   ~/.devlead/today.md"
+echo "  Journal:   ~/.devlead/journals/<repo-key>.md (per-repo)"
 echo "  Scripts:   ~/.devlead/scripts/state.sh"
 echo "             ~/.devlead/scripts/branch.sh"
 echo "             ~/.devlead/scripts/ref-resolver.sh"

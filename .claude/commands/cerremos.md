@@ -60,7 +60,17 @@ Esta es la ÚNICA pregunta al usuario en el camino feliz.
 
 ## Paso 4 — Escribir el journal
 
-Con el borrador confirmado y las tres respuestas del Paso 3, escribí el archivo `~/.devlead/today.md` usando el Write tool.
+Con el borrador confirmado y las tres respuestas del Paso 3, primero derivá la ruta del journal per-repo ejecutando con el Bash tool:
+
+```bash
+_dl_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+_dl_key="${_dl_root//\//_}"
+_dl_journal="$HOME/.devlead/journals/${_dl_key}.md"
+mkdir -p "$HOME/.devlead/journals"
+echo "$_dl_journal"
+```
+
+Luego escribí el journal a la ruta absoluta que imprimió ese comando usando el Write tool.
 
 Formato exacto:
 
