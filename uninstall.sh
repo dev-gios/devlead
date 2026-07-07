@@ -13,6 +13,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEVLEAD_DIR="$HOME/.devlead"
 CLAUDE_COMMANDS_DIR="$HOME/.claude/commands"
+LOCAL_BIN="$HOME/.local/bin"
 
 _info()    { echo "  → $*"; }
 _ok()      { echo "  ✓ $*"; }
@@ -50,7 +51,7 @@ _remove_devlead_link() {
 # ---------------------------------------------------------------------------
 _section "Scripts"
 
-for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh devlead-active.sh; do
+for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh devlead-active.sh envelope.sh; do
   _remove_devlead_link "$DEVLEAD_DIR/scripts/$_name" "$REPO_DIR/.devlead/scripts/$_name"
 done
 
@@ -59,6 +60,13 @@ if [[ -d "$DEVLEAD_DIR/scripts" ]] && [[ -z "$(ls -A "$DEVLEAD_DIR/scripts")" ]]
   rmdir "$DEVLEAD_DIR/scripts"
   _ok "borrado directorio vacío ~/.devlead/scripts/"
 fi
+
+# ---------------------------------------------------------------------------
+# ~/.local/bin/devlead — front-door CLI
+# ---------------------------------------------------------------------------
+_section "CLI"
+
+_remove_devlead_link "$LOCAL_BIN/devlead" "$REPO_DIR/.devlead/bin/devlead"
 
 # ---------------------------------------------------------------------------
 # ~/.devlead/hooks/

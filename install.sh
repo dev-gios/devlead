@@ -9,6 +9,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEVLEAD_DIR="$HOME/.devlead"
 CLAUDE_COMMANDS_DIR="$HOME/.claude/commands"
+LOCAL_BIN="$HOME/.local/bin"
 
 _info()    { echo "  → $*"; }
 _ok()      { echo "  ✓ $*"; }
@@ -49,6 +50,23 @@ _ok "~/.devlead/scripts/devlead-active.sh → symlinked"
 ln -sf "$REPO_DIR/.devlead/scripts/envelope.sh" "$DEVLEAD_DIR/scripts/envelope.sh"
 chmod +x "$REPO_DIR/.devlead/scripts/envelope.sh"
 _ok "~/.devlead/scripts/envelope.sh → symlinked"
+
+# ---------------------------------------------------------------------------
+# ~/.local/bin/devlead — front-door CLI
+# ---------------------------------------------------------------------------
+_section "CLI"
+
+mkdir -p "$LOCAL_BIN"
+_info "mkdir ~/.local/bin/"
+
+ln -sf "$REPO_DIR/.devlead/bin/devlead" "$LOCAL_BIN/devlead"
+chmod +x "$REPO_DIR/.devlead/bin/devlead"
+_ok "~/.local/bin/devlead → $REPO_DIR/.devlead/bin/devlead"
+
+if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
+  _warn "~/.local/bin no está en tu PATH — agregá esta línea a tu shell rc:"
+  _warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+fi
 
 # ---------------------------------------------------------------------------
 # ~/.devlead/journals/ — directorio de journals per-repo
@@ -189,6 +207,7 @@ echo "             ~/.devlead/scripts/branch.sh"
 echo "             ~/.devlead/scripts/ref-resolver.sh"
 echo "             ~/.devlead/scripts/forbidden-check.sh"
 echo "             ~/.devlead/scripts/envelope.sh"
+echo "  CLI:       ~/.local/bin/devlead → devlead <init|plan|check|show>"
 echo "  Hooks:     ~/.devlead/hooks/post-edit.sh"
 echo "             ~/.devlead/hooks/gate-check.sh"
 echo "  Comandos:  ~/.claude/commands/arranquemos.md"

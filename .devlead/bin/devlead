@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# devlead — front-door CLI dispatcher for DevLead.
+#
+# Pure facade: forwards subcommands to the installed internal scripts under
+# ~/.devlead/scripts/. Contains NO subcommand logic of its own. Uses `exec`, so
+# the child's exit code and stdio pass through unchanged — `devlead plan` is
+# byte-for-byte equivalent to `bash ~/.devlead/scripts/envelope.sh plan`.
+# Convention matches .devlead/scripts/*.sh (set -uo pipefail, NOT install's -e).
+
+set -uo pipefail
+
+SCRIPTS_DIR="$HOME/.devlead/scripts"
+
+if [[ ! -d "$SCRIPTS_DIR" ]]; then
+  echo "devlead: scripts not installed — run bash install.sh" >&2
+  exit 1
+fi
+
+_usage() {
+  cat <<'EOF'
+devlead — front door for DevLead
+
+usage: devlead <command> [args...]
+
+commands:
+  init     initialize / re-derive DevLead state for this repo
+  plan     produce the recommended plan
+  check    run the state check
+  show     show current derived state
+  help     show this help
+
+All commands forward to ~/.devlead/scripts/envelope.sh unchanged.
+EOF
+}
+
+_cmd="${1:-}"
+
+case "$_cmd" in
+  init|plan|check|show)
+    shift
+    exec bash "$SCRIPTS_DIR/envelope.sh" "$_cmd" "$@"
+    ;;
+  # To route a NEW command to a DIFFERENT script later, add its name here:
+  #   state)
+  #     shift
+  #     exec bash "$SCRIPTS_DIR/state.sh" "$@"
+  #     ;;
+  help|--help|-h|"")
+    _usage
+    exit 0
+    ;;
+  *)
+    echo "devlead: unknown command '$_cmd'" >&2
+    _usage >&2
+    exit 2
+    ;;
+esac
