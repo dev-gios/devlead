@@ -146,6 +146,7 @@ Cuando cualquier sub-paso de B2.b retorna blocked o error, aplicá esta tabla:
 | `ref-resolver GAP: multi-predecesor no soportado en v1` | **PARK** "multi-predecesor declarado — resolución manual requerida" | 🅿️ Aparcadas |
 | `DEPENDS-ON: A` y A ∈ BLOQUEADAS | **PARK** "dep-blocked: predecesor #A aparcado", agregar issue a BLOQUEADAS | 🅿️ Aparcadas |
 | `ref-resolver SPEC: none` (sin spec) | **Continuar** sin spec (igual que single-task) | — |
+| `DEP-CHECK: unavailable` (del resolver) | **Continuar** — nunca PARK; anotá `"⚠️ deps sin verificar (gh ausente)"` junto al PR en B3 | ⚠️ Junto al PR |
 | Spec choca con código real (divergencia, Inv 5/7) | **PARK** "divergencia spec/código: {detalle}" | 🅿️ Aparcadas |
 | `gate-check.sh` falla | **PARK** con la razón exacta del gate | 🅿️ Aparcadas |
 | Gate visual > 3 iteraciones (Paso 9) | **PARK** "visual diff sin resolver tras 3 iteraciones" | 🅿️ Aparcadas |

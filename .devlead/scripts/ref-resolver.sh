@@ -30,12 +30,14 @@ ISSUE_NUM="$1"
 if ! command -v gh &>/dev/null; then
   echo "SPEC:   none"
   echo "GAP:    gh not found — install GitHub CLI to enable spec resolution"
+  echo "DEP-CHECK: unavailable"
   exit 0
 fi
 
 if ! gh auth status &>/dev/null 2>&1; then
   echo "SPEC:   none"
   echo "GAP:    gh unavailable — run 'gh auth login' to enable spec resolution"
+  echo "DEP-CHECK: unavailable"
   exit 0
 fi
 
@@ -47,6 +49,7 @@ _body=$(gh issue view "$ISSUE_NUM" --json body -q .body 2>/dev/null) || _body=""
 if [[ -z "$_body" ]]; then
   echo "SPEC:   none"
   echo "GAP:    issue #${ISSUE_NUM} not found or has empty body"
+  echo "DEP-CHECK: unavailable"
   exit 0
 fi
 

@@ -298,6 +298,8 @@ Capturá toda la salida. Interpretá:
 - `SPEC: none` → continuá sin spec (implementación directa); anotá en la sesión: "no Spec: reference — proceeding without spec doc"
 - `GAP: file not found at {path}` → **HALT**, avisá al usuario que el spec referenciado no existe en esa ruta; no continúes
 - `GAP: gh unavailable` → continuá sin spec (degradación honesta); anotá la ausencia
+- `DEP-CHECK: unavailable` → no se pudo verificar si la issue declara una dependencia. Emití este warning al usuario y **continuá** el flow sin hacer halt:
+  > ⚠️ No pude verificar dependencias (gh no disponible). Si esta issue declara `Depends-on: #A`, la rama sale del tag y la base puede estar incompleta — revisá antes de mergear.
 - `GAP: multi-predecesor no soportado en v1` → **HALT**, informá al usuario que la issue declara más de un predecesor; resolvé manualmente antes de continuar
 - `SPEC: {path}` → tenés spec, lo vas a usar en Step 8.3
 - `DESIGN: {path}` → hay bundle de diseño frontend, activá el gate visual en Paso 9
