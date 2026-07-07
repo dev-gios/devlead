@@ -46,6 +46,10 @@ ln -sf "$REPO_DIR/.devlead/scripts/devlead-active.sh" "$DEVLEAD_DIR/scripts/devl
 chmod +x "$REPO_DIR/.devlead/scripts/devlead-active.sh"
 _ok "~/.devlead/scripts/devlead-active.sh → symlinked"
 
+ln -sf "$REPO_DIR/.devlead/scripts/envelope.sh" "$DEVLEAD_DIR/scripts/envelope.sh"
+chmod +x "$REPO_DIR/.devlead/scripts/envelope.sh"
+_ok "~/.devlead/scripts/envelope.sh → symlinked"
+
 # ---------------------------------------------------------------------------
 # ~/.devlead/journals/ — directorio de journals per-repo
 # ---------------------------------------------------------------------------
@@ -155,7 +159,7 @@ fi
 _section "Dependencias"
 
 _missing=()
-for _cmd in git gh jq shellcheck; do
+for _cmd in git gh jq shellcheck yq; do
   if command -v "$_cmd" &>/dev/null; then
     _ok "$_cmd encontrado"
   else
@@ -184,6 +188,7 @@ echo "  Scripts:   ~/.devlead/scripts/state.sh"
 echo "             ~/.devlead/scripts/branch.sh"
 echo "             ~/.devlead/scripts/ref-resolver.sh"
 echo "             ~/.devlead/scripts/forbidden-check.sh"
+echo "             ~/.devlead/scripts/envelope.sh"
 echo "  Hooks:     ~/.devlead/hooks/post-edit.sh"
 echo "             ~/.devlead/hooks/gate-check.sh"
 echo "  Comandos:  ~/.claude/commands/arranquemos.md"
