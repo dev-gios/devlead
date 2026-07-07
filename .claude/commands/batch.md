@@ -60,9 +60,12 @@ COLA BATCH:
   #[M]  → pending
   ...
 PRESUPUESTO: [n] restantes
+BLOQUEADAS: {} ← set vacío; se va llenando con #s de issues aparcadas/bloqueadas
 ```
 
 Estados posibles por issue: `pending` → `pr_listo` | `aparcada` | `escalada` | `no_alcanzada`
+
+El set `BLOQUEADAS` acumula números de issue que fueron aparcados o bloqueados (por gate, dep, o zona). Se consulta al inicio de cada iteración para detectar dependencias transitivas: si la issue actual declara `DEPENDS-ON: A` y A ∈ BLOQUEADAS → PARK sin empezar, agregar a BLOQUEADAS, seguir.
 
 Regla: NUNCA escribas un archivo `.devlead/batch-state.json` ni ningún otro archivo de tracking de estado del batch.
 
@@ -111,17 +114,18 @@ Si los paths candidatos no se pueden derivar con certeza (issue sin labels ni re
 
 Ejecutá los siguientes pasos de `arranquemos.md` para ESTA issue, en este orden exacto:
 
-- **Paso 8.1** — Crear la rama (`branch.sh {issue_num} "{issue_title}" {type}`)
-- **Paso 8.2** — Resolver spec de la issue (`ref-resolver.sh {issue_num}`)
+- **Paso 8.1** — Resolver spec de la issue (`ref-resolver.sh {issue_num}`) — capturá `DEPENDS-ON:` si aparece
+- **Paso 8.2** — Crear la rama (`branch.sh {issue_num} "{issue_title}" {type} [{dep_num}]`) — pasá `dep_num` como 4to arg solo si Paso 8.1 emitió `DEPENDS-ON:`
 - **Paso 8.3** — Pipeline principal (con spec si encontrado, directo si no)
 - **Paso 8.4** — QA gates (`gate-check.sh`)
-- **Paso 9** — Gate visual de frontend (SOLO si Paso 8.2 encontró `DESIGN: {path}`)
+- **Paso 9** — Gate visual de frontend (SOLO si Paso 8.1 encontró `DESIGN: {path}`)
 
 Cada sub-paso es un gate. Si alguno retorna blocked/error → interceptá la señal en B2.c (no en Paso 8 se escala al usuario — en batch se aparca).
 
 **Deltas que batch aplica al cuerpo** (y NADA más):
 1. **Skip Paso 7** — la autorización ya se dio en B0. No preguntes confirmación por issue.
 2. **HALT → PARK** — toda señal que en single-task dice "HALT y escalá al usuario" acá dice "PARK esta issue con la razón, seguí con la próxima" (ver tabla B2.c).
+3. **Dep-check antes de Paso 8.1** — si la issue ya tiene `DEPENDS-ON` conocido (de un run anterior del resolver) y ese número ∈ BLOQUEADAS → PARK sin empezar (no corras el resolver). Si no hay info previa, dejá que Paso 8.1 corra y aplicá B2.c tras obtener `DEPENDS-ON:`.
 
 Paso 8.5 (abrir el PR) NO se ejecuta acá — se ejecuta en B2.d después del post-check.
 
@@ -137,7 +141,10 @@ Cuando cualquier sub-paso de B2.b retorna blocked o error, aplicá esta tabla:
 | Señal | Acción en batch | Sección del reporte |
 |---|---|---|
 | `branch.sh STATUS: blocked` (dirty repo, detached HEAD, no dev) | **PARK** con razón exacta del GAP | 🅿️ Aparcadas |
+| `branch.sh STATUS: blocked` GAP `predecesor #N no encontrado y no mergeado` | **PARK** con razón exacta + agregar issue a BLOQUEADAS | 🅿️ Aparcadas |
 | `ref-resolver GAP: file not found` (spec no existe en esa ruta) | **PARK** "spec referenciado no encontrado: {path}" | 🅿️ Aparcadas |
+| `ref-resolver GAP: multi-predecesor no soportado en v1` | **PARK** "multi-predecesor declarado — resolución manual requerida" | 🅿️ Aparcadas |
+| `DEPENDS-ON: A` y A ∈ BLOQUEADAS | **PARK** "dep-blocked: predecesor #A aparcado", agregar issue a BLOQUEADAS | 🅿️ Aparcadas |
 | `ref-resolver SPEC: none` (sin spec) | **Continuar** sin spec (igual que single-task) | — |
 | Spec choca con código real (divergencia, Inv 5/7) | **PARK** "divergencia spec/código: {detalle}" | 🅿️ Aparcadas |
 | `gate-check.sh` falla | **PARK** con la razón exacta del gate | 🅿️ Aparcadas |

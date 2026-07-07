@@ -286,27 +286,7 @@ Si el usuario veta el enfoque: ajustá el plan y presentá un nuevo resumen de u
 
 Ejecutá el pipeline en este orden exacto. Cada step es un gate — si falla, **HALT** y escalá al usuario.
 
-### Step 8.1 — Crear la rama
-
-Determiná el tipo a partir de las labels de la issue:
-- `bug` → `fix`
-- `documentation` → `docs`
-- `chore`, `maintenance` → `chore`
-- sin label o `enhancement`, `feature` → `feat`
-
-Ejecutá usando el Bash tool:
-
-```
-bash ~/.devlead/scripts/branch.sh {issue_num} "{issue_title}" {type}
-```
-
-Capturá el branch name del output (línea `BRANCH: ...`).
-
-Si el output muestra `STATUS: blocked`:
-- **HALT** — mostrá el `GAP:` al usuario con detalle exacto de qué falló
-- No continúes a Step 8.2 hasta recibir instrucción explícita del usuario
-
-### Step 8.2 — Resolver spec de la issue
+### Step 8.1 — Resolver spec de la issue
 
 Ejecutá usando el Bash tool:
 
@@ -314,12 +294,40 @@ Ejecutá usando el Bash tool:
 bash ~/.devlead/scripts/ref-resolver.sh {issue_num}
 ```
 
-Interpretá el output:
+Capturá toda la salida. Interpretá:
 - `SPEC: none` → continuá sin spec (implementación directa); anotá en la sesión: "no Spec: reference — proceeding without spec doc"
 - `GAP: file not found at {path}` → **HALT**, avisá al usuario que el spec referenciado no existe en esa ruta; no continúes
 - `GAP: gh unavailable` → continuá sin spec (degradación honesta); anotá la ausencia
+- `GAP: multi-predecesor no soportado en v1` → **HALT**, informá al usuario que la issue declara más de un predecesor; resolvé manualmente antes de continuar
 - `SPEC: {path}` → tenés spec, lo vas a usar en Step 8.3
 - `DESIGN: {path}` → hay bundle de diseño frontend, activá el gate visual en Paso 9
+- `DEPENDS-ON: {N}` → guardá `DEP_NUM={N}`; se pasa a branch.sh como 4to argumento en Step 8.2
+
+### Step 8.2 — Crear la rama
+
+Determiná el tipo a partir de las labels de la issue:
+- `bug` → `fix`
+- `documentation` → `docs`
+- `chore`, `maintenance` → `chore`
+- sin label o `enhancement`, `feature` → `feat`
+
+Si Step 8.1 emitió `DEPENDS-ON: {N}`, pasá ese número como 4to argumento:
+
+```
+bash ~/.devlead/scripts/branch.sh {issue_num} "{issue_title}" {type} {dep_num}
+```
+
+Si no hubo `DEPENDS-ON:`, invocá con 3 argumentos (comportamiento actual, sin cambios):
+
+```
+bash ~/.devlead/scripts/branch.sh {issue_num} "{issue_title}" {type}
+```
+
+Capturá del output: `BRANCH:`, `STATUS:`, y `STACKED:` (si aparece).
+
+Si el output muestra `STATUS: blocked`:
+- **HALT** — mostrá el `GAP:` al usuario con detalle exacto de qué falló (incluye dep-bloqueados)
+- No continúes a Step 8.3 hasta recibir instrucción explícita del usuario
 
 ### Step 8.3 — Pipeline principal
 
@@ -357,7 +365,25 @@ Si algún gate falla:
 
 ### Step 8.5 — Abrir el PR
 
-Ejecutá usando el Bash tool:
+Si Step 8.2 emitió `STACKED: {A-branch}`, añadí `--base {A-branch}` al comando:
+
+```
+gh pr create --base {A-branch} --title "{conventional_commit_title}" --body "Closes #{issue_num}
+
+## Qué
+
+{resumen de los cambios}
+
+## Por qué
+
+{contexto de la issue}
+
+## Test plan
+
+{qué se puede verificar}"
+```
+
+Si no hubo `STACKED:`, el comando queda exactamente como hoy (sin `--base`):
 
 ```
 gh pr create --title "{conventional_commit_title}" --body "Closes #{issue_num}
@@ -378,6 +404,12 @@ gh pr create --title "{conventional_commit_title}" --body "Closes #{issue_num}
 El título DEBE seguir el formato conventional commit: `type(scope): descripción`.
 
 Capturá la URL y el número del PR del output.
+
+Si la rama es stacked, emití una línea de encadenamiento:
+
+```
+🔗 PR stacked: {B-branch} → {A-branch} → dev
+```
 
 ### Step 8.6 — Mergear a `dev` (preferencia del usuario — reemplaza el viejo Inv 3)
 

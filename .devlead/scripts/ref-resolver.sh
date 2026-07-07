@@ -83,6 +83,25 @@ if [[ -n "$_design_path" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Parse Depends-on: — canonical ONE line ONE issue
+# ---------------------------------------------------------------------------
+_dep_count=$(printf '%s' "$_body" | grep -ic '^[[:space:]]*Depends-on:') || _dep_count=0
+_dep_line=$(printf '%s' "$_body" | grep -i '^[[:space:]]*Depends-on:[[:space:]]*' | head -n1) || _dep_line=""
+if [[ -n "$_dep_line" ]]; then
+  _dep_val=$(printf '%s' "$_dep_line" | sed 's/^[[:space:]]*depends-on:[[:space:]]*//I' | sed 's/[[:space:]]*$//')
+  if [[ "$_dep_count" -gt 1 || "$_dep_val" == *,* ]]; then
+    echo "GAP:    multi-predecesor no soportado en v1"
+  else
+    _dep_num="${_dep_val#\#}"
+    if [[ "$_dep_num" =~ ^[0-9]+$ ]]; then
+      echo "DEPENDS-ON: ${_dep_num}"
+    else
+      echo "GAP:    Depends-on valor no reconocido"
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Handle missing Spec: line
 # ---------------------------------------------------------------------------
 if [[ -z "$_spec_path" ]]; then

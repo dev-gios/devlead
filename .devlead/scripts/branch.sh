@@ -36,6 +36,7 @@ fi
 ISSUE_NUM="$1"
 ISSUE_TITLE="$2"
 TYPE="$3"
+DEP_NUM="${4:-}"
 
 # Validate type — default to feat if unknown
 _valid_types="feat fix chore docs refactor perf test"
@@ -89,41 +90,66 @@ _slug="${_slug%-}"
 BRANCH_NAME="${TYPE}/issue-${ISSUE_NUM}-${_slug}"
 
 # ---------------------------------------------------------------------------
-# Base ref resolution: nearest tag on dev (ADR-4 fallback chain)
+# Dependency resolution: predecessor branch (Depends-on 4th arg)
 # ---------------------------------------------------------------------------
+STACKED_BRANCH=""
 BASE_REF=""
 BASE_GAP=""
+if [[ -n "$DEP_NUM" ]]; then
+  _dep_branch=$(git branch -a --list "*/issue-${DEP_NUM}-*" 2>/dev/null | head -n1)
+  _dep_branch=$(printf '%s' "$_dep_branch" | sed 's/^[[:space:]]*[*]\?[[:space:]]*//')
+  # _dep_ref: strip only "remotes/" — keeps "origin/" prefix for valid checkout start-point
+  _dep_ref="${_dep_branch#remotes/}"
+  # _dep_name: strip "remotes/origin/" — bare branch name for STACKED: output and PR --base
+  _dep_name="${_dep_branch#remotes/origin/}"
+  if [[ -n "$_dep_branch" ]]; then
+    BASE_REF="$_dep_ref"; STACKED_BRANCH="$_dep_name"
+  elif command -v gh &>/dev/null && gh auth status &>/dev/null && gh pr list --state merged --limit 200 --json headRefName -q '.[].headRefName' 2>/dev/null | grep -q "issue-${DEP_NUM}-"; then
+    : # merged: dev already has A → fall through to tag block
+  else
+    echo "BRANCH: $BRANCH_NAME"; echo "BASE:   "; echo "STATUS: blocked"
+    echo "GAP:    predecesor #${DEP_NUM} no encontrado y no mergeado"; exit 0
+  fi
+fi
 
-# Primary: nearest tag reachable from origin/dev
-_tag=$(git describe --tags --abbrev=0 origin/dev 2>/dev/null) || _tag=""
+# ---------------------------------------------------------------------------
+# Base ref resolution: nearest tag on dev (ADR-4 fallback chain)
+# ---------------------------------------------------------------------------
+if [[ -z "$BASE_REF" ]]; then
+  BASE_REF=""
+  BASE_GAP=""
 
-if [[ -n "$_tag" ]]; then
-  BASE_REF="$_tag"
-else
-  # Fallback 1: git describe against local dev branch
-  _tag=$(git describe --tags --abbrev=0 dev 2>/dev/null) || _tag=""
+  # Primary: nearest tag reachable from origin/dev
+  _tag=$(git describe --tags --abbrev=0 origin/dev 2>/dev/null) || _tag=""
+
   if [[ -n "$_tag" ]]; then
     BASE_REF="$_tag"
-    BASE_GAP="no tags on origin/dev, used local dev tag"
   else
-    # Fallback 2: origin/dev HEAD (no tags at all on dev)
-    _dev_ref=$(git rev-parse --short origin/dev 2>/dev/null) || _dev_ref=""
-    if [[ -n "$_dev_ref" ]]; then
-      BASE_REF="origin/dev"
-      BASE_GAP="no tags on dev, using HEAD of origin/dev"
+    # Fallback 1: git describe against local dev branch
+    _tag=$(git describe --tags --abbrev=0 dev 2>/dev/null) || _tag=""
+    if [[ -n "$_tag" ]]; then
+      BASE_REF="$_tag"
+      BASE_GAP="no tags on origin/dev, used local dev tag"
     else
-      # Fallback 3: default branch from remote HEAD
-      _default=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null) || _default=""
-      if [[ -n "$_default" ]]; then
-        BASE_REF="${_default##*/}"
-        BASE_GAP="dev branch not found, using default branch (${BASE_REF})"
+      # Fallback 2: origin/dev HEAD (no tags at all on dev)
+      _dev_ref=$(git rev-parse --short origin/dev 2>/dev/null) || _dev_ref=""
+      if [[ -n "$_dev_ref" ]]; then
+        BASE_REF="origin/dev"
+        BASE_GAP="no tags on dev, using HEAD of origin/dev"
       else
-        # Nothing usable — blocked
-        echo "BRANCH: $BRANCH_NAME"
-        echo "BASE:   "
-        echo "STATUS: blocked"
-        echo "GAP:    dev branch not found and no fallback ref available"
-        exit 0
+        # Fallback 3: default branch from remote HEAD
+        _default=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null) || _default=""
+        if [[ -n "$_default" ]]; then
+          BASE_REF="${_default##*/}"
+          BASE_GAP="dev branch not found, using default branch (${BASE_REF})"
+        else
+          # Nothing usable — blocked
+          echo "BRANCH: $BRANCH_NAME"
+          echo "BASE:   "
+          echo "STATUS: blocked"
+          echo "GAP:    dev branch not found and no fallback ref available"
+          exit 0
+        fi
       fi
     fi
   fi
@@ -145,9 +171,11 @@ if git rev-parse --verify "$BRANCH_NAME" &>/dev/null 2>&1; then
   echo "BASE:   $BASE_REF"
   echo "STATUS: reused"
   [[ -n "$BASE_GAP" ]] && echo "GAP:    $BASE_GAP"
+  [[ -n "$STACKED_BRANCH" ]] && echo "STACKED: $STACKED_BRANCH"
 else
   # New branch — create from base ref
-  if ! git checkout -b "$BRANCH_NAME" "$BASE_REF" 2>/dev/null; then
+  if [[ -n "$STACKED_BRANCH" ]]; then _ck=(--no-track); else _ck=(); fi
+  if ! git checkout -b "$BRANCH_NAME" "${_ck[@]}" "$BASE_REF" 2>/dev/null; then
     echo "BRANCH: $BRANCH_NAME"
     echo "BASE:   $BASE_REF"
     echo "STATUS: blocked"
@@ -158,6 +186,7 @@ else
   echo "BASE:   $BASE_REF"
   echo "STATUS: created"
   [[ -n "$BASE_GAP" ]] && echo "GAP:    $BASE_GAP"
+  [[ -n "$STACKED_BRANCH" ]] && echo "STACKED: $STACKED_BRANCH"
 fi
 
 exit 0
