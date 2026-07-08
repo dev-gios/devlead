@@ -238,6 +238,62 @@ Los units de usuario de systemd no heredan el PATH interactivo. El sweep invoca 
 
 ---
 
+## Nivel 3 — Autonomous Execute (`/sweep-execute`)
+
+### Qué es
+
+`/sweep-execute` es el paso de ejecución autónoma sobre los repos enrollados: lee la cola de issues INCLUDED desde el envelope de cada repo, corre el pipeline B2 completo (branch → spec → impl → gates → PR) y entrega PRs listos para review. Nunca hace merge. Nunca escribe código sin autorización (la invocación del comando ES la autorización).
+
+La diferencia con Nivel 2 (`sweep.sh`): Nivel 2 solo planifica (read-only). Nivel 3 ejecuta: crea ramas, implementa, corre gates, abre PRs.
+
+### Cómo funciona
+
+1. Lee `~/.devlead/autonomous-repos` (mismo dedup/CRLF que `sweep.sh`).
+2. Por cada repo: corre `envelope.sh check` (ENROLLED + ENABLED), la cadena de auth de 4 pasos (`sweep.sh:19-57`), y `envelope.sh plan` fresh.
+3. Parsea la sección `--- INCLUDED (queue order) ---` para obtener la cola de `#N`.
+4. Por cada issue INCLUDED: corre B2.a → B2.e de `batch.md` con los deltas de execute (ver `.claude/commands/sweep-execute.md`).
+5. Escribe el reporte en `~/.devlead/reports/YYYY-MM-DD-execute.md` al finalizar.
+
+### Prerrequisitos operacionales
+
+**PAT (GitHub token) — alcance WRITE requerido:**
+A diferencia de Nivel 2 (read-only), `/sweep-execute` llama `gh pr create`. Tu PAT DEBE tener el scope `repo` (escritura) para crear PRs.
+
+- **Token read-only → todas las issues se aparcan** con razón explícita `auth: PR creation requires write scope (repo) — token is read-only`. El error se detecta al momento de `gh pr create`, después de que la rama y los commits ya existen. Cada issue afectada queda PARK con esa razón — el reporte lo documenta — pero deja una rama local con commits sin PR (no es un no-op limpio). Revisá las ramas locales antes del próximo run si vas a corregir el token.
+- Almacenamiento idéntico a Nivel 2: `echo 'ghp_TuToken' > ~/.devlead/gh-token && chmod 600 ~/.devlead/gh-token`
+
+**Repo enrollado:** el repo debe estar en `~/.devlead/autonomous-repos`.
+
+**Envelope habilitado:** `enabled: true` en `.devlead/envelope.yml` del repo.
+
+### Invariantes aplicadas
+
+| Invariante | Aplicación en `/sweep-execute` |
+|---|---|
+| **Inv 3 — Nunca auto-merge** | ABSOLUTO. El comando no contiene `git merge` ni `gh pr merge` en ninguna rama de código. El merge es tuyo. |
+| **Inv 4 — Gate rojo = PARK** | Gate rojo aparca ESA issue con la razón exacta del gate. El run continúa con la siguiente. Nunca auto-aprueba. |
+| **Inv 5 — Divergencia = PARK** | Si spec choca con código, la issue se aparca con razón detallada. El loop continúa. |
+| **Catástrofe de entorno** | `NOT_A_GIT_REPO` o `gh auth` perdido detiene SOLO ese repo. El run continúa con el siguiente repo. (Delta clave vs. `/batch`, donde catástrofe = stop global.) |
+
+### Reporte de run
+
+Destino: `~/.devlead/reports/YYYY-MM-DD-execute.md`
+
+**NUNCA** sobreescribe ni modifica `~/.devlead/reports/YYYY-MM-DD.md` (el plan digest de Nivel 2). El sufijo `-execute` los distingue.
+
+Vocabulario de resultado por issue: `pr-created (URL)` / `parked-<razón>` / `escalated-<zona>` / `no_alcanzada`.
+
+### Qué `/sweep-execute` NO hace
+
+- **No mergea.** Absolutamente nunca.
+- **No reintenta gates fallidos.** PARK es final para esa issue en ese run.
+- **No procesa repos sin token write** sin avisarte. PARK explícito con razón de auth.
+- **No detiene el run completo por fallo de una issue.** Fallo de issue = PARK de esa issue.
+- **No para el run si un repo falla.** Catástrofe de repo = PARK de ese repo, run continúa.
+- **No usa estado cacheado.** Cada `envelope.sh plan` se corre fresh (Inv 2).
+
+---
+
 ## 9. Invariantes (lo que NUNCA se rompe)
 
 1. DevLead **no auto-inicia trabajo** sin tu OK explícito (en single-task, por tarea; en batch, el "haz todo esto").

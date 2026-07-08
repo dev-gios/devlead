@@ -102,6 +102,9 @@ _ok "~/.claude/commands/cerremos.md → $REPO_DIR/.claude/commands/cerremos.md"
 ln -sf "$REPO_DIR/.claude/commands/batch.md" "$CLAUDE_COMMANDS_DIR/batch.md"
 _ok "~/.claude/commands/batch.md → symlinked"
 
+ln -sf "$REPO_DIR/.claude/commands/sweep-execute.md" "$CLAUDE_COMMANDS_DIR/sweep-execute.md"
+_ok "~/.claude/commands/sweep-execute.md → symlinked"
+
 # ---------------------------------------------------------------------------
 # ~/.devlead/hooks/ — post-edit.sh + gate-check.sh
 # ---------------------------------------------------------------------------
@@ -244,5 +247,6 @@ echo "             ~/.config/systemd/user/devlead-sweep.timer (NOT enabled — o
 echo "  Comandos:  ~/.claude/commands/arranquemos.md"
 echo "             ~/.claude/commands/cerremos.md"
 echo "             ~/.claude/commands/batch.md"
+echo "             ~/.claude/commands/sweep-execute.md"
 echo "  Settings:  ~/.claude/settings.json (hooks mergeados)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
