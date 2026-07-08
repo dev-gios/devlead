@@ -1,0 +1,10 @@
+[Unit]
+Description=DevLead sweep timer
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+Unit=devlead-sweep.service
+
+[Install]
+WantedBy=timers.target

@@ -51,7 +51,7 @@ _remove_devlead_link() {
 # ---------------------------------------------------------------------------
 _section "Scripts"
 
-for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh devlead-active.sh envelope.sh; do
+for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh devlead-active.sh envelope.sh sweep.sh; do
   _remove_devlead_link "$DEVLEAD_DIR/scripts/$_name" "$REPO_DIR/.devlead/scripts/$_name"
 done
 
@@ -81,6 +81,25 @@ if [[ -d "$DEVLEAD_DIR/hooks" ]] && [[ -z "$(ls -A "$DEVLEAD_DIR/hooks")" ]]; th
   rmdir "$DEVLEAD_DIR/hooks"
   _ok "borrado directorio vacío ~/.devlead/hooks/"
 fi
+
+# ---------------------------------------------------------------------------
+# systemd user units — devlead-sweep.service + devlead-sweep.timer
+# ---------------------------------------------------------------------------
+_section "systemd"
+
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+
+# FIX 6: Disable the timer before removing unit symlinks to avoid dangling
+# systemd state. Idempotent: if the timer was never enabled this is a no-op.
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user disable --now devlead-sweep.timer 2>/dev/null || true
+  _ok "timer deshabilitado (o ya estaba inactivo)"
+fi
+
+_remove_devlead_link "$SYSTEMD_USER_DIR/devlead-sweep.service" \
+  "$REPO_DIR/.devlead/systemd/devlead-sweep.service"
+_remove_devlead_link "$SYSTEMD_USER_DIR/devlead-sweep.timer" \
+  "$REPO_DIR/.devlead/systemd/devlead-sweep.timer"
 
 # ---------------------------------------------------------------------------
 # ~/.claude/commands/
@@ -154,6 +173,21 @@ elif [[ -d "$DEVLEAD_DIR/journals" ]]; then
   _ok "borrado directorio vacío ~/.devlead/journals/"
 else
   _info "directorio ~/.devlead/journals/ no existe — nada que preservar"
+fi
+
+# ---------------------------------------------------------------------------
+# ~/.devlead/reports/ — sweep digests del usuario (NO se borran)
+# ---------------------------------------------------------------------------
+_section "Reports"
+
+if [[ -d "$DEVLEAD_DIR/reports" ]] && [[ -n "$(ls -A "$DEVLEAD_DIR/reports")" ]]; then
+  _warn "reports preservados en ~/.devlead/reports/ — son data tuya (sweep digests)"
+  _info "si querés borrarlos: rm -rf ~/.devlead/reports/"
+elif [[ -d "$DEVLEAD_DIR/reports" ]]; then
+  rmdir "$DEVLEAD_DIR/reports"
+  _ok "borrado directorio vacío ~/.devlead/reports/"
+else
+  _info "directorio ~/.devlead/reports/ no existe — nada que preservar"
 fi
 
 # Borrar ~/.devlead solo si quedó completamente vacío.

@@ -27,9 +27,10 @@ commands:
   plan     produce the recommended plan
   check    run the state check
   show     show current derived state
+  sweep    run the plan-only multi-repo sweep
   help     show this help
 
-All commands forward to ~/.devlead/scripts/envelope.sh unchanged.
+All commands forward to ~/.devlead/scripts/ unchanged.
 EOF
 }
 
@@ -39,6 +40,10 @@ case "$_cmd" in
   init|plan|check|show)
     shift
     exec bash "$SCRIPTS_DIR/envelope.sh" "$_cmd" "$@"
+    ;;
+  sweep)
+    shift
+    exec bash "$SCRIPTS_DIR/sweep.sh" "$@"
     ;;
   # To route a NEW command to a DIFFERENT script later, add its name here:
   #   state)

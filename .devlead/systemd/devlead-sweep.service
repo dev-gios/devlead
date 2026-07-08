@@ -1,0 +1,11 @@
+[Unit]
+Description=DevLead autonomous sweep (plan-only)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.devlead/scripts/sweep.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

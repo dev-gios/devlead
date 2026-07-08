@@ -169,6 +169,75 @@ La issue **apunta a su spec por path relativo** (línea `Spec: docs/facturacion/
 
 ---
 
+## Nivel 2 — Autonomous Sweep (plan-only)
+
+### Qué es
+
+Un sweep autónomo programado que responde «¿qué haría DevLead hoy en cada repo enrolled?» sin ejecutar nada. Lee el estado, construye el plan y escribe un digest diario bajo `~/.devlead/reports/YYYY-MM-DD.md`. Cero ramas, cero PRs, cero commits, cero pushes.
+
+### PAT (GitHub token) — alcance mínimo
+
+Creá un Personal Access Token con los permisos **mínimos** necesarios:
+- `repo` → lectura (para listar issues/PRs)
+- `issues` → lectura
+
+**Nunca otorgues permisos de escritura.** El sweep es read-only por diseño.
+
+### Almacenar el PAT
+
+```bash
+echo 'ghp_TuTokenAqui' > ~/.devlead/gh-token
+chmod 600 ~/.devlead/gh-token
+```
+
+El sweep rechaza el archivo si los permisos no son exactamente `600` (aviso en stderr, sin usar el token).
+
+### Enrollar un repo
+
+```bash
+echo /ruta/absoluta/al/repo >> ~/.devlead/autonomous-repos
+```
+
+Además, el repo necesita `enabled: true` en su `envelope.yml` (el valor por defecto).
+
+### Activar el timer
+
+```bash
+systemctl --user enable --now devlead-sweep.timer
+```
+
+El installer **nunca** activa el timer. La activación es tuya y es explícita.
+
+### Cambiar la cadencia
+
+Editá `OnCalendar=` en `~/.config/systemd/user/devlead-sweep.timer`:
+
+```
+OnCalendar=*-*-* 07:00:00   # diario a las 07:00 (default)
+```
+
+Luego: `systemctl --user daemon-reload && systemctl --user restart devlead-sweep.timer`
+
+### Sesiones headless (linger)
+
+En servidores o sesiones sin login gráfico, el timer de usuario necesita linger habilitado para ejecutarse sin sesión activa:
+
+```bash
+loginctl enable-linger $USER
+```
+
+Esto permite que los servicios `--user` de systemd arranquen al boot sin login.
+
+### Reportes
+
+Los digests se escriben en `~/.devlead/reports/YYYY-MM-DD.md`. Cada ejecución **sobreescribe** el digest del día (no se acumula).
+
+### Por qué no se usa `devlead` en PATH bajo systemd
+
+Los units de usuario de systemd no heredan el PATH interactivo. El sweep invoca `envelope.sh` por ruta absoluta instalada (`~/.devlead/scripts/envelope.sh`) para garantizar resolución sin importar el entorno.
+
+---
+
 ## 9. Invariantes (lo que NUNCA se rompe)
 
 1. DevLead **no auto-inicia trabajo** sin tu OK explícito (en single-task, por tarea; en batch, el "haz todo esto").

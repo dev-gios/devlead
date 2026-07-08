@@ -51,6 +51,10 @@ ln -sf "$REPO_DIR/.devlead/scripts/envelope.sh" "$DEVLEAD_DIR/scripts/envelope.s
 chmod +x "$REPO_DIR/.devlead/scripts/envelope.sh"
 _ok "~/.devlead/scripts/envelope.sh → symlinked"
 
+ln -sf "$REPO_DIR/.devlead/scripts/sweep.sh" "$DEVLEAD_DIR/scripts/sweep.sh"
+chmod +x "$REPO_DIR/.devlead/scripts/sweep.sh"
+_ok "~/.devlead/scripts/sweep.sh → symlinked"
+
 # ---------------------------------------------------------------------------
 # ~/.local/bin/devlead — front-door CLI
 # ---------------------------------------------------------------------------
@@ -75,6 +79,9 @@ _section "Journal"
 
 mkdir -p "$DEVLEAD_DIR/journals"
 _ok "~/.devlead/journals/ listo (journal per-repo, se crea al primer /cerremos)"
+
+mkdir -p "$DEVLEAD_DIR/reports"
+_ok "~/.devlead/reports/ listo (sweep digests, se crean al primer devlead sweep)"
 
 # ---------------------------------------------------------------------------
 # ~/.claude/commands/arranquemos.md
@@ -110,6 +117,26 @@ _ok "~/.devlead/hooks/post-edit.sh → $REPO_DIR/.claude/hooks/post-edit.sh"
 ln -sf "$REPO_DIR/.claude/hooks/gate-check.sh" "$DEVLEAD_DIR/hooks/gate-check.sh"
 chmod +x "$REPO_DIR/.claude/hooks/gate-check.sh"
 _ok "~/.devlead/hooks/gate-check.sh → $REPO_DIR/.claude/hooks/gate-check.sh"
+
+# ---------------------------------------------------------------------------
+# systemd user units — Nivel 2 sweep timer (opt-in; NOT auto-enabled)
+# ---------------------------------------------------------------------------
+_section "systemd"
+
+SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+mkdir -p "$SYSTEMD_USER_DIR"
+_info "mkdir ~/.config/systemd/user/"
+
+ln -sf "$REPO_DIR/.devlead/systemd/devlead-sweep.service" "$SYSTEMD_USER_DIR/devlead-sweep.service"
+_ok "~/.config/systemd/user/devlead-sweep.service → symlinked"
+
+ln -sf "$REPO_DIR/.devlead/systemd/devlead-sweep.timer" "$SYSTEMD_USER_DIR/devlead-sweep.timer"
+_ok "~/.config/systemd/user/devlead-sweep.timer → symlinked"
+
+_warn "Timer NOT auto-enabled (opt-in). Para activar el sweep diario a las 07:00:"
+_warn "  systemctl --user enable --now devlead-sweep.timer"
+_warn "  Cadencia: editá OnCalendar= en $SYSTEMD_USER_DIR/devlead-sweep.timer"
+_warn "  Sesiones headless: loginctl enable-linger \$USER"
 
 # ---------------------------------------------------------------------------
 # ~/.claude/settings.json — registrar hooks (merge, no sobreescribir)
@@ -202,14 +229,18 @@ fi
 
 echo ""
 echo "  Journal:   ~/.devlead/journals/<repo-key>.md (per-repo)"
+echo "  Reports:   ~/.devlead/reports/YYYY-MM-DD.md (sweep digests)"
 echo "  Scripts:   ~/.devlead/scripts/state.sh"
 echo "             ~/.devlead/scripts/branch.sh"
 echo "             ~/.devlead/scripts/ref-resolver.sh"
 echo "             ~/.devlead/scripts/forbidden-check.sh"
 echo "             ~/.devlead/scripts/envelope.sh"
-echo "  CLI:       ~/.local/bin/devlead → devlead <init|plan|check|show>"
+echo "             ~/.devlead/scripts/sweep.sh"
+echo "  CLI:       ~/.local/bin/devlead → devlead <init|plan|check|show|sweep>"
 echo "  Hooks:     ~/.devlead/hooks/post-edit.sh"
 echo "             ~/.devlead/hooks/gate-check.sh"
+echo "  Systemd:   ~/.config/systemd/user/devlead-sweep.service"
+echo "             ~/.config/systemd/user/devlead-sweep.timer (NOT enabled — opt-in)"
 echo "  Comandos:  ~/.claude/commands/arranquemos.md"
 echo "             ~/.claude/commands/cerremos.md"
 echo "             ~/.claude/commands/batch.md"
