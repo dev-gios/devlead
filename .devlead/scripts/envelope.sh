@@ -72,6 +72,7 @@ select:
   require_readiness: true
 order:
   by: [priority-label, created-asc]
+  # priority_labels: [p0, priority:high, priority:urgent, bug]  # OPTIONAL. Position = tier (0=highest); no-match issues share the lowest tier (FIFO created-asc). Omit → built-in cascade where priority:high and priority:urgent TIE at tier 1 (a positional list cannot express that tie).
 budget:
   max_issues: 3
   stop_at: null
@@ -111,7 +112,7 @@ _do_show() {
 
   # Nested key validation
   _assert_keys '.select'     'select'     bucket exclude_labels require_readiness
-  _assert_keys '.order'      'order'      by
+  _assert_keys '.order'      'order'      by priority_labels
   _assert_keys '.budget'     'budget'     max_issues stop_at
   _assert_keys '.base'       'base'       strategy
   _assert_keys '.on_failure' 'on_failure' policy skip_dependents
@@ -150,6 +151,29 @@ _do_show() {
   ob_val=$(yq e '.order.by | join(",")' "$ENV_FILE" 2>/dev/null)
   [[ "$ob_val" == "priority-label,created-asc" ]] \
     || _block "order.by must be [priority-label, created-asc] in v1 (got '$ob_val')"
+
+  # order.priority_labels (OPTIONAL): present → non-empty !!seq of !!str
+  local pl_type
+  pl_type=$(yq e '.order.priority_labels | type' "$ENV_FILE" 2>/dev/null)
+  if [[ "$pl_type" != "!!null" ]]; then
+    [[ "$pl_type" == "!!seq" ]] \
+      || _block "order.priority_labels must be a YAML list when present (got type '$pl_type')"
+    local pl_len
+    pl_len=$(yq e '.order.priority_labels | length' "$ENV_FILE" 2>/dev/null)
+    [[ "$pl_len" =~ ^[1-9][0-9]*$ ]] \
+      || _block "order.priority_labels present but empty — positional list needs >=1 entry"
+    local pe_type
+    while IFS= read -r pe_type; do
+      [[ "$pe_type" == "!!str" ]] \
+        || _block "order.priority_labels entries must be strings (got type '$pe_type')"
+    done < <(yq e '.order.priority_labels[] | type' "$ENV_FILE" 2>/dev/null)
+    local pe_val pe_trim
+    while IFS= read -r pe_val; do
+      pe_trim=$(printf '%s' "$pe_val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      [[ -n "$pe_trim" && "$pe_val" == "$pe_trim" ]] \
+        || _block "order.priority_labels entries must be non-empty strings without surrounding whitespace"
+    done < <(yq e '.order.priority_labels[]' "$ENV_FILE" 2>/dev/null)
+  fi
 
   mx=$(yq e '.budget.max_issues' "$ENV_FILE" 2>/dev/null)
   local mx_type
@@ -190,6 +214,11 @@ _do_show() {
   _emit "EXCLUDE_LABELS:"    "$(yq e '.select.exclude_labels | join(",")' "$ENV_FILE")"
   _emit "REQUIRE_READINESS:" "$rr"
   _emit "ORDER_BY:"          "$(yq e '.order.by | join(",")' "$ENV_FILE")"
+  local pl_present
+  pl_present=$(yq e '.order.priority_labels | type' "$ENV_FILE" 2>/dev/null)
+  if [[ "$pl_present" != "!!null" ]]; then
+    _emit "PRIORITY_LABELS:" "$(yq e '.order.priority_labels | join(",")' "$ENV_FILE")"
+  fi
   _emit "MAX_ISSUES:"        "$mx"
   _emit "STOP_AT:"           "$sa"
   _emit "BASE_STRATEGY:"     "$bs"
@@ -228,6 +257,14 @@ _do_plan() {
   exclude_labels=$(echo "$show_out" | grep "^EXCLUDE_LABELS:" | awk '{print $2}')
   require_readiness=$(echo "$show_out" | grep "^REQUIRE_READINESS:" | awk '{print $2}')
   order_by=$(echo "$show_out" | grep "^ORDER_BY:" | awk '{print $2}')
+  # priority_labels (optional): _emit quotes ':'-bearing values → strip before split
+  local pl_raw
+  local -a priority_labels_arr=()
+  pl_raw=$(printf '%s\n' "$show_out" | sed -n 's/^PRIORITY_LABELS: //p')
+  pl_raw="${pl_raw#\"}"; pl_raw="${pl_raw%\"}"
+  if [[ -n "$pl_raw" ]]; then
+    IFS=',' read -ra priority_labels_arr <<< "$pl_raw"
+  fi
   local git_root
   git_root="$(_repo_root)"
 
@@ -379,20 +416,37 @@ _do_plan() {
     created_at=$(echo "$created_json" | jq -r --arg n "$issue_num" \
       '.[] | select(.number == ($n | tonumber)) | .createdAt // ""' 2>/dev/null)
 
-    # Priority tier calculation
-    local tier=3
-    IFS=',' read -ra issue_label_arr <<< "$labels"
-    local lbl
-    for lbl in "${issue_label_arr[@]}"; do
-      lbl=$(echo "$lbl" | xargs)
-      if [[ "$lbl" == "p0" ]]; then tier=0; break; fi
-      if [[ "$lbl" == "priority:high" || "$lbl" == "priority:urgent" ]]; then
-        [[ $tier -gt 1 ]] && tier=1
-      fi
-      if [[ "$lbl" == "bug" ]]; then
-        [[ $tier -gt 2 ]] && tier=2
-      fi
-    done
+    # Priority tier — dual-path (present=index lookup, absent=cascade)
+    local tier
+    if [[ ${#priority_labels_arr[@]} -gt 0 ]]; then
+      # PRESENT: tier = lowest list index the issue carries; none → no-priority tier
+      IFS=',' read -ra issue_label_arr <<< "$labels"
+      tier=${#priority_labels_arr[@]}
+      local i lbl
+      for (( i=0; i<${#priority_labels_arr[@]}; i++ )); do
+        for lbl in "${issue_label_arr[@]}"; do
+          lbl=$(echo "$lbl" | xargs)
+          if [[ "$lbl" == "${priority_labels_arr[$i]}" ]]; then
+            tier=$i; break 2
+          fi
+        done
+      done
+    else
+      # ABSENT: existing cascade UNCHANGED (preserves high==urgent tie)
+      tier=3
+      IFS=',' read -ra issue_label_arr <<< "$labels"
+      local lbl
+      for lbl in "${issue_label_arr[@]}"; do
+        lbl=$(echo "$lbl" | xargs)
+        if [[ "$lbl" == "p0" ]]; then tier=0; break; fi
+        if [[ "$lbl" == "priority:high" || "$lbl" == "priority:urgent" ]]; then
+          [[ $tier -gt 1 ]] && tier=1
+        fi
+        if [[ "$lbl" == "bug" ]]; then
+          [[ $tier -gt 2 ]] && tier=2
+        fi
+      done
+    fi
 
     included_issues+=("${tier}|${created_at}|${issue_num}|${title}|${labels}")
   done < <(echo "$assigned_raw")
@@ -442,14 +496,22 @@ _do_plan() {
       created=$(echo "$entry" | cut -d'|' -f2)
       num=$(echo "$entry" | cut -d'|' -f3)
       title=$(echo "$entry" | cut -d'|' -f4)
-      # Determine tier label for output
+      # Determine tier label for output — dual-path mirrors Site A
       local tier_label
-      case "$tier" in
-        0) tier_label="p0" ;;
-        1) tier_label="priority:high/urgent" ;;
-        2) tier_label="bug" ;;
-        *) tier_label="none" ;;
-      esac
+      if [[ ${#priority_labels_arr[@]} -gt 0 ]]; then
+        if [[ "$tier" -lt ${#priority_labels_arr[@]} ]]; then
+          tier_label="${priority_labels_arr[$tier]}"
+        else
+          tier_label="none"
+        fi
+      else
+        case "$tier" in
+          0) tier_label="p0" ;;
+          1) tier_label="priority:high/urgent" ;;
+          2) tier_label="bug" ;;
+          *) tier_label="none" ;;
+        esac
+      fi
       # Quote title if it contains ':'
       local display_title="$title"
       if [[ "$display_title" == *:* ]]; then display_title="\"${display_title}\""; fi
