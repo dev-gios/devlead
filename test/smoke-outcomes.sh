@@ -197,9 +197,13 @@ EOF
     || fail "O1 REQ-4: aging wrong — got: $line"
 
   local digest; digest="$(digest_file "$home")"
-  grep -q "PRs DevLead: 1 merged, 1 closed-sin-merge, 1 pending (más viejo: 8 días) — merge-rate 50%" "$digest" \
-    && pass "O1 REQ-6: digest has-data line matches exact copy" \
+  grep -q "PRs DevLead: 1 merged, 1 closed-sin-merge, 1 changes-requested, 1 pending (más viejo: 8 días) — merge-rate 50%" "$digest" \
+    && pass "O1 REQ-6: digest has-data line matches exact copy (incl. changes-requested count — JD FIX 1)" \
     || fail "O1 REQ-6: digest has-data line missing/mismatched — $(grep "$repo" "$digest" || true)"
+
+  grep -qE "PRs DevLead:.*changes-requested" "$digest" \
+    && pass "O1 JD FIX 1: changes-requested count is present in the digest summary line (previously silently dropped)" \
+    || fail "O1 JD FIX 1: changes-requested count missing from digest summary line"
 }
 
 # ===========================================================================
@@ -263,8 +267,8 @@ o4_gh_failed() {
   run_sweep "$home" >/dev/null
 
   local digest; digest="$(digest_file "$home")"
-  grep -q "no medible — gh pr list falló o devolvió vacío\." "$digest" \
-    && pass "O4 REQ-6: gh-failed prints exact honest line" \
+  grep -q "no medible — gh pr list falló\." "$digest" \
+    && pass "O4 REQ-6: gh-failed prints exact honest line (JD FIX 5: corrected wording, no longer claims 'o devolvió vacío')" \
     || fail "O4 REQ-6: gh-failed line missing — $(grep "$repo" "$digest" || true)"
 
   local key jf; key="$(repo_key "$repo")"; jf="$home/.devlead/outcomes/${key}.jsonl"
@@ -310,7 +314,7 @@ EOF
   grep -q -- "- $r_bl: no medible — plan-blocked; sin snapshot de PRs\." "$digest" && pass "O5 plan-blocked line present" || fail "O5 plan-blocked line missing"
   grep -q -- "- $r_pa: no medible — plan-paused; sin snapshot de PRs\." "$digest" && pass "O5 plan-paused line present" || fail "O5 plan-paused line missing"
   grep -q -- "- $r_er: no medible — plan-error; sin snapshot de PRs\." "$digest" && pass "O5 plan-error line present" || fail "O5 plan-error line missing"
-  grep -q -- "- $r_in: PRs DevLead: 1 merged, 0 closed-sin-merge, 0 pending" "$digest" && pass "O5 included/has-data line present" || fail "O5 included/has-data line missing"
+  grep -q -- "- $r_in: PRs DevLead: 1 merged, 0 closed-sin-merge, 0 changes-requested, 0 pending" "$digest" && pass "O5 included/has-data line present" || fail "O5 included/has-data line missing"
 
   local outcomes_lines; outcomes_lines="$(sed -n '/^## Outcomes/,$p' "$digest" | grep -c '^- ')"
   [[ "$outcomes_lines" -eq 8 ]] && pass "O5 REQ-6: all 8 repos have exactly one Outcomes line each, none silently omitted" \
@@ -375,7 +379,7 @@ EOF
   echo "$sectionA" | grep -q '\*\*STATUS: included\*\*' && echo "$sectionA" | grep -q '~~~' \
     && pass "O7 REQ-8: repo A plan section (STATUS: included + fenced plan) unchanged despite reckoner failure" \
     || fail "O7 REQ-8: repo A plan section corrupted — $sectionA"
-  grep -q -- "- $r_a: no medible — gh pr list falló o devolvió vacío\." "$digest" \
+  grep -q -- "- $r_a: no medible — gh pr list falló\." "$digest" \
     && pass "O7 REQ-8: repo A Outcomes line honestly reports reckoner failure" \
     || fail "O7 REQ-8: repo A Outcomes line missing/wrong"
   grep -q -- "- $r_b: PRs DevLead: 1 merged" "$digest" \

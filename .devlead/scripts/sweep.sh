@@ -44,9 +44,10 @@ _ensure_auth() {
   fi
 
   # Step 3: gh auth token CLI
+  # FIX 7: close fd 4 for this subprocess — it never writes to it.
   local gh_tok
   if command -v gh &>/dev/null; then
-    gh_tok="$(gh auth token 2>/dev/null || true)"
+    gh_tok="$(gh auth token 4>&- 2>/dev/null || true)"
     if [[ -n "$gh_tok" ]]; then
       _auth_token="$gh_tok"
       return 0
@@ -82,8 +83,10 @@ _sweep_repo() {
   fi
 
   # Gate 1: envelope check — ENROLLED?
+  # FIX 7: close fd 4 for this subprocess — it never writes to it, no need
+  # to leave the outer loop's outcomes-capture fd exposed to it.
   local check_out
-  check_out=$(bash "$ENVELOPE_BIN" check 2>/dev/null)
+  check_out=$(bash "$ENVELOPE_BIN" check 4>&- 2>/dev/null)
   local enrolled
   enrolled=$(echo "$check_out" | grep "^ENROLLED:" | awk '{print $2}')
   if [[ "$enrolled" != "true" ]]; then
@@ -116,8 +119,9 @@ _sweep_repo() {
   fi
 
   # All gates passed — run plan (read-only)
+  # FIX 7: close fd 4 for this subprocess (see Gate 1 note above).
   local plan_out
-  plan_out=$(GH_TOKEN="${_auth_token}" bash "$ENVELOPE_BIN" plan 2>/dev/null)
+  plan_out=$(GH_TOKEN="${_auth_token}" bash "$ENVELOPE_BIN" plan 4>&- 2>/dev/null)
 
   # FIX 1: Classify by POSITIVE success shape, not by absence of "blocked".
   # Genuine success: envelope.sh plan emits "=== DEVLEAD ENVELOPE PLAN" header,
@@ -184,8 +188,19 @@ _reckon_repo() {
 
   local _root _key
   _root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$repo_path")"
-  _key="${_root//\//_}"
+  # FIX 4: collision-safe path flattening — escape existing underscores FIRST
+  # (`_` -> `__`), THEN replace `/` -> `_`. Naive slash-to-underscore alone
+  # would collide e.g. /x/foo_bar and /x/foo/bar into the same key, silently
+  # merging two different repos' historical PR-outcome JSONL data. This
+  # intentionally diverges from the (also-collision-prone) `_dl_key`
+  # convention in arranquemos.md/cerremos.md — an append-only history file
+  # merging two repos' data is a worse failure mode than a journal ending up
+  # in the wrong (but still-inspectable) file, so the stricter derivation is
+  # scoped to this new outcomes store only.
+  _key="${_root//_/__}"
+  _key="${_key//\//_}"
 
+  # FIX 7: close fd 4 for this subprocess (see Gate 1 note in _sweep_repo).
   local buckets _gh_rc
   buckets=$(GH_TOKEN="$tok" gh pr list --state all \
     --json state,headRefName,reviewDecision,mergedAt \
@@ -196,11 +211,11 @@ _reckon_repo() {
           elif .reviewDecision == "CHANGES_REQUESTED" then "changes-requested"
           else                                             "pending"
           end' \
-    --limit 200 2>/dev/null)
+    --limit 200 4>&- 2>/dev/null)
   _gh_rc=$?
 
   if (( _gh_rc != 0 )); then
-    echo "- $repo_path: no medible — gh pr list falló o devolvió vacío." >&4
+    echo "- $repo_path: no medible — gh pr list falló." >&4
     return 0
   fi
 
@@ -222,24 +237,49 @@ _reckon_repo() {
   # the codebase, which only ever FORMATS with `date`); acceptable for the
   # Linux/systemd sweep target — `|| echo "$now"` degrades a bad timestamp
   # to age 0 instead of crashing.
-  local oldest_days=0
+  #
+  # FIX 2: this second `gh pr list` call MUST fail honest, mirroring the
+  # primary classification call above (real exit-status check, no masking
+  # `|| true`). If it fails, `oldest_days` must NOT silently stay at its
+  # initialized 0 — that would fabricate "0 días" into both the digest and
+  # the permanent JSONL history. `oldest_ok=0` routes both outputs to the
+  # same "n/a" honest marker already established for merge-rate.
+  # (Deliberately NOT consolidated with the primary classification call
+  # above: doing so would require encoding bucket+updatedAt as a combined
+  # per-line token and re-parsing it in bash, which risks reintroducing the
+  # nullable-field misclassification bug the CRITICAL-1 comment above
+  # forbids. Left as a documented follow-up, not done here.)
+  local oldest_days=0 oldest_ok=1
   if (( attributable > 0 )); then
-    local pending_upds now
+    local pending_upds now _aging_rc
     pending_upds=$(GH_TOKEN="$tok" gh pr list --state open \
       --json state,headRefName,reviewDecision,mergedAt,updatedAt \
       -q '.[]
           | select(.headRefName | test("^(feat|fix|chore|docs|refactor|perf|test)/issue-[0-9]+-"))
           | select(.mergedAt == null and .state != "CLOSED" and .reviewDecision != "CHANGES_REQUESTED")
           | .updatedAt' \
-      --limit 200 2>/dev/null || true)
-    now=$(date -u +%s)
-    while IFS= read -r _u; do
-      [[ -z "$_u" ]] && continue
-      local upd d
-      upd=$(date -u -d "$_u" +%s 2>/dev/null || echo "$now")
-      d=$(( (now - upd) / 86400 ))
-      (( d > oldest_days )) && oldest_days=$d
-    done <<< "$pending_upds"
+      --limit 200 4>&- 2>/dev/null)
+    _aging_rc=$?
+    if (( _aging_rc != 0 )); then
+      oldest_ok=0
+    else
+      now=$(date -u +%s)
+      while IFS= read -r _u; do
+        [[ -z "$_u" ]] && continue
+        local upd d
+        upd=$(date -u -d "$_u" +%s 2>/dev/null || echo "$now")
+        d=$(( (now - upd) / 86400 ))
+        (( d > oldest_days )) && oldest_days=$d
+      done <<< "$pending_upds"
+    fi
+  fi
+  local oldest_days_display oldest_days_field
+  if (( oldest_ok )); then
+    oldest_days_display="${oldest_days} días"
+    oldest_days_field="$oldest_days"
+  else
+    oldest_days_display="n/a"
+    oldest_days_field='"n/a"'
   fi
 
   # REQ-4 merge-rate — div-by-zero MUST be the literal string "n/a", never
@@ -259,15 +299,29 @@ _reckon_repo() {
   # all and therefore append no JSONL line (absence = never measured).
   local ts line
   ts="$(date -u +%FT%TZ)"
-  line=$(printf '{"ts":"%s","repo":"%s","merged":%d,"closed_sin_merge":%d,"changes_requested":%d,"pending":%d,"attributable":%d,"merge_rate":"%s","oldest_pending_days":%d}' \
-    "$ts" "$_root" "$merged" "$closed" "$changes" "$pending" "$attributable" "$merge_rate" "$oldest_days")
-  printf '%s\n' "$line" >> "$OUTCOMES_DIR/${_key}.jsonl"
+  # FIX 2: oldest_pending_days uses %s (not %d) so a failed aging query can
+  # emit the quoted string sentinel "n/a" instead of a fabricated 0 — this
+  # JSONL is an append-only text log with no strict-schema consumer
+  # elsewhere in the codebase (confirmed: nothing else parses these files),
+  # so a numeric-or-string field is safe here.
+  line=$(printf '{"ts":"%s","repo":"%s","merged":%d,"closed_sin_merge":%d,"changes_requested":%d,"pending":%d,"attributable":%d,"merge_rate":"%s","oldest_pending_days":%s}' \
+    "$ts" "$_root" "$merged" "$closed" "$changes" "$pending" "$attributable" "$merge_rate" "$oldest_days_field")
+
+  # FIX 6: the JSONL append can fail (permissions, disk full). Data WAS
+  # measured either way, so the digest line is still emitted — but on a
+  # failed append we surface an honest note that history was NOT persisted,
+  # rather than silently claiming success.
+  local _persist_note=""
+  if ! printf '%s\n' "$line" >> "$OUTCOMES_DIR/${_key}.jsonl"; then
+    echo "sweep: WARNING: failed to append outcomes JSONL for $repo_path (measured, not persisted)" >&2
+    _persist_note=" [aviso: no se pudo persistir el historial]"
+  fi
 
   # REQ-6 — exactly one outcomes line to fd 4.
   if (( attributable == 0 )); then
-    echo "- $repo_path: sin PRs de DevLead todavía" >&4
+    echo "- $repo_path: sin PRs de DevLead todavía${_persist_note}" >&4
   else
-    echo "- $repo_path: PRs DevLead: ${merged} merged, ${closed} closed-sin-merge, ${pending} pending (más viejo: ${oldest_days} días) — merge-rate ${merge_rate}" >&4
+    echo "- $repo_path: PRs DevLead: ${merged} merged, ${closed} closed-sin-merge, ${changes} changes-requested, ${pending} pending (más viejo: ${oldest_days_display}) — merge-rate ${merge_rate}${_persist_note}" >&4
   fi
   return 0
 }
@@ -339,13 +393,32 @@ for _repo in "${_repos[@]}"; do
   #                     command-substitution invocation without running
   #                     _sweep_repo a second time (which would double
   #                     `gh pr list` reads).
-  _outc_tmp="$(mktemp "$REPORTS_DIR/.outc-XXXXXX")"
-  _section="$( (
-    # Subshell so cd does not affect our loop
-    _sweep_repo "$_repo"
-  ) 4>"$_outc_tmp" )"
-  _outc="$(cat "$_outc_tmp")"
-  rm -f "$_outc_tmp"
+  # FIX 3 (JD): mktemp's exit status is checked explicitly. Previously, an
+  # unchecked mktemp failure killed the ENTIRE compound command below —
+  # including _sweep_repo's invocation — so the repo's pre-existing PLAN
+  # section silently vanished and got miscounted as excluded, with no error
+  # anywhere (exit 0). On failure here, _sweep_repo MUST still run normally
+  # (its fd-1 plan output must not be lost): fd 4 is redirected to /dev/null
+  # so its internal fd-4 writes don't error/block, and the outer loop emits
+  # its own honest outcomes line for this repo instead of trying to read a
+  # temp file that was never created.
+  _outc_tmp="$(mktemp "$REPORTS_DIR/.outc-XXXXXX" 2>/dev/null)"
+  _mktemp_rc=$?
+  if (( _mktemp_rc != 0 )) || [[ -z "$_outc_tmp" ]]; then
+    echo "sweep: WARNING: mktemp failed for outcomes tempfile ($_repo) — outcomes not measured this run" >&2
+    _section="$( (
+      # Subshell so cd does not affect our loop
+      _sweep_repo "$_repo"
+    ) 4>/dev/null )"
+    _outc="- $_repo: no medible — outcomes-tempfile-setup-failed."
+  else
+    _section="$( (
+      # Subshell so cd does not affect our loop
+      _sweep_repo "$_repo"
+    ) 4>"$_outc_tmp" )"
+    _outc="$(cat "$_outc_tmp")"
+    rm -f "$_outc_tmp"
+  fi
 
   # FIX 1: Only genuine "included" increments the included counter.
   if echo "$_section" | grep -q "^\*\*STATUS: included\*\*"; then
