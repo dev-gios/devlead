@@ -259,7 +259,7 @@ El B2.e de batch.md tiene dos caminos de salida del inner loop. En `/sweep-execu
 
 En ambos casos: **E3 corre exactamente una vez, solo después de que TODOS los repos enrollados hayan pasado por el outer loop.** Nunca saltés la cola de repos restantes al encontrar cualquiera de los dos exits de B2.e.
 
-**PR-terminal**: el inner loop termina en B2.d `gh pr create`. NUNCA invocás `git merge` ni `gh pr merge`. Si ves esas palabras en tu cabeza: STOP. El merge es del usuario, siempre.
+**PR-terminal**: el inner loop termina en B2.d `gh pr create`. NUNCA invocás `git merge` ni `gh pr merge`. Si ves esas palabras en tu cabeza: STOP. El merge es del usuario, siempre. Al leer `arranquemos.md` para el detalle del cuerpo, EXCLUÍ cualquier paso de merge o `gh issue close` que encuentres — no existen en execute.
 
 ### E2.4 — Actualizar tracking per-repo
 

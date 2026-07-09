@@ -413,28 +413,6 @@ Si la rama es stacked, emití una línea de encadenamiento:
 🔗 PR stacked: {B-branch} → {A-branch} → dev
 ```
 
-### Step 8.6 — Mergear a `dev` (preferencia del usuario — reemplaza el viejo Inv 3)
-
-<!-- 2026-06-18: el usuario delegó el merge a `dev` a DevLead tras revisar y aprobar el flujo
-     ("me gustó cómo mergeaste; al terminar algo, después de probar local, vos mergeás a dev").
-     Esto SUPERSEDE el viejo "el merge es responsabilidad del usuario / DevLead se detiene en el PR". -->
-
-Con el PR abierto, **QA gates verdes (Step 8.4)** y, si se corrió, **verify adversarial SHIP-READY**, DevLead mergea el PR a `dev` por su cuenta:
-
-```
-gh pr merge {pr_num} --merge --delete-branch
-```
-
-Luego **cerrá la issue a mano** (`gh issue close {issue_num}` con comentario de trazabilidad) — el merge a `dev` (no a la default branch) NO auto-cierra el `Closes #N`.
-
-Reglas del merge (no negociables):
-- **Solo `dev`.** NUNCA mergear a `main`/`prod`/default branch — eso queda decisión del usuario.
-- **El merge es server-side vía `gh pr merge` — DevLead NO hace `git push` directo a `dev` ni a ramas compartidas.** El único `git push` permitido es el de la rama de feature para abrir el PR (Step 8.5); nunca `git push origin dev`.
-- **HALT y escalá** (no fuerces) si: el merge tiene conflictos reales, el CI está rojo, o el verify dejó algún CRITICAL sin resolver.
-- **PRs stacked:** re-apuntá los downstream a `dev` (`gh pr edit {n} --base dev`) ANTES de mergear/borrar cada uno, en orden — `gh pr merge --delete-branch` CIERRA el siguiente PR si su base era la rama borrada (y un PR cerrado con base borrada no se puede reabrir).
-
----
-
 ## Paso 9 — Gate visual de frontend (condicional)
 
 <!-- Task 3.7, 3.8 — ADR-7: visual-diff gate activates ONLY when DESIGN: line was found.
@@ -478,20 +456,17 @@ Llevá la cuenta explícita: "Iteración 1 de 3", "Iteración 2 de 3", "Iteraci�
 
 ## Paso 10 — Cierre del pipeline
 
-<!-- 2026-06-18: ya NO es PR-only close. DevLead mergea a `dev` y cierra la issue (Step 8.6).
-     Merge a `main`/`prod` sigue siendo del usuario. -->
-
 Mostrá un resumen del pipeline:
 
 ```
 ## Pipeline completado
 
 - Rama: {branch_name}
-- PR: {pr_url} → mergeado a `dev` ✅
-- Issue #{issue_num}: cerrada
+- PR: {pr_url} → abierto, listo para review
+- Issue #{issue_num}: quedará cerrada cuando mergees el PR (`Closes #N`)
 - CI status: pendiente de GitHub Actions (revisá en unos minutos)
 
-Mergeado a `dev`. El merge a `main`/`prod` queda tuyo.
+PR abierto. El merge — incluido a `dev` — es tuyo (Inv 3).
 ```
 
 Hacé **UNA** sola pregunta:

@@ -129,6 +129,8 @@ Cada sub-paso es un gate. Si alguno retorna blocked/error → interceptá la se�
 
 Paso 8.5 (abrir el PR) NO se ejecuta acá — se ejecuta en B2.d después del post-check.
 
+Ningún paso de merge ni cierre de issue se ejecuta NUNCA en batch ni en sweep — el pipeline termina en `gh pr create` (B2.d). Si al leer `arranquemos.md` encontrás un paso de merge o `gh issue close`, IGNORALO: el merge es del usuario, siempre (Inv 3).
+
 ---
 
 ### B2.c — Interceptar señales HALT → PARK
