@@ -147,7 +147,16 @@ bootstrap_token_seed() {
   if [[ -f "$token_file" ]]; then
     local _perm
     _perm="$(stat -c '%a' "$token_file" 2>/dev/null || echo "")"
-    if [[ "$_perm" == "600" && -s "$token_file" ]]; then
+    if [[ -s "$token_file" ]]; then
+      if [[ "$_perm" == "600" ]]; then
+        return 0
+      fi
+      # Permission-only repair: existing content is valid, only the mode
+      # drifted. This does NOT require `gh` — repairing perms on content we
+      # already have is independent of seeding NEW content, which does need
+      # `gh` (see the fall-through below, reached only when missing/empty).
+      chmod 600 "$token_file" 2>/dev/null \
+        || echo "bootstrap: WARNING: failed to chmod 600 $token_file" >&2
       return 0
     fi
   fi
@@ -164,7 +173,12 @@ bootstrap_token_seed() {
     return 0
   fi
 
-  if printf '%s' "$_tok" > "$token_file"; then
+  # umask 077 inside a subshell closes the world/group-readable window that
+  # existed between file creation and the chmod 600 below — the file is born
+  # with restrictive perms instead of the default umask (typically 644) for
+  # the brief interval before chmod ran. Subshell keeps the umask change from
+  # leaking into the caller's shell (this file is sourced, never executed).
+  if ( umask 077 && printf '%s' "$_tok" > "$token_file" ); then
     chmod 600 "$token_file" 2>/dev/null \
       || echo "bootstrap: WARNING: failed to chmod 600 $token_file" >&2
   else

@@ -31,7 +31,16 @@ echo "Repo: $REPO_DIR"
 # ---------------------------------------------------------------------------
 _section "Scripts"
 bootstrap_symlinks "$REPO_DIR"
-_ok "~/.devlead/scripts/*.sh → symlinked (state, branch, ref-resolver, forbidden-check, devlead-active, envelope, sweep)"
+# bootstrap_symlinks ALWAYS returns 0 by design (degradation goes to stderr,
+# not the exit code — see bootstrap-lib.sh's return-0 contract ADR), so the
+# call above can never signal failure on its own. Spot-check one
+# representative symlink actually resolves before claiming success, mirroring
+# the gh-token check below (install.sh:86-91).
+if [[ -L "$DEVLEAD_DIR/scripts/state.sh" && -e "$DEVLEAD_DIR/scripts/state.sh" ]]; then
+  _ok "~/.devlead/scripts/*.sh → symlinked (state, branch, ref-resolver, forbidden-check, devlead-active, envelope, sweep)"
+else
+  _warn "~/.devlead/scripts/state.sh no resolvió — symlink farm degradado, revisá warnings arriba"
+fi
 
 _section "CLI"
 _ok "~/.local/bin/devlead → $REPO_DIR/.devlead/bin/devlead"
@@ -71,7 +80,14 @@ _section "systemd"
 
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 bootstrap_systemd "$REPO_DIR"
-_ok "~/.config/systemd/user/devlead-sweep.{service,timer} → symlinked"
+# Same reasoning as the Scripts section above: bootstrap_systemd ALWAYS
+# returns 0, so verify the actual end-state (one representative symlink
+# resolving) before printing _ok.
+if [[ -L "$SYSTEMD_USER_DIR/devlead-sweep.timer" && -e "$SYSTEMD_USER_DIR/devlead-sweep.timer" ]]; then
+  _ok "~/.config/systemd/user/devlead-sweep.{service,timer} → symlinked"
+else
+  _warn "~/.config/systemd/user/devlead-sweep.timer no resolvió — symlink degradado, revisá warnings arriba"
+fi
 
 _warn "Timer NOT auto-enabled (opt-in). Para activar el sweep diario a las 07:00:"
 _warn "  systemctl --user enable --now devlead-sweep.timer"

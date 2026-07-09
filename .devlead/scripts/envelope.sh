@@ -115,8 +115,21 @@ _do_optin() {
   local repo
   repo="$(_repo_root)"
 
+  # Inv 2 — re-derive live state, never assume from a prior run. Same dedup
+  # pattern used elsewhere in this codebase (e.g. devlead-active.sh): a plain
+  # grep -qxF against the repos file, not a remembered/hardcoded status.
+  local repos_file="$HOME/.devlead/autonomous-repos"
+  local _already_enrolled=false
+  if [[ -f "$repos_file" ]] && grep -qxF "$repo" "$repos_file" 2>/dev/null; then
+    _already_enrolled=true
+  fi
+
   if [[ ! -t 0 ]]; then
-    echo "SWEEP: not enrolled (non-interactive)"
+    if [[ "$_already_enrolled" == "true" ]]; then
+      echo "SWEEP: already enrolled (non-interactive)"
+    else
+      echo "SWEEP: not enrolled (non-interactive)"
+    fi
     return 0
   fi
 
@@ -127,7 +140,6 @@ _do_optin() {
   # both the accented and unaccented spelling are accepted (locked decision).
   case "${ans,,}" in
     y|yes|si|sí)
-      local repos_file="$HOME/.devlead/autonomous-repos"
       mkdir -p "$(dirname "$repos_file")"
       touch "$repos_file"
       grep -qxF "$repo" "$repos_file" 2>/dev/null || echo "$repo" >> "$repos_file"
@@ -136,14 +148,24 @@ _do_optin() {
       if systemctl --user is-enabled devlead-sweep.timer &>/dev/null; then
         timer_status="already-enabled"
       else
-        systemctl --user enable --now devlead-sweep.timer &>/dev/null || true
-        timer_status="enabled"
+        # Check the REAL exit status — a swallowed `|| true` here would print
+        # "enabled" even when systemctl failed (e.g. no user session, unit
+        # missing). Report honestly; never abort _do_optin on this failure.
+        if systemctl --user enable --now devlead-sweep.timer &>/dev/null; then
+          timer_status="enabled"
+        else
+          timer_status="enable-failed"
+        fi
       fi
       echo "SWEEP: enrolled"
       echo "TIMER: $timer_status"
       ;;
     *)
-      echo "SWEEP: not enrolled"
+      if [[ "$_already_enrolled" == "true" ]]; then
+        echo "SWEEP: already enrolled"
+      else
+        echo "SWEEP: not enrolled"
+      fi
       ;;
   esac
   return 0
