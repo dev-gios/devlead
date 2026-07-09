@@ -81,6 +81,7 @@ all_publish_targets() {
 .devlead/scripts/forbidden-check.sh
 .devlead/scripts/devlead-active.sh
 .devlead/scripts/envelope.sh
+.devlead/scripts/envelope-auth.sh
 .devlead/scripts/sweep.sh
 .local/bin/devlead
 .devlead/hooks/post-edit.sh
@@ -102,6 +103,7 @@ all_source_paths() {
 .devlead/scripts/forbidden-check.sh
 .devlead/scripts/devlead-active.sh
 .devlead/scripts/envelope.sh
+.devlead/scripts/envelope-auth.sh
 .devlead/scripts/sweep.sh
 .devlead/bin/devlead
 .claude/hooks/post-edit.sh
@@ -141,8 +143,8 @@ s1_fresh_publish() {
     if [[ ! -f "$dst" ]]; then all_real=false; note "S1 $dst missing entirely"; fi
     if [[ -f "$dst" ]] && ! cmp -s "$src" "$dst"; then all_match=false; note "S1 $dst content mismatch vs $src"; fi
   done
-  $all_real  && pass "S1 REQ-01: all 17 targets are real files (test -L false)" || fail "S1 REQ-01: at least one target is a symlink or missing"
-  $all_match && pass "S1 REQ-01: all 17 targets content-match source" || fail "S1 REQ-01: content mismatch on at least one target"
+  $all_real  && pass "S1 REQ-01: all 18 targets are real files (test -L false)" || fail "S1 REQ-01: at least one target is a symlink or missing"
+  $all_match && pass "S1 REQ-01: all 18 targets content-match source" || fail "S1 REQ-01: content mismatch on at least one target"
 
   local vf="$home/.devlead/VERSION"
   if [[ -f "$vf" ]] && grep -q "^SHA: $expect_sha$" "$vf" && grep -qE '^STAMPED: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' "$vf"; then
