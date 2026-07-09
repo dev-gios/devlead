@@ -367,7 +367,12 @@ El cwd ya es el repo target de esta issue (no devlead). Corré el guard estánda
 - Si no hay resultado, intentá correr `sdd-init` una vez para el repo target; si no es posible completarlo, seguí igual — el fallback de 8.3-SDD.3 ("si el repo target no tiene `sdd-init` corrido, el loop cae a Standard Mode sin bloquear") cubre ese caso.
 - Guardá `strict_tdd` y `test_command` del resultado — se reenvían en 8.3-SDD.3.
 
-`{target-key}` (usado en 8.3-SDD.2) = hash libre de colisión de la ruta absoluta canónica del repo target, mismo esquema que `sweep.sh` usa para su `{repo-key}` (ver `~/.devlead/scripts/sweep.sh`): `sha256sum` de `git rev-parse --show-toplevel`, primeros 20 caracteres hex. Para legibilidad, prefijalo con el basename del repo target: `{target-key} = "${basename}-$(git rev-parse --show-toplevel | sha256sum | cut -c1-20)"`. Al ser un hash, es libre de colisión por construcción — no hace falta desambiguación manual ni aviso al usuario.
+`{target-key}` (usado en 8.3-SDD.2) = hash libre de colisión de la ruta absoluta canónica del repo target, mismo esquema que `sweep.sh` usa para su `{repo-key}` (ver `~/.devlead/scripts/sweep.sh:190,205`): capturá la ruta con `git rev-parse --show-toplevel` y después pipeala con `printf '%s'` (nunca el output crudo del comando, que trae un newline final y produce un hash distinto) a `sha256sum`, primeros 20 caracteres hex. Para legibilidad, prefijalo con el basename del repo target:
+```
+_root="$(git rev-parse --show-toplevel)"
+{target-key} = "${basename}-$(printf '%s' "$_root" | sha256sum | cut -c1-20)"
+```
+Al ser un hash, es libre de colisión por construcción — no hace falta desambiguación manual ni aviso al usuario.
 
 **8.3-SDD.2 — Cadena de planificación: explore → propose → spec**
 

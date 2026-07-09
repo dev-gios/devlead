@@ -80,7 +80,7 @@ Comenzando run...
 
 Omití la línea `⚠️` si `K == 0`.
 
-**Guía de costo (D7, requisito, no nota informal):** cuando `K > 0`, `MAX_ISSUES` del repo (o de los repos) involucrado DEBERÍA estar en 1-2 — cada issue sin spec corre un ciclo SDD completo. Si el `MAX_ISSUES` configurado en el envelope de algún repo es mayor y no es intencional, agregá una línea de advertencia extra dentro del mismo bloque de preview de arriba (antes de "Comenzando run..."). Esta línea es **report-only, no bloqueante** — mismo patrón que la línea `⚠️ deps sin verificar` de este archivo: se muestra, no se espera respuesta, y el outer loop arranca igual sin confirmación.
+**Guía de costo (D7, requisito, no nota informal):** cuando `K > 0`, `MAX_ISSUES` del repo (o de los repos) involucrado DEBERÍA estar en 1-2 — cada issue sin spec corre un ciclo SDD completo. Si el `MAX_ISSUES` configurado en el envelope de algún repo es mayor y no es intencional, agregá una línea de advertencia extra dentro del mismo bloque de preview de arriba (antes de "Comenzando run..."). Esta línea es **report-only, no bloqueante** — mismo patrón que la línea `⚠️ deps sin verificar` de `batch.md:157` (heredada transitivamente vía B2.c, que este archivo invoca en E2.3): reporte no-bloqueante, sin esperar respuesta, y el outer loop arranca igual sin confirmación.
 
 Después de mostrar el preview, arrancá el outer loop **sin esperar confirmación**.
 

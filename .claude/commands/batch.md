@@ -156,7 +156,7 @@ Cuando cualquier sub-paso de B2.b retorna blocked o error, aplicá esta tabla:
 | `ref-resolver SPEC: none` (sin spec) | **Continuar** corriendo `Step 8.3-SDD` (ciclo SDD completo) con `SDD_MODE=autonomous` — OJO: el comportamiento de single-task para este caso YA NO es "implementación directa" (cambió con este mismo release, ver `arranquemos.md` Step 8.3-SDD); "igual que single-task" acá significa "corré el mismo Step 8.3-SDD que corre `/arranquemos`, sin la pausa de aprobación" | — |
 | `DEP-CHECK: unavailable` (del resolver) | **Continuar** — nunca PARK; anotá `"⚠️ deps sin verificar (gh ausente)"` junto al PR en B3 | ⚠️ Junto al PR |
 | Spec choca con código real (divergencia, Inv 5/7) | **PARK** "divergencia spec/código: {detalle}" | 🅿️ Aparcadas |
-| `Step 8.3-SDD` agotó su presupuesto interno (8 ciclos apply↔verify o 2 sin progreso) sin `sdd-verify` PASS, o con BLOCKER de judgment-day sin resolver | **PARK** con la razón exacta (última falla de verify, o BLOCKER pendiente) | 🅿️ Aparcadas |
+| `Step 8.3-SDD` agotó su `SDD_BUDGET` (8 ciclos apply↔verify o 2 sin progreso) sin `sdd-verify` PASS, o con BLOCKER de judgment-day sin resolver | **PARK** con la razón exacta (última falla de verify, o BLOCKER pendiente) | 🅿️ Aparcadas |
 | `gate-check.sh` falla | **PARK** con la razón exacta del gate | 🅿️ Aparcadas |
 | Gate visual > 3 iteraciones (Paso 9) | **PARK** "visual diff sin resolver tras 3 iteraciones" | 🅿️ Aparcadas |
 | Chrome MCP no disponible (gate visual) | **PARK** "gate visual no completable sin Chrome MCP" | 🅿️ Aparcadas |
