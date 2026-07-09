@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # DevLead installer
-# Crea symlinks desde este repo a sus ubicaciones globales.
-# Corré desde el directorio raíz del repo devlead.
+# Publica copias versionadas de este repo en sus ubicaciones globales (ya no
+# symlinks — ver REQ-01/README de devlead-pinned-release). Corré desde el
+# directorio raíz del repo devlead.
 # Uso: bash install.sh
 
 set -euo pipefail
@@ -25,25 +26,46 @@ echo "DevLead installer"
 echo "Repo: $REPO_DIR"
 
 # ---------------------------------------------------------------------------
+# ~/.devlead/SOURCE_REPO — durable anchor recording this checkout's absolute
+# path. Written EARLY, before any copy, mirroring `devlead upgrade`/`init`'s
+# ordering invariant (see bootstrap-lib.sh's _bootstrap_source_repo ADR):
+# install.sh is the ONLY caller that can seed this anchor with ZERO prior
+# state on a genuinely fresh machine, because it derives its own $REPO_DIR
+# (line ~9) directly rather than reading an anchor that doesn't exist yet —
+# tier-3 self-resolve in _bootstrap_source_repo is effectively dead code once
+# bootstrap-lib.sh itself is published as a copy, so this explicit tier-1
+# write is the sole first-anchor path (see devlead-pinned-release design).
+# ---------------------------------------------------------------------------
+_section "Source anchor"
+mkdir -p "$DEVLEAD_DIR"
+_SRC_REPO="$(_bootstrap_source_repo "$REPO_DIR")"
+printf '%s\n' "$_SRC_REPO" > "$DEVLEAD_DIR/SOURCE_REPO"
+_ok "~/.devlead/SOURCE_REPO → $_SRC_REPO"
+
+# ---------------------------------------------------------------------------
 # ~/.devlead/scripts/, ~/.local/bin/devlead, ~/.claude/commands/, ~/.devlead/hooks/
-# Delegated to bootstrap-lib.sh (shared with `devlead init`) — ONE symlink
-# farm, one place to fix. ln -sf is correct-or-recreated: safe to re-run.
+# Delegated to bootstrap-lib.sh (shared with `devlead init`/`devlead upgrade`)
+# — ONE copy-and-migrate primitive, one place to fix. Atomic temp+mv per
+# file, content-skip when unchanged, safe to re-run.
 # ---------------------------------------------------------------------------
 _section "Scripts"
 bootstrap_symlinks "$REPO_DIR"
 # bootstrap_symlinks ALWAYS returns 0 by design (degradation goes to stderr,
 # not the exit code — see bootstrap-lib.sh's return-0 contract ADR), so the
 # call above can never signal failure on its own. Spot-check one
-# representative symlink actually resolves before claiming success, mirroring
-# the gh-token check below (install.sh:86-91).
-if [[ -L "$DEVLEAD_DIR/scripts/state.sh" && -e "$DEVLEAD_DIR/scripts/state.sh" ]]; then
-  _ok "~/.devlead/scripts/*.sh → symlinked (state, branch, ref-resolver, forbidden-check, devlead-active, envelope, sweep)"
+# representative file actually published as a REAL file (not a leftover
+# symlink) before claiming success, mirroring the gh-token check below
+# (install.sh:~100).
+_scripts_ok=false
+if [[ -f "$DEVLEAD_DIR/scripts/state.sh" && ! -L "$DEVLEAD_DIR/scripts/state.sh" ]]; then
+  _ok "~/.devlead/scripts/*.sh → publicado (state, branch, ref-resolver, forbidden-check, devlead-active, envelope, sweep)"
+  _scripts_ok=true
 else
-  _warn "~/.devlead/scripts/state.sh no resolvió — symlink farm degradado, revisá warnings arriba"
+  _warn "~/.devlead/scripts/state.sh no se publicó como archivo real — revisá warnings arriba"
 fi
 
 _section "CLI"
-_ok "~/.local/bin/devlead → $REPO_DIR/.devlead/bin/devlead"
+_ok "~/.local/bin/devlead → copia publicada desde $REPO_DIR/.devlead/bin/devlead"
 
 if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
   _warn "~/.local/bin no está en tu PATH — agregá esta línea a tu shell rc:"
@@ -62,16 +84,16 @@ mkdir -p "$DEVLEAD_DIR/reports"
 _ok "~/.devlead/reports/ listo (sweep digests, se crean al primer devlead sweep)"
 
 # ---------------------------------------------------------------------------
-# ~/.claude/commands/*.md — ya symlinkeados por bootstrap_symlinks arriba
+# ~/.claude/commands/*.md — ya publicados por bootstrap_symlinks arriba
 # ---------------------------------------------------------------------------
 _section "Slash command"
-_ok "~/.claude/commands/*.md → symlinked (arranquemos, cerremos, batch, sweep-execute)"
+_ok "~/.claude/commands/*.md → publicado (arranquemos, cerremos, batch, sweep-execute)"
 
 # ---------------------------------------------------------------------------
-# ~/.devlead/hooks/ — ya symlinkeados por bootstrap_symlinks arriba
+# ~/.devlead/hooks/ — ya publicados por bootstrap_symlinks arriba
 # ---------------------------------------------------------------------------
 _section "Hooks"
-_ok "~/.devlead/hooks/*.sh → symlinked (post-edit, gate-check)"
+_ok "~/.devlead/hooks/*.sh → publicado (post-edit, gate-check)"
 
 # ---------------------------------------------------------------------------
 # systemd user units — Nivel 2 sweep timer (opt-in; NOT auto-enabled)
@@ -81,12 +103,40 @@ _section "systemd"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 bootstrap_systemd "$REPO_DIR"
 # Same reasoning as the Scripts section above: bootstrap_systemd ALWAYS
-# returns 0, so verify the actual end-state (one representative symlink
-# resolving) before printing _ok.
-if [[ -L "$SYSTEMD_USER_DIR/devlead-sweep.timer" && -e "$SYSTEMD_USER_DIR/devlead-sweep.timer" ]]; then
-  _ok "~/.config/systemd/user/devlead-sweep.{service,timer} → symlinked"
+# returns 0, so verify the actual end-state (one representative unit
+# published as a REAL file, not a leftover symlink) before printing _ok.
+_systemd_ok=false
+if [[ -f "$SYSTEMD_USER_DIR/devlead-sweep.timer" && ! -L "$SYSTEMD_USER_DIR/devlead-sweep.timer" ]]; then
+  _ok "~/.config/systemd/user/devlead-sweep.{service,timer} → publicado"
+  _systemd_ok=true
 else
-  _warn "~/.config/systemd/user/devlead-sweep.timer no resolvió — symlink degradado, revisá warnings arriba"
+  _warn "~/.config/systemd/user/devlead-sweep.timer no se publicó como archivo real — revisá warnings arriba"
+fi
+
+# ---------------------------------------------------------------------------
+# ~/.devlead/VERSION — written LAST, only if the Scripts + systemd publish
+# above both passed their spot-check (mirrors `devlead upgrade`'s set-level
+# atomicity: a failed/partial publish must never advance the version stamp;
+# a subsequent `devlead upgrade` retries and heals it). REQ-06.
+# ---------------------------------------------------------------------------
+_section "Version"
+if [[ "$_scripts_ok" == "true" && "$_systemd_ok" == "true" ]]; then
+  _HEAD_SHA="$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+  if [[ -n "$_HEAD_SHA" ]]; then
+    _HEAD_BRANCH="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    [[ -z "$_HEAD_BRANCH" ]] && _HEAD_BRANCH="HEAD"
+    _STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    {
+      echo "SHA: $_HEAD_SHA"
+      echo "BRANCH: $_HEAD_BRANCH"
+      echo "STAMPED: $_STAMP"
+    } > "$DEVLEAD_DIR/VERSION"
+    _ok "~/.devlead/VERSION → $_HEAD_SHA ($_STAMP)"
+  else
+    _warn "no se pudo resolver el HEAD sha de $REPO_DIR — ~/.devlead/VERSION no se escribió (correrá devlead upgrade después)"
+  fi
+else
+  _warn "publish incompleto — ~/.devlead/VERSION no se escribió (correrá devlead upgrade después)"
 fi
 
 _warn "Timer NOT auto-enabled (opt-in). Para activar el sweep diario a las 07:00:"
@@ -204,7 +254,7 @@ echo "             ~/.devlead/scripts/ref-resolver.sh"
 echo "             ~/.devlead/scripts/forbidden-check.sh"
 echo "             ~/.devlead/scripts/envelope.sh"
 echo "             ~/.devlead/scripts/sweep.sh"
-echo "  CLI:       ~/.local/bin/devlead → devlead <init|plan|check|show|sweep>"
+echo "  CLI:       ~/.local/bin/devlead → devlead <init|upgrade|plan|check|show|sweep>"
 echo "  Hooks:     ~/.devlead/hooks/post-edit.sh"
 echo "             ~/.devlead/hooks/gate-check.sh"
 echo "  Systemd:   ~/.config/systemd/user/devlead-sweep.service"
@@ -214,4 +264,5 @@ echo "             ~/.claude/commands/cerremos.md"
 echo "             ~/.claude/commands/batch.md"
 echo "             ~/.claude/commands/sweep-execute.md"
 echo "  Settings:  ~/.claude/settings.json (hooks mergeados)"
+echo "  Version:   ~/.devlead/SOURCE_REPO, ~/.devlead/VERSION (devlead upgrade re-publica y re-estampa)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
