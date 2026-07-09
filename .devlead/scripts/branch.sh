@@ -4,8 +4,10 @@
 # Structured stdout contract (KEY: value). Always exits 0.
 # Operates on $PWD (the user's work repo).
 #
-# Usage: branch.sh <issue-number> "<issue-title>" <type>
+# Usage: branch.sh <issue-number> "<issue-title>" <type> [<dep-num>] [<integration-branch>]
 #   <type> ∈ {feat, fix, chore, docs, refactor, perf, test} (default: feat)
+#   <dep-num>: optional predecessor issue number (stacked PR chain)
+#   <integration-branch>: optional cut-point/PR-base branch (default: dev)
 #
 # Output:
 #   BRANCH: <name>
@@ -28,7 +30,7 @@ _gap() {
 # Usage guard
 # ---------------------------------------------------------------------------
 if [[ $# -lt 3 ]]; then
-  echo "Usage: branch.sh <issue-number> \"<issue-title>\" <type>" >&2
+  echo "Usage: branch.sh <issue-number> \"<issue-title>\" <type> [<dep-num>] [<integration-branch>]" >&2
   echo "  <type>: feat|fix|chore|docs|refactor|perf|test" >&2
   exit 1
 fi
@@ -37,6 +39,7 @@ ISSUE_NUM="$1"
 ISSUE_TITLE="$2"
 TYPE="$3"
 DEP_NUM="${4:-}"
+INTEGRATION_BRANCH="${5:-dev}"
 
 # Validate type — default to feat if unknown
 _valid_types="feat fix chore docs refactor perf test"
@@ -113,43 +116,36 @@ if [[ -n "$DEP_NUM" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Base ref resolution: nearest tag on dev (ADR-4 fallback chain)
+# Base ref resolution: nearest tag on $INTEGRATION_BRANCH (ADR-4 fallback chain)
 # ---------------------------------------------------------------------------
 if [[ -z "$BASE_REF" ]]; then
   BASE_REF=""
   BASE_GAP=""
 
-  # Primary: nearest tag reachable from origin/dev
-  _tag=$(git describe --tags --abbrev=0 origin/dev 2>/dev/null) || _tag=""
+  # Primary: nearest tag reachable from origin/$INTEGRATION_BRANCH
+  _tag=$(git describe --tags --abbrev=0 "origin/$INTEGRATION_BRANCH" 2>/dev/null) || _tag=""
 
   if [[ -n "$_tag" ]]; then
     BASE_REF="$_tag"
   else
-    # Fallback 1: git describe against local dev branch
-    _tag=$(git describe --tags --abbrev=0 dev 2>/dev/null) || _tag=""
+    # Fallback 1: git describe against local integration branch
+    _tag=$(git describe --tags --abbrev=0 "$INTEGRATION_BRANCH" 2>/dev/null) || _tag=""
     if [[ -n "$_tag" ]]; then
       BASE_REF="$_tag"
-      BASE_GAP="no tags on origin/dev, used local dev tag"
+      BASE_GAP="no tags on origin/$INTEGRATION_BRANCH, used local $INTEGRATION_BRANCH tag"
     else
-      # Fallback 2: origin/dev HEAD (no tags at all on dev)
-      _dev_ref=$(git rev-parse --short origin/dev 2>/dev/null) || _dev_ref=""
+      # Fallback 2: origin/$INTEGRATION_BRANCH HEAD (no tags at all)
+      _dev_ref=$(git rev-parse --short "origin/$INTEGRATION_BRANCH" 2>/dev/null) || _dev_ref=""
       if [[ -n "$_dev_ref" ]]; then
-        BASE_REF="origin/dev"
-        BASE_GAP="no tags on dev, using HEAD of origin/dev"
+        BASE_REF="origin/$INTEGRATION_BRANCH"
+        BASE_GAP="no tags on $INTEGRATION_BRANCH, using HEAD of origin/$INTEGRATION_BRANCH"
       else
-        # Fallback 3: default branch from remote HEAD
-        _default=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null) || _default=""
-        if [[ -n "$_default" ]]; then
-          BASE_REF="${_default##*/}"
-          BASE_GAP="dev branch not found, using default branch (${BASE_REF})"
-        else
-          # Nothing usable — blocked
-          echo "BRANCH: $BRANCH_NAME"
-          echo "BASE:   "
-          echo "STATUS: blocked"
-          echo "GAP:    dev branch not found and no fallback ref available"
-          exit 0
-        fi
+        # Honest-gap: integration branch not found — never guess the repo default branch
+        echo "BRANCH: $BRANCH_NAME"
+        echo "BASE:   "
+        echo "STATUS: blocked"
+        echo "GAP:    integration branch '$INTEGRATION_BRANCH' not found — declare base.integration_branch or create it (refusing to guess default branch)"
+        exit 0
       fi
     fi
   fi

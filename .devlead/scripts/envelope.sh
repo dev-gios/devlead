@@ -18,7 +18,7 @@ ENV_FILE="$(_repo_root)/.devlead/envelope.yml"
 # LOCKED schema whitelists (D5)
 _TOP="version enabled select order budget base forbidden_zones on_failure merge report"
 # nested: select{bucket exclude_labels require_readiness} order{by} budget{max_issues stop_at}
-#         base{strategy} on_failure{policy skip_dependents} merge{mode} report{to}
+#         base{strategy integration_branch} on_failure{policy skip_dependents} merge{mode} report{to}
 
 _emit() {
   # Quote values bearing ':' or newline so KEY:value stays parseable
@@ -100,6 +100,7 @@ budget:
   stop_at: null
 base:
   strategy: nearest-tag
+  # integration_branch: dev  # OPTIONAL, default dev
 forbidden_zones: inherit
 on_failure:
   policy: park-and-continue
@@ -320,7 +321,7 @@ _do_show() {
   _assert_keys '.select'     'select'     bucket exclude_labels require_readiness
   _assert_keys '.order'      'order'      by priority_labels
   _assert_keys '.budget'     'budget'     max_issues stop_at
-  _assert_keys '.base'       'base'       strategy
+  _assert_keys '.base'       'base'       strategy integration_branch
   _assert_keys '.on_failure' 'on_failure' policy skip_dependents
   _assert_keys '.merge'      'merge'      mode
   _assert_keys '.report'     'report'     to
@@ -428,6 +429,9 @@ _do_show() {
   _emit "MAX_ISSUES:"        "$mx"
   _emit "STOP_AT:"           "$sa"
   _emit "BASE_STRATEGY:"     "$bs"
+  local ib
+  ib=$(yq e '.base.integration_branch // "dev"' "$ENV_FILE" 2>/dev/null)
+  _emit "INTEGRATION_BRANCH:" "$ib"
   _emit "FORBIDDEN_ZONES:"   "inherit"
   _emit "ON_FAILURE_POLICY:" "$op"
   _emit "SKIP_DEPENDENTS:"   "$sd"

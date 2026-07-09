@@ -313,16 +313,12 @@ Determiná el tipo a partir de las labels de la issue:
 - `chore`, `maintenance` → `chore`
 - sin label o `enhancement`, `feature` → `feat`
 
-Si Step 8.1 emitió `DEPENDS-ON: {N}`, pasá ese número como 4to argumento:
+Antes de invocar `branch.sh`, resolvé `{integration_branch}`: corré `bash ~/.devlead/scripts/envelope.sh show` y extraé la línea `INTEGRATION_BRANCH:` (si `_emit` la citó entre comillas por contener `:`, quitá las comillas). Si la línea no aparece o el output es `STATUS: blocked`, usá `dev` como default. Guardá el valor resuelto — se reutiliza en Step 8.5 sin volver a resolverlo.
+
+Invocá `branch.sh` con los 5 argumentos posicionales, siempre en una sola forma de llamado. Si Step 8.1 emitió `DEPENDS-ON: {N}`, pasalo como 4to argumento; si no, dejá el 4to argumento vacío (`""`) para que `{integration_branch}` mantenga la posición 5:
 
 ```
-bash ~/.devlead/scripts/branch.sh {issue_num} "{issue_title}" {type} {dep_num}
-```
-
-Si no hubo `DEPENDS-ON:`, invocá con 3 argumentos (comportamiento actual, sin cambios):
-
-```
-bash ~/.devlead/scripts/branch.sh {issue_num} "{issue_title}" {type}
+bash ~/.devlead/scripts/branch.sh {issue_num} "{issue_title}" {type} {dep_num_or_empty} {integration_branch}
 ```
 
 Capturá del output: `BRANCH:`, `STATUS:`, y `STACKED:` (si aparece).
@@ -486,10 +482,10 @@ gh pr create --base {A-branch} --title "{conventional_commit_title}" --body "Clo
 {qué se puede verificar}"
 ```
 
-Si no hubo `STACKED:`, el comando queda exactamente como hoy (sin `--base`):
+Si no hubo `STACKED:` (PR raíz, no encadenado), el comando SIEMPRE incluye `--base {integration_branch}` — reusá el valor resuelto en Step 8.2, no vuelvas a leer `envelope.sh show`. Nunca dejes que `gh pr create` resuelva la base implícitamente contra el default branch del repo:
 
 ```
-gh pr create --title "{conventional_commit_title}" --body "Closes #{issue_num}
+gh pr create --base {integration_branch} --title "{conventional_commit_title}" --body "Closes #{issue_num}
 
 {si esta issue NO tenía Spec: — insertá acá la sección ## Intención completa, ver contenido exacto abajo}
 
