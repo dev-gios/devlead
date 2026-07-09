@@ -345,9 +345,80 @@ Si `/sdd-new` no está disponible en este contexto, coordiná la implementación
 
 Si en cualquier momento el spec choca con el estado real del código → **HALT**, es una divergencia (Inv 5). Mostrá el conflicto al usuario y esperá decisión.
 
-**Si NO hay spec:**
+### Step 8.3-SDD — Ciclo SDD completo por issue (si NO hay spec)
 
-Implementá directamente aplicando las convenciones del proyecto (clean arch, commits por comportamiento, tests inline con el código).
+<!-- D1: el branch sin spec deja de ser implementación directa y pasa a correr
+     el mismo chain de fases que /sdd-loop (~/.claude/commands/sdd-loop.md),
+     delegando a los sub-agentes sdd-* que ya define el contrato del
+     orquestador SDD en ~/.claude/CLAUDE.md. Ningún motor nuevo: es prosa que
+     invoca el mecanismo de delegación existente. batch.md y sweep-execute.md
+     referencian esta subsección POR NOMBRE (ADR-1 single-source) — no la
+     reprosean. El branch "SÍ hay spec" de arriba queda intacto (Inv 7). -->
+
+`SDD_MODE` gobierna esta subsección: `attended` cuando corre desde `/arranquemos` (este archivo, invocación directa) — habilita la pausa de aprobación de 8.3-SDD.4. `autonomous` cuando corre vía `batch.md` (Delta 1: "skip Paso 7 / sin confirmación por issue") o `sweep-execute.md` (Delta 1: "skip B0 completo") — salta 8.3-SDD.4 sin pausa, el PR es el único gate de intención. No hay flag nuevo: es la misma distinción implícita attended/autonomous que ya gobierna el skip de Paso 7 en batch (D4).
+
+Si `SDD_MODE = attended`, mostrá esta línea antes de arrancar 8.3-SDD.1 (D7 — señal de costo):
+> Esta issue no tiene `Spec:` — corro un ciclo SDD completo (genero la intención). Es más caro que implementar directo.
+
+**8.3-SDD.1 — SDD Init Guard (repo target)**
+
+El cwd ya es el repo target de esta issue (no devlead). Corré el guard estándar contra ESE repo:
+- `mem_search(query: "sdd-init/{target-project}", project: "{target-project}")`, donde `{target-project}` = basename del repo target (derivado de `git rev-parse --show-toplevel` en el cwd actual) — NUNCA `devlead` (el `strict_tdd` de devlead no aplica al repo target).
+- Si no hay resultado, corré `sdd-init` una vez para el repo target antes de seguir.
+- Guardá `strict_tdd` y `test_command` del resultado — se reenvían en 8.3-SDD.3.
+
+`{target-key}` (usado en 8.3-SDD.2) = el mismo basename resuelto acá. Caso de baja probabilidad — dos repos enrollados con el mismo basename colisionarían en la misma key: si lo detectás, avisá al usuario y desambiguá manualmente (p.ej. sufijo en el key); no hay hashing automático en v1.
+
+**8.3-SDD.2 — Cadena de planificación: explore → propose → spec**
+
+Corré `sdd-explore` → `sdd-propose` → `sdd-spec` (delegando a los sub-agentes `sdd-*`, mismo mecanismo de `/sdd-loop`) usando la issue #{issue_num} como input. Split de destino de artefactos (D8) — distinto del resto del pipeline SDD:
+
+| Artefacto | Destino |
+|---|---|
+| Spec generado | `.devlead/specs/issue-{issue_num}.md`, DENTRO DEL REPO TARGET — se commitea en la rama de la issue |
+| proposal / design / tasks / apply-progress / verify-report / explore / judgment-day | Engram, `sdd/issue-{issue_num}-{target-key}/*`, project = repo target (NO devlead) |
+
+Este aislamiento evita que el estado SDD de esta issue colisione con el propio estado SDD de devlead.
+
+Si detectás divergencia durante explore (la issue ya está implementada, o el spec generado choca con el código real) → Inv 5: en `attended` HALT y escalá al usuario; en `autonomous` (vía B2.c de batch.md) PARK la issue con la razón exacta, sin rehacer trabajo ya completado.
+
+**8.3-SDD.3 — Strict TDD forwarding desde el repo target (D5/REQ-3)**
+
+Reenviá `strict_tdd` y `test_command` (obtenidos en 8.3-SDD.1) a los prompts internos de `sdd-apply`/`sdd-verify`, siguiendo exactamente la sección "Strict TDD Forwarding" del contrato SDD en `~/.claude/CLAUDE.md` — la única particularidad acá es que `{project}` en esa sección resuelve al repo TARGET, no a devlead. Si el repo target no tiene `sdd-init` corrido, el loop cae a Standard Mode sin bloquear (no es un HALT).
+
+<!-- Decisión (sdd-apply, resuelve Open Question de design): la sección
+     "Strict TDD Forwarding" del CLAUDE.md GLOBAL (~/.claude/CLAUDE.md) ya
+     generaliza vía {project} — no hace falta agregar un párrafo REQ-3
+     específico al CLAUDE.md de devlead. La única particularidad de este caso
+     ({project} = repo target, no devlead) queda documentada acá mismo. No se
+     tocó .claude/CLAUDE.md. -->
+
+**8.3-SDD.4 — Pausa de aprobación (SOLO si `SDD_MODE = attended`)**
+
+Si `SDD_MODE = autonomous` → SALTÁ este sub-paso completo, no hay pausa por issue (D4, Inv 1-forma-batch). Andá directo a 8.3-SDD.5.
+
+Si `SDD_MODE = attended`:
+1. Mostrale al usuario el contenido completo de `.devlead/specs/issue-{issue_num}.md` recién generado.
+2. Hacé **UNA** sola pregunta: "¿Aprobás este spec generado o querés ajustar algo?"
+3. **STOP** — esperá respuesta explícita. No avances a 8.3-SDD.5 sin ella.
+4. Si pide cambios: re-corré `sdd-spec` incorporando el feedback, volvé al punto 1. Máximo 3 rondas.
+5. Si llegan a 3 rondas sin aprobación: **HALT** — escalá al usuario (Inv 5). No avances hasta que decida explícitamente cómo seguir.
+
+**8.3-SDD.5 — Diseño → tareas → implementación ⇄ verificación**
+
+Corré `sdd-design` → `sdd-tasks` → `sdd-apply` ⇄ `sdd-verify` (loop apply↔verify igual que `/sdd-loop`, mismos sub-agentes `sdd-*`), reenviando `strict_tdd`/`test_command` del repo target (8.3-SDD.3) en cada launch de `sdd-apply`/`sdd-verify`. Sobre `sdd-verify` FAIL: alimentá las fallas específicas como input correctivo a un nuevo ciclo de `sdd-apply` — no marques la issue como lista sin un `sdd-verify` PASS real.
+
+**Presupuesto del loop interno (Inv 4/5 — nunca loop infinito):** heredá el mismo BUDGET de `/sdd-loop` (`~/.claude/commands/sdd-loop.md`): máximo 8 ciclos apply→verify, y STOP después de 2 ciclos consecutivos sin progreso medible (ni tareas nuevas completadas ni cambio en las fallas de verify). Si el presupuesto se agota sin `sdd-verify` PASS, es un **gate rojo** — mismo tratamiento que cualquier otro gate de este pipeline: `SDD_MODE = attended` → **HALT**, mostrale al usuario la última falla de verify y esperá decisión; `SDD_MODE = autonomous` → **PARK** la issue vía B2.c de `batch.md` con razón exacta `"SDD loop budget agotado (8 ciclos o 2 sin progreso) — última falla de sdd-verify: {detalle}"`, sin abrir PR, seguí con la próxima issue.
+
+**8.3-SDD.6 — judgment-day obligatorio antes de PR-ready**
+
+Después de `sdd-verify` PASS y antes de considerar la issue lista para PR: corré `judgment-day` (dos jueces ciegos `jd-judge-a`/`jd-judge-b` + `jd-fix-agent`), igual que el paso 3e de `/sdd-loop`. Si confirma BLOCKER(s): alimentalos como un nuevo ciclo de `sdd-apply` (volvé a 8.3-SDD.5) — este ciclo adicional CONSUME presupuesto del mismo BUDGET de 8.3-SDD.5, no es un contador aparte. Si queda limpio: la issue está PR-ready.
+
+Si el presupuesto se agota con BLOCKER(s) de judgment-day aún sin resolver: mismo tratamiento que arriba — `attended` HALT, `autonomous` PARK con razón `"judgment-day BLOCKER sin resolver tras agotar el presupuesto del SDD loop"`.
+
+**8.3-SDD.7 — Retorno al flujo compartido**
+
+Al cerrar 8.3-SDD.6 limpio, esta subsección termina — NO hay un paso terminal nuevo (Inv 3). El flujo vuelve exactamente al mismo punto que el branch "hay spec": Step 8.4 (QA gates) → Step 8.5 (abrir el PR, con la sección `## Intención` — ver Step 8.5 abajo). No se abre PR ni se cierra la issue desde acá.
 
 **En ambos casos:**
 - Commits con work-unit-commits: un commit = un comportamiento entregable
@@ -366,6 +437,11 @@ Si algún gate falla:
 - No continúes a Step 8.5 hasta que el usuario resuelva el gate o use `DEVLEAD_FORCE_CLOSE=1` explícitamente
 
 ### Step 8.5 — Abrir el PR
+
+<!-- D7/REQ-2: si Step 8.3-SDD corrió (issue sin Spec:), el body del PR DEBE
+     disclosurar que la intención fue inferida por DevLead, no acordada de
+     antemano. Ver template exacto + condición más abajo. Si la issue SÍ tenía
+     Spec: (Inv 7), NO se agrega esta sección. -->
 
 Si Step 8.2 emitió `STACKED: {A-branch}`, añadí `--base {A-branch}` al comando:
 
@@ -404,6 +480,25 @@ gh pr create --title "{conventional_commit_title}" --body "Closes #{issue_num}
 ```
 
 El título DEBE seguir el formato conventional commit: `type(scope): descripción`.
+
+**Si esta issue NO tenía `Spec:` (corriste Step 8.3-SDD):** el `--body` DEBE incluir, después de `## Test plan`, esta sección adicional — literal, sin parafrasear (REQ-2):
+
+```
+## Intención (spec generado por DevLead)
+
+⚠️ Esta intención NO fue acordada de antemano. DevLead la infirió leyendo la
+issue #{issue_num} y la generó automáticamente. **Tu review de este PR ES el gate de
+intención** — si el spec malinterpretó el objetivo, corregilo acá antes de mergear.
+
+Spec completo commiteado en: `.devlead/specs/issue-{issue_num}.md`
+
+Resumen:
+{2-4 líneas resumiendo el alcance del spec generado}
+```
+
+(Opcional, no bloqueante) Agregá `--label devlead-inferred-intention` al comando `gh pr create` de esta issue si el label existe en el repo target; si no existe, omitilo sin bloquear el PR.
+
+**Si esta issue SÍ tenía `Spec:`** (branch de arriba, sin cambios): NO agregues esta sección — el body queda exactamente como los templates de arriba (Inv 7).
 
 Capturá la URL y el número del PR del output.
 

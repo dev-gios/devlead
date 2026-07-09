@@ -43,6 +43,8 @@ Zonas prohibidas (4):
 ¿Dale para arrancar?
 ```
 
+**Nota de costo (D7):** si alguna issue de la cola no tiene `Spec:`, va a correr `Step 8.3-SDD` (ciclo SDD completo, más caro que implementación directa) en vez de implementación directa. Si sabés de antemano que varias issues de la cola no tienen spec, preferí un presupuesto ("hasta N") de 1-2 para ese batch.
+
 Esperá una confirmación explícita ("dale", "sí", "ok", o cualquier afirmativo) antes de continuar al Paso B1. Después de esta confirmación, los parámetros son fijos.
 
 ---
@@ -120,7 +122,7 @@ Ejecutá los siguientes pasos de `arranquemos.md` para ESTA issue, en este orden
 
 - **Paso 8.1** — Resolver spec de la issue (`ref-resolver.sh {issue_num}`) — capturá `DEPENDS-ON:` si aparece
 - **Paso 8.2** — Crear la rama (`branch.sh {issue_num} "{issue_title}" {type} [{dep_num}]`) — pasá `dep_num` como 4to arg solo si Paso 8.1 emitió `DEPENDS-ON:`
-- **Paso 8.3** — Pipeline principal (con spec si encontrado, directo si no)
+- **Paso 8.3** — Pipeline principal: con spec si encontrado (Inv 7, branch sin cambios); si NO hay spec, corré `Step 8.3-SDD` (ciclo SDD completo — ver `arranquemos.md`) con `SDD_MODE=autonomous` (Delta 1 de acá abajo ya cubre el skip de la pausa de aprobación por issue — no hace falta un flag nuevo)
 - **Paso 8.4** — QA gates (`gate-check.sh`)
 - **Paso 9** — Gate visual de frontend (SOLO si Paso 8.1 encontró `DESIGN: {path}`)
 
@@ -151,9 +153,10 @@ Cuando cualquier sub-paso de B2.b retorna blocked o error, aplicá esta tabla:
 | `ref-resolver GAP: file not found` (spec no existe en esa ruta) | **PARK** "spec referenciado no encontrado: {path}" | 🅿️ Aparcadas |
 | `ref-resolver GAP: multi-predecesor no soportado en v1` | **PARK** "multi-predecesor declarado — resolución manual requerida" | 🅿️ Aparcadas |
 | `DEPENDS-ON: A` y A ∈ BLOQUEADAS | **PARK** "dep-blocked: predecesor #A aparcado", agregar issue a BLOQUEADAS | 🅿️ Aparcadas |
-| `ref-resolver SPEC: none` (sin spec) | **Continuar** sin spec (igual que single-task) | — |
+| `ref-resolver SPEC: none` (sin spec) | **Continuar** corriendo `Step 8.3-SDD` (ciclo SDD completo) con `SDD_MODE=autonomous` — OJO: el comportamiento de single-task para este caso YA NO es "implementación directa" (cambió con este mismo release, ver `arranquemos.md` Step 8.3-SDD); "igual que single-task" acá significa "corré el mismo Step 8.3-SDD que corre `/arranquemos`, sin la pausa de aprobación" | — |
 | `DEP-CHECK: unavailable` (del resolver) | **Continuar** — nunca PARK; anotá `"⚠️ deps sin verificar (gh ausente)"` junto al PR en B3 | ⚠️ Junto al PR |
 | Spec choca con código real (divergencia, Inv 5/7) | **PARK** "divergencia spec/código: {detalle}" | 🅿️ Aparcadas |
+| `Step 8.3-SDD` agotó su presupuesto interno (8 ciclos apply↔verify o 2 sin progreso) sin `sdd-verify` PASS, o con BLOCKER de judgment-day sin resolver | **PARK** con la razón exacta (última falla de verify, o BLOCKER pendiente) | 🅿️ Aparcadas |
 | `gate-check.sh` falla | **PARK** con la razón exacta del gate | 🅿️ Aparcadas |
 | Gate visual > 3 iteraciones (Paso 9) | **PARK** "visual diff sin resolver tras 3 iteraciones" | 🅿️ Aparcadas |
 | Chrome MCP no disponible (gate visual) | **PARK** "gate visual no completable sin Chrome MCP" | 🅿️ Aparcadas |
