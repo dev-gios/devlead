@@ -151,7 +151,11 @@ run_sweep() {
     HOME="$home" PATH="$FAKEBIN:$PATH" bash "$SWEEP_BIN" )
 }
 
-repo_key() { printf '%s' "${1//\//_}"; }
+# repo_key mirrors sweep.sh's FIX 4 (round 2) derivation: SHA-256 hash of
+# the canonical path, first 20 hex chars. Kept in sync deliberately — do NOT
+# revert to a character-encoding formula here (see O10 regression below for
+# why both prior encoding schemes were unsafe).
+repo_key() { printf '%s' "$1" | sha256sum | cut -c1-20; }
 digest_file() { local home="$1"; find "$home/.devlead/reports" -maxdepth 1 -name '*.md' | head -1; }
 
 # ===========================================================================
@@ -405,6 +409,49 @@ o8_static_checks() {
     || fail "O8 structural: expected exactly 1 'echo \"## Outcomes\"' emission, got $outcomes_headings"
 }
 
+# ===========================================================================
+# O10 — FIX 4 (round 3, JD Judge B round-2 regression, permanent coverage):
+# repo-key derivation must be collision-free. The pair below
+# (".../o10-foo_/bar" vs ".../o10-foo/_bar") collides under BOTH previously
+# broken schemes at once — naive slash-replace (`${1//\//_}`) AND the
+# underscore-escape follow-up (`_` -> `__` then `/` -> `_`) — because an
+# underscore sitting immediately adjacent to a slash makes both source
+# characters funnel through the same output position. Under the current
+# SHA-256-hash key this MUST produce two genuinely different outcomes files.
+# ===========================================================================
+o10_repo_key_collision_regression() {
+  local home; home="$(fresh_home o10)"
+  local r_a="$SMOKE_ROOT/repos/o10-foo_/bar"
+  local r_b="$SMOKE_ROOT/repos/o10-foo/_bar"
+  mkdir -p "$r_a" "$r_b"
+  write_repos_file "$home" "$r_a" "$r_b"
+
+  cat > "$FIXTURES/o10-prs.json" <<EOF
+[
+  {"state":"CLOSED","headRefName":"feat/issue-7-a","reviewDecision":null,"mergedAt":"2026-07-01T00:00:00Z","updatedAt":"2026-07-01T00:00:00Z"}
+]
+EOF
+  run_sweep "$home" "$FIXTURES/o10-prs.json" >/dev/null
+
+  local key_a key_b; key_a="$(repo_key "$r_a")"; key_b="$(repo_key "$r_b")"
+  [[ "$key_a" != "$key_b" ]] && pass "O10 FIX4 round3: derived keys differ for a pair that collided under BOTH prior broken schemes ($key_a != $key_b)" \
+    || fail "O10 FIX4 round3: derived keys are IDENTICAL for $r_a and $r_b — collision reintroduced"
+
+  local jf_a="$home/.devlead/outcomes/${key_a}.jsonl"
+  local jf_b="$home/.devlead/outcomes/${key_b}.jsonl"
+  [[ -f "$jf_a" && -f "$jf_b" ]] && pass "O10: two distinct JSONL files exist for both repos" \
+    || fail "O10: expected two distinct JSONL files — got: $(ls "$home/.devlead/outcomes/" 2>&1)"
+
+  local lc; lc="$(find "$home/.devlead/outcomes" -maxdepth 1 -name '*.jsonl' | wc -l)"
+  [[ "$lc" -eq 2 ]] && pass "O10: exactly 2 outcomes files written, no silent merge into one" \
+    || fail "O10: expected exactly 2 outcomes files, got $lc"
+
+  grep -q "\"repo\":\"$r_a\"" "$jf_a" && pass "O10: repo A's JSONL 'repo' field resolves back to its own path" \
+    || fail "O10: repo A's JSONL missing/wrong 'repo' field — got: $(cat "$jf_a" 2>&1)"
+  grep -q "\"repo\":\"$r_b\"" "$jf_b" && pass "O10: repo B's JSONL 'repo' field resolves back to its own path" \
+    || fail "O10: repo B's JSONL missing/wrong 'repo' field — got: $(cat "$jf_b" 2>&1)"
+}
+
 # Real-$HOME safety net: snapshot BEFORE any sandboxed scenario runs (main()
 # calls this first) and compare AFTER all scenarios complete — every
 # scenario above only ever passes HOME=<sandbox> to sweep.sh, so the real
@@ -430,6 +477,7 @@ main() {
   o6_dual_run_append_and_snapshot
   o7_malformed_json_isolation
   o8_static_checks
+  o10_repo_key_collision_regression
 
   local after; after="$(snapshot_real_home)"
   [[ "$REALHOME_SNAPSHOT_BEFORE" == "$after" ]] \

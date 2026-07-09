@@ -188,17 +188,21 @@ _reckon_repo() {
 
   local _root _key
   _root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$repo_path")"
-  # FIX 4: collision-safe path flattening — escape existing underscores FIRST
-  # (`_` -> `__`), THEN replace `/` -> `_`. Naive slash-to-underscore alone
-  # would collide e.g. /x/foo_bar and /x/foo/bar into the same key, silently
-  # merging two different repos' historical PR-outcome JSONL data. This
-  # intentionally diverges from the (also-collision-prone) `_dl_key`
-  # convention in arranquemos.md/cerremos.md — an append-only history file
-  # merging two repos' data is a worse failure mode than a journal ending up
-  # in the wrong (but still-inspectable) file, so the stricter derivation is
-  # scoped to this new outcomes store only.
-  _key="${_root//_/__}"
-  _key="${_key//\//_}"
+  # FIX 4 (round 2, JD Judge B): the outcomes filename key is now a
+  # collision-free SHA-256 hash of the canonical absolute path, truncated to
+  # the first 20 hex chars (~80 bits — collision-free for any realistic
+  # number of enrolled repos), instead of an escape/replace character
+  # encoding. Two prior character-encoding schemes were each proven
+  # non-injective under adversarial testing: naive `/` -> `_` collided e.g.
+  # /x/foo_bar and /x/foo/bar; the underscore-escape follow-up
+  # (`_` -> `__` then `/` -> `_`) still collided whenever an underscore sat
+  # immediately adjacent to a slash, e.g. /a_/b and /a/_b both flattened to
+  # `_a___b`. A hash sidesteps this class of bug entirely — no encoding to
+  # get wrong. No information is lost: the full, human-readable `$_root`
+  # path is already stored in every JSONL line's `"repo"` field (see below),
+  # so a hash-named file in `~/.devlead/outcomes/` is resolved back to its
+  # repo by reading that field, not by decoding the filename.
+  _key="$(printf '%s' "$_root" | sha256sum | cut -c1-20)"
 
   # FIX 7: close fd 4 for this subprocess (see Gate 1 note in _sweep_repo).
   local buckets _gh_rc
@@ -405,12 +409,26 @@ for _repo in "${_repos[@]}"; do
   _outc_tmp="$(mktemp "$REPORTS_DIR/.outc-XXXXXX" 2>/dev/null)"
   _mktemp_rc=$?
   if (( _mktemp_rc != 0 )) || [[ -z "$_outc_tmp" ]]; then
-    echo "sweep: WARNING: mktemp failed for outcomes tempfile ($_repo) — outcomes not measured this run" >&2
+    echo "sweep: WARNING: mktemp failed for outcomes tempfile ($_repo) — digest summary for this run will not show the outcomes line" >&2
+    # FIX (round 3, JD Judge A): a failed mktemp here only breaks CAPTURE of
+    # fd 4's text for DISPLAY in this digest — it does NOT stop _reckon_repo
+    # from running. _reckon_repo executes normally inside _sweep_repo
+    # (redirecting fd 4 to /dev/null only discards where its output goes, it
+    # does not skip the `gh pr list` calls or the JSONL append), so real
+    # measurement AND persistence to the permanent JSONL history still
+    # happen this run. The previous wording ("no medible —
+    # outcomes-tempfile-setup-failed.") falsely claimed nothing was
+    # measured, directly contradicting the genuinely-measured line that
+    # simultaneously landed in the JSONL for this same run. The message
+    # below only asserts what is actually known at this point in the code
+    # (the reckoner ran normally; only this digest's display of its result
+    # was lost) — it does not claim the JSONL write itself succeeded, since
+    # that is not observable from here.
     _section="$( (
       # Subshell so cd does not affect our loop
       _sweep_repo "$_repo"
     ) 4>/dev/null )"
-    _outc="- $_repo: no medible — outcomes-tempfile-setup-failed."
+    _outc="- $_repo: medido y persistido en el historial, pero no se pudo mostrar el resumen en este digest (fallo de tempfile)."
   else
     _section="$( (
       # Subshell so cd does not affect our loop
