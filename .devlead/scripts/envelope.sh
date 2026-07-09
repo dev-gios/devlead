@@ -4,6 +4,14 @@
 # Envelope file: <git-root>/.devlead/envelope.yml (committed, auditable). READ-ONLY except `init` scaffold.
 set -uo pipefail
 
+# Sourced as a self-resolved sibling (NOT a hardcoded ~/.devlead/scripts path):
+# on a fresh machine `init` runs straight from the repo checkout, before the
+# ~/.devlead/scripts/ symlink farm exists — readlink -f on envelope.sh's OWN
+# BASH_SOURCE resolves its real location first (checkout or installed
+# symlink, either way), then looks up bootstrap-lib.sh as a plain sibling in
+# that same real directory. Provides bootstrap_symlinks/_systemd/_token_seed.
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/bootstrap-lib.sh"
+
 _repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
 ENV_FILE="$(_repo_root)/.devlead/envelope.yml"
 
@@ -54,18 +62,21 @@ _do_check() {
 
 # ---------------------------------------------------------------------------
 # init — copy-if-not-exists; never overwrites.
+# NOTE: `return 0`, not `exit 0` — this runs as the middle phase of the
+# `init)` dispatch case (bootstrap -> _do_init -> _do_optin); exiting here
+# would skip the opt-in question entirely.
 # ---------------------------------------------------------------------------
 _do_init() {
   mkdir -p "$(dirname "$ENV_FILE")"
   if [[ -f "$ENV_FILE" ]]; then
     echo "STATUS: exists"
     echo "PATH:   $ENV_FILE"
-    exit 0
+    return 0
   fi
   cat > "$ENV_FILE" <<'YML'
 # DevLead envelope — persisted per-repo authorization (Nivel 2 substrate).
 version: 1
-enabled: true
+enabled: false
 select:
   bucket: nuevo-entrante
   exclude_labels: [blocked, wip, discuss]
@@ -89,7 +100,53 @@ report:
 YML
   echo "STATUS: created"
   echo "PATH:   $ENV_FILE"
-  exit 0
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# opt-in — the SOLE mutator of ~/.devlead/autonomous-repos + the sweep timer.
+# Exactly one explicit yes/no question, asked once per `init` run. Never
+# touches envelope.yml's `enabled:` kill-switch — enrollment (is this repo in
+# the sweep list?) and the kill-switch (committed, auditable) are independent
+# gates by design. `return 0` always: declining or defaulting is a normal
+# outcome, not an error.
+# ---------------------------------------------------------------------------
+_do_optin() {
+  local repo
+  repo="$(_repo_root)"
+
+  if [[ ! -t 0 ]]; then
+    echo "SWEEP: not enrolled (non-interactive)"
+    return 0
+  fi
+
+  local ans
+  read -r -p "Enroll this repo in the daily sweep (Nivel 2)? [y/N] " ans || ans=""
+
+  # Affirmative tokens (case-insensitive): y, yes, and rioplatense sí/si —
+  # both the accented and unaccented spelling are accepted (locked decision).
+  case "${ans,,}" in
+    y|yes|si|sí)
+      local repos_file="$HOME/.devlead/autonomous-repos"
+      mkdir -p "$(dirname "$repos_file")"
+      touch "$repos_file"
+      grep -qxF "$repo" "$repos_file" 2>/dev/null || echo "$repo" >> "$repos_file"
+
+      local timer_status
+      if systemctl --user is-enabled devlead-sweep.timer &>/dev/null; then
+        timer_status="already-enabled"
+      else
+        systemctl --user enable --now devlead-sweep.timer &>/dev/null || true
+        timer_status="enabled"
+      fi
+      echo "SWEEP: enrolled"
+      echo "TIMER: $timer_status"
+      ;;
+    *)
+      echo "SWEEP: not enrolled"
+      ;;
+  esac
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -554,7 +611,17 @@ _do_plan() {
 _cmd="${1:-check}"
 case "$_cmd" in
   check) _do_check ;;
-  init)  _do_init ;;
+  init)
+    # Phase order (locked): bootstrap (silent, authorizes nothing) ->
+    # envelope scaffold (unchanged behavior, now defaults enabled: false) ->
+    # single opt-in question (sole mutator of enrollment + timer state).
+    bootstrap_symlinks
+    bootstrap_systemd
+    bootstrap_token_seed
+    _do_init
+    _do_optin
+    exit 0
+    ;;
   show)  _do_show ;;
   plan)  _do_plan ;;
   *) echo "uso: envelope.sh {check|init|show|plan}" >&2; exit 2 ;;
