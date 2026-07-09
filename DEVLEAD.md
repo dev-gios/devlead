@@ -175,6 +175,18 @@ La issue **apunta a su spec por path relativo** (línea `Spec: docs/facturacion/
 
 Un sweep autónomo programado que responde «¿qué haría DevLead hoy en cada repo enrolled?» sin ejecutar nada. Lee el estado, construye el plan y escribe un digest diario bajo `~/.devlead/reports/YYYY-MM-DD.md`. Cero ramas, cero PRs, cero commits, cero pushes.
 
+### Setup automático (`devlead init`)
+
+`devlead init` bootstrapea la máquina de forma automática: crea los symlinks,
+instala las unidades systemd (service + timer) y siembra el `gh-token` headless.
+Al final hace **una sola pregunta** de opt-in: si respondés que sí, `devlead init`
+es el **único** camino init-driven que agrega este repo a `~/.devlead/autonomous-repos`
+y corre `systemctl --user enable --now devlead-sweep.timer`. Si respondés que no,
+no se enrola ni se activa el timer (decisión normal, no error).
+
+Los pasos manuales de abajo siguen siendo válidos como ruta explícita/avanzada
+(o para re-enrollar sin re-correr `init`).
+
 ### PAT (GitHub token) — alcance mínimo
 
 Creá un Personal Access Token con los permisos **mínimos** necesarios:
@@ -198,7 +210,7 @@ El sweep rechaza el archivo si los permisos no son exactamente `600` (aviso en s
 echo /ruta/absoluta/al/repo >> ~/.devlead/autonomous-repos
 ```
 
-Además, el repo necesita `enabled: true` en su `envelope.yml` (el valor por defecto).
+Además, el repo necesita `enabled: true` en su `envelope.yml`. El scaffold por defecto es `enabled: false` (kill-switch de seguridad): un repo debe habilitarse **explícitamente** para ser barrido.
 
 ### Activar el timer
 
