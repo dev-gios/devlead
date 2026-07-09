@@ -173,7 +173,7 @@ Capturá stdout completo. Procesá la salida con estas reglas (en orden):
 
 **Si la salida contiene `^=== DEVLEAD ENVELOPE PLAN`** (plan exitoso):
 - Buscá la sección `--- INCLUDED (queue order) ---` en stdout.
-- Extraé líneas que matcheen `^[0-9]+\. #([0-9]+)  ` (número de issue en captura 1). El formato exacto es `printf '%d. #%s  %s\n' "$qi" "$num" "$display_title"` (envelope.sh:518). Las líneas `   basis:` que siguen son metadata — ignorálas.
+- Extraé líneas que matcheen `^[0-9]+\. #([0-9]+)  ` (número de issue en captura 1). El formato exacto es `printf '%d. #%s  %s\n' "$qi" "$num" "$display_title"` (envelope.sh:724). Las líneas `   basis:` que siguen son metadata — ignorálas.
 - Si la sección INCLUDED está presente y contiene `(none)`: cola vacía → registrá `REPO → STATUS: zero-issues` y continuá con el siguiente repo.
 - Si la sección INCLUDED está presente, no dice `(none)`, pero no se parseó ningún `#N` válido: **PARSE-MISS GUARD** — registrá `REPO → STATUS: parse-miss` y aparcá todas las issues como `parked-plan-format-unparseable`; emitilo en el reporte en forma prominente (no silenciosa). Continuá con el siguiente repo.
 
