@@ -109,12 +109,18 @@ _bootstrap_source_repo() {
 #   - Resolves the real source path via `readlink -f` (defensive: correct
 #     even if `src` itself is reached through a symlink).
 #   - Migration: if `dst` is currently a symlink (leftover pre-copy-model
-#     install), remove it FIRST — `mv -f` onto a symlink follows the link
-#     and clobbers its target instead of replacing the link itself, so the
-#     symlink must be gone before any copy/compare happens.
+#     install), remove it FIRST. Without this, the content-skip check below
+#     (`[[ -f "$_dst" ]] && cmp -s "$_real_src" "$_dst"`) would follow the
+#     pre-existing symlink and trivially "match" the very repo file it
+#     points at, so `dst` would silently remain a symlink forever (a silent
+#     non-migration) instead of becoming a pinned copy — the symlink must be
+#     gone before any copy/compare happens.
 #   - Content-skip: if `dst` already exists as a real file with byte-
-#     identical content to the resolved source, this is a cheap no-op —
-#     nothing is written, nothing is touched.
+#     identical content to the resolved source, this is a cheap no-op — the
+#     copy/rename is skipped, but for mode="x" targets the executable bit is
+#     still re-asserted (chmod +x is idempotent) so a destination that lost
+#     its executable bit through some external means self-heals even when
+#     content is unchanged.
 #   - Otherwise: copy source to a same-directory temp file `dst.tmp.$$`,
 #     chmod +x the temp file first when mode="x", then `mv -f` the temp file
 #     onto `dst`. `mv` on the same filesystem (both under $HOME) is an atomic
@@ -142,6 +148,10 @@ _bootstrap_copy_one() {
   fi
 
   if [[ -f "$_dst" ]] && cmp -s "$_real_src" "$_dst" 2>/dev/null; then
+    if [[ "$_mode" == "x" ]] && ! chmod +x "$_dst" 2>/dev/null; then
+      echo "bootstrap: WARNING: failed to chmod +x $_dst" >&2
+      return 1
+    fi
     return 0
   fi
 
@@ -250,11 +260,20 @@ bootstrap_symlinks() {
 # (`devlead upgrade`) reads this signal to decide whether `systemctl --user
 # daemon-reload` is warranted — publishing byte-identical content (the
 # common case) must NOT trigger a reload. This function ALWAYS returns 0.
+#
+# Sets the global array BOOTSTRAP_SYSTEMD_FAILED to the list of destination
+# paths that failed to publish this run (empty array = full success), for a
+# later caller (`devlead upgrade`) that needs honest per-file failure
+# reporting — mirrors BOOTSTRAP_SYMLINKS_FAILED in `bootstrap_symlinks` above.
+# This function itself ALWAYS returns 0 — see the return-0 contract ADR
+# above; failures are reported via stderr warnings and the
+# BOOTSTRAP_SYSTEMD_FAILED array, never via the return code.
 # ---------------------------------------------------------------------------
 bootstrap_systemd() {
   local repo_dir="${1:-}"
   # shellcheck disable=SC2034 # consumed externally by devlead upgrade (later phase)
   BOOTSTRAP_SYSTEMD_RELOAD_NEEDED=0
+  BOOTSTRAP_SYSTEMD_FAILED=()
 
   if [[ -z "$repo_dir" ]]; then
     repo_dir="$(_bootstrap_source_repo)" || repo_dir=""
@@ -282,6 +301,7 @@ bootstrap_systemd() {
 
     if ! _bootstrap_copy_one "$_src" "$_dst" ""; then
       echo "bootstrap: WARNING: failed to publish $_dst from $_src" >&2
+      BOOTSTRAP_SYSTEMD_FAILED+=("$_dst")
       continue
     fi
 

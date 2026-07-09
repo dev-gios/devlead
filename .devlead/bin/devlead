@@ -26,8 +26,11 @@ commands:
   init     bootstrap this machine (versioned publish, gh-token), scaffold the
            envelope, then ask once whether to enroll this repo in the daily
            sweep
-  upgrade  publish the devlead repo's current HEAD to this machine (stamps
-           ~/.devlead/VERSION); safe to re-run, no-ops when already current
+  upgrade [path]
+           publish the devlead repo's current HEAD to this machine (stamps
+           ~/.devlead/VERSION); safe to re-run, no-ops when already current.
+           optional [path] pins the source checkout explicitly instead of
+           trusting ~/.devlead/SOURCE_REPO (escape hatch for a stale anchor)
   plan     produce the recommended plan
   check    run the state check
   show     show current derived state

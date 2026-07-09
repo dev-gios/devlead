@@ -52,16 +52,19 @@ _section "Scripts"
 bootstrap_symlinks "$REPO_DIR"
 # bootstrap_symlinks ALWAYS returns 0 by design (degradation goes to stderr,
 # not the exit code — see bootstrap-lib.sh's return-0 contract ADR), so the
-# call above can never signal failure on its own. Spot-check one
-# representative file actually published as a REAL file (not a leftover
-# symlink) before claiming success, mirroring the gh-token check below
-# (install.sh:~100).
+# call above can never signal failure on its own. Consult the REAL per-file
+# failure array (BOOTSTRAP_SYMLINKS_FAILED, already populated in this same
+# shell) instead of spot-checking a single representative file — a spot
+# check can miss failures on every OTHER file in the publish set.
 _scripts_ok=false
-if [[ -f "$DEVLEAD_DIR/scripts/state.sh" && ! -L "$DEVLEAD_DIR/scripts/state.sh" ]]; then
+if [[ ${#BOOTSTRAP_SYMLINKS_FAILED[@]} -eq 0 ]]; then
   _ok "~/.devlead/scripts/*.sh → publicado (state, branch, ref-resolver, forbidden-check, devlead-active, envelope, sweep)"
   _scripts_ok=true
 else
-  _warn "~/.devlead/scripts/state.sh no se publicó como archivo real — revisá warnings arriba"
+  _warn "publish de scripts incompleto — archivos que fallaron:"
+  for _f in "${BOOTSTRAP_SYMLINKS_FAILED[@]}"; do
+    _warn "  - $_f"
+  done
 fi
 
 _section "CLI"
@@ -103,14 +106,18 @@ _section "systemd"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 bootstrap_systemd "$REPO_DIR"
 # Same reasoning as the Scripts section above: bootstrap_systemd ALWAYS
-# returns 0, so verify the actual end-state (one representative unit
-# published as a REAL file, not a leftover symlink) before printing _ok.
+# returns 0, so consult the REAL per-file failure array
+# (BOOTSTRAP_SYSTEMD_FAILED, already populated in this same shell) instead
+# of spot-checking a single representative unit.
 _systemd_ok=false
-if [[ -f "$SYSTEMD_USER_DIR/devlead-sweep.timer" && ! -L "$SYSTEMD_USER_DIR/devlead-sweep.timer" ]]; then
+if [[ ${#BOOTSTRAP_SYSTEMD_FAILED[@]} -eq 0 ]]; then
   _ok "~/.config/systemd/user/devlead-sweep.{service,timer} → publicado"
   _systemd_ok=true
 else
-  _warn "~/.config/systemd/user/devlead-sweep.timer no se publicó como archivo real — revisá warnings arriba"
+  _warn "publish de systemd incompleto — archivos que fallaron:"
+  for _f in "${BOOTSTRAP_SYSTEMD_FAILED[@]}"; do
+    _warn "  - $_f"
+  done
 fi
 
 # ---------------------------------------------------------------------------

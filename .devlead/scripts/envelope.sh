@@ -183,12 +183,20 @@ _do_optin() {
 }
 
 # ---------------------------------------------------------------------------
-# upgrade — versioned publish. Replaces the old always-on symlink bootstrap
-# with an explicit, stamped publish: dirty-tree honest-gap (REQ-05) -> HEAD
-# sha idempotency check (REQ-03) -> SOURCE_REPO written EARLY, before any
-# copy (REQ-11) -> copy set via bootstrap_symlinks/_systemd (REQ-01/02/08) ->
-# conditional daemon-reload (REQ-04) -> VERSION written LAST, only on a fully
-# successful copy set (set-level atomicity via heal-on-rerun, see design).
+# upgrade [explicit_repo_dir] — versioned publish. Replaces the old always-on
+# symlink bootstrap with an explicit, stamped publish: dirty-tree honest-gap
+# (REQ-05) -> HEAD sha idempotency check (REQ-03) -> SOURCE_REPO written
+# EARLY, before any copy (REQ-11) -> copy set via bootstrap_symlinks/_systemd
+# (REQ-01/02/08) -> conditional daemon-reload (REQ-04) -> VERSION written
+# LAST, only on a fully successful copy set (set-level atomicity via
+# heal-on-rerun, see design).
+#
+# The optional positional arg is threaded straight through to
+# `_bootstrap_source_repo`'s tier-1 (explicit arg wins over the SOURCE_REPO
+# anchor and self-resolve fallback) — `devlead upgrade /path/to/checkout`
+# gives the user an explicit escape hatch to publish from a specific
+# checkout instead of silently trusting the possibly-stale anchor. Omitted →
+# behavior is unchanged (falls through to tier-2/tier-3 exactly as before).
 #
 # NOTE: `return 0` throughout, never `exit` — this is called both directly
 # from the `upgrade)` dispatch case (which exits after) AND from `init`'s
@@ -198,8 +206,9 @@ _do_optin() {
 # degradation).
 # ---------------------------------------------------------------------------
 _do_upgrade() {
+  local _explicit_repo="${1:-}"
   local src
-  if ! src="$(_bootstrap_source_repo)"; then
+  if ! src="$(_bootstrap_source_repo "$_explicit_repo")"; then
     echo "STATUS: blocked"
     echo "GAP:    could not resolve source repo (no ~/.devlead/SOURCE_REPO anchor and bootstrap-lib.sh is not a symlink)"
     return 0
@@ -257,19 +266,32 @@ _do_upgrade() {
   fi
 
   bootstrap_systemd "$src"
+  if [[ ${#BOOTSTRAP_SYSTEMD_FAILED[@]} -gt 0 ]]; then
+    echo "STATUS: blocked"
+    local f
+    for f in "${BOOTSTRAP_SYSTEMD_FAILED[@]}"; do
+      echo "GAP:    failed to publish $f"
+    done
+    return 0
+  fi
   if [[ "${BOOTSTRAP_SYSTEMD_RELOAD_NEEDED:-0}" == "1" ]]; then
     systemctl --user daemon-reload 2>/dev/null \
       || echo "upgrade: WARNING: systemctl --user daemon-reload failed" >&2
   fi
 
-  # VERSION written LAST — only after the whole copy set succeeded.
+  # VERSION written LAST — only after the whole copy set succeeded. Written
+  # atomically (temp file + mv -f, mirroring _bootstrap_copy_one's own
+  # temp+mv pattern) so a killed-mid-write never leaves a partial/malformed
+  # VERSION file behind.
   local stamp
   stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  local _version_tmp="$HOME/.devlead/VERSION.tmp.$$"
   {
     echo "SHA: $head_sha"
     echo "BRANCH: $head_branch"
     echo "STAMPED: $stamp"
-  } > "$HOME/.devlead/VERSION"
+  } > "$_version_tmp"
+  mv -f "$_version_tmp" "$HOME/.devlead/VERSION"
 
   echo "STATUS: ok"
   echo "VERSION: $head_sha ($stamp)"
@@ -762,7 +784,7 @@ case "$_cmd" in
     _do_optin
     exit 0
     ;;
-  upgrade) _do_upgrade; exit 0 ;;
+  upgrade) _do_upgrade "${2:-}"; exit 0 ;;
   show)  _do_show ;;
   plan)  _do_plan ;;
   *) echo "uso: envelope.sh {check|init|show|plan|upgrade}" >&2; exit 2 ;;
