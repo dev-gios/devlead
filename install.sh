@@ -8,8 +8,13 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEVLEAD_DIR="$HOME/.devlead"
-CLAUDE_COMMANDS_DIR="$HOME/.claude/commands"
 LOCAL_BIN="$HOME/.local/bin"
+
+# Shared bootstrap primitives (symlinks, systemd units, gh-token seed) — the
+# same functions envelope.sh init calls, so "prepare my machine" logic exists
+# once. install.sh already knows its own $REPO_DIR (line above), so it passes
+# it explicitly rather than relying on the lib's self-resolution fallback.
+source "$REPO_DIR/.devlead/scripts/bootstrap-lib.sh"
 
 _info()    { echo "  → $*"; }
 _ok()      { echo "  ✓ $*"; }
@@ -20,51 +25,15 @@ echo "DevLead installer"
 echo "Repo: $REPO_DIR"
 
 # ---------------------------------------------------------------------------
-# ~/.devlead/scripts/
+# ~/.devlead/scripts/, ~/.local/bin/devlead, ~/.claude/commands/, ~/.devlead/hooks/
+# Delegated to bootstrap-lib.sh (shared with `devlead init`) — ONE symlink
+# farm, one place to fix. ln -sf is correct-or-recreated: safe to re-run.
 # ---------------------------------------------------------------------------
 _section "Scripts"
+bootstrap_symlinks "$REPO_DIR"
+_ok "~/.devlead/scripts/*.sh → symlinked (state, branch, ref-resolver, forbidden-check, devlead-active, envelope, sweep)"
 
-mkdir -p "$DEVLEAD_DIR/scripts"
-_info "mkdir ~/.devlead/scripts/"
-
-ln -sf "$REPO_DIR/.devlead/scripts/state.sh" "$DEVLEAD_DIR/scripts/state.sh"
-chmod +x "$REPO_DIR/.devlead/scripts/state.sh"
-_ok "~/.devlead/scripts/state.sh → $REPO_DIR/.devlead/scripts/state.sh"
-
-ln -sf "$REPO_DIR/.devlead/scripts/branch.sh" "$DEVLEAD_DIR/scripts/branch.sh"
-chmod +x "$REPO_DIR/.devlead/scripts/branch.sh"
-_ok "~/.devlead/scripts/branch.sh → symlinked"
-
-ln -sf "$REPO_DIR/.devlead/scripts/ref-resolver.sh" "$DEVLEAD_DIR/scripts/ref-resolver.sh"
-chmod +x "$REPO_DIR/.devlead/scripts/ref-resolver.sh"
-_ok "~/.devlead/scripts/ref-resolver.sh → symlinked"
-
-ln -sf "$REPO_DIR/.devlead/scripts/forbidden-check.sh" "$DEVLEAD_DIR/scripts/forbidden-check.sh"
-chmod +x "$REPO_DIR/.devlead/scripts/forbidden-check.sh"
-_ok "~/.devlead/scripts/forbidden-check.sh → symlinked"
-
-ln -sf "$REPO_DIR/.devlead/scripts/devlead-active.sh" "$DEVLEAD_DIR/scripts/devlead-active.sh"
-chmod +x "$REPO_DIR/.devlead/scripts/devlead-active.sh"
-_ok "~/.devlead/scripts/devlead-active.sh → symlinked"
-
-ln -sf "$REPO_DIR/.devlead/scripts/envelope.sh" "$DEVLEAD_DIR/scripts/envelope.sh"
-chmod +x "$REPO_DIR/.devlead/scripts/envelope.sh"
-_ok "~/.devlead/scripts/envelope.sh → symlinked"
-
-ln -sf "$REPO_DIR/.devlead/scripts/sweep.sh" "$DEVLEAD_DIR/scripts/sweep.sh"
-chmod +x "$REPO_DIR/.devlead/scripts/sweep.sh"
-_ok "~/.devlead/scripts/sweep.sh → symlinked"
-
-# ---------------------------------------------------------------------------
-# ~/.local/bin/devlead — front-door CLI
-# ---------------------------------------------------------------------------
 _section "CLI"
-
-mkdir -p "$LOCAL_BIN"
-_info "mkdir ~/.local/bin/"
-
-ln -sf "$REPO_DIR/.devlead/bin/devlead" "$LOCAL_BIN/devlead"
-chmod +x "$REPO_DIR/.devlead/bin/devlead"
 _ok "~/.local/bin/devlead → $REPO_DIR/.devlead/bin/devlead"
 
 if [[ ":$PATH:" != *":$LOCAL_BIN:"* ]]; then
@@ -84,42 +53,16 @@ mkdir -p "$DEVLEAD_DIR/reports"
 _ok "~/.devlead/reports/ listo (sweep digests, se crean al primer devlead sweep)"
 
 # ---------------------------------------------------------------------------
-# ~/.claude/commands/arranquemos.md
+# ~/.claude/commands/*.md — ya symlinkeados por bootstrap_symlinks arriba
 # ---------------------------------------------------------------------------
 _section "Slash command"
-
-if [[ ! -d "$CLAUDE_COMMANDS_DIR" ]]; then
-  mkdir -p "$CLAUDE_COMMANDS_DIR"
-  _info "mkdir ~/.claude/commands/"
-fi
-
-ln -sf "$REPO_DIR/.claude/commands/arranquemos.md" "$CLAUDE_COMMANDS_DIR/arranquemos.md"
-_ok "~/.claude/commands/arranquemos.md → $REPO_DIR/.claude/commands/arranquemos.md"
-
-ln -sf "$REPO_DIR/.claude/commands/cerremos.md" "$CLAUDE_COMMANDS_DIR/cerremos.md"
-_ok "~/.claude/commands/cerremos.md → $REPO_DIR/.claude/commands/cerremos.md"
-
-ln -sf "$REPO_DIR/.claude/commands/batch.md" "$CLAUDE_COMMANDS_DIR/batch.md"
-_ok "~/.claude/commands/batch.md → symlinked"
-
-ln -sf "$REPO_DIR/.claude/commands/sweep-execute.md" "$CLAUDE_COMMANDS_DIR/sweep-execute.md"
-_ok "~/.claude/commands/sweep-execute.md → symlinked"
+_ok "~/.claude/commands/*.md → symlinked (arranquemos, cerremos, batch, sweep-execute)"
 
 # ---------------------------------------------------------------------------
-# ~/.devlead/hooks/ — post-edit.sh + gate-check.sh
+# ~/.devlead/hooks/ — ya symlinkeados por bootstrap_symlinks arriba
 # ---------------------------------------------------------------------------
 _section "Hooks"
-
-mkdir -p "$DEVLEAD_DIR/hooks"
-_info "mkdir ~/.devlead/hooks/"
-
-ln -sf "$REPO_DIR/.claude/hooks/post-edit.sh" "$DEVLEAD_DIR/hooks/post-edit.sh"
-chmod +x "$REPO_DIR/.claude/hooks/post-edit.sh"
-_ok "~/.devlead/hooks/post-edit.sh → $REPO_DIR/.claude/hooks/post-edit.sh"
-
-ln -sf "$REPO_DIR/.claude/hooks/gate-check.sh" "$DEVLEAD_DIR/hooks/gate-check.sh"
-chmod +x "$REPO_DIR/.claude/hooks/gate-check.sh"
-_ok "~/.devlead/hooks/gate-check.sh → $REPO_DIR/.claude/hooks/gate-check.sh"
+_ok "~/.devlead/hooks/*.sh → symlinked (post-edit, gate-check)"
 
 # ---------------------------------------------------------------------------
 # systemd user units — Nivel 2 sweep timer (opt-in; NOT auto-enabled)
@@ -127,19 +70,25 @@ _ok "~/.devlead/hooks/gate-check.sh → $REPO_DIR/.claude/hooks/gate-check.sh"
 _section "systemd"
 
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
-mkdir -p "$SYSTEMD_USER_DIR"
-_info "mkdir ~/.config/systemd/user/"
-
-ln -sf "$REPO_DIR/.devlead/systemd/devlead-sweep.service" "$SYSTEMD_USER_DIR/devlead-sweep.service"
-_ok "~/.config/systemd/user/devlead-sweep.service → symlinked"
-
-ln -sf "$REPO_DIR/.devlead/systemd/devlead-sweep.timer" "$SYSTEMD_USER_DIR/devlead-sweep.timer"
-_ok "~/.config/systemd/user/devlead-sweep.timer → symlinked"
+bootstrap_systemd "$REPO_DIR"
+_ok "~/.config/systemd/user/devlead-sweep.{service,timer} → symlinked"
 
 _warn "Timer NOT auto-enabled (opt-in). Para activar el sweep diario a las 07:00:"
 _warn "  systemctl --user enable --now devlead-sweep.timer"
 _warn "  Cadencia: editá OnCalendar= en $SYSTEMD_USER_DIR/devlead-sweep.timer"
 _warn "  Sesiones headless: loginctl enable-linger \$USER"
+
+# ---------------------------------------------------------------------------
+# ~/.devlead/gh-token — headless auth seed for sweep.sh's _ensure_auth
+# ---------------------------------------------------------------------------
+_section "gh-token"
+
+bootstrap_token_seed
+if [[ -f "$DEVLEAD_DIR/gh-token" ]]; then
+  _ok "~/.devlead/gh-token listo (usado por sweep.sh _ensure_auth)"
+else
+  _warn "~/.devlead/gh-token no seedeado — ver warning de gh arriba, si lo hay"
+fi
 
 # ---------------------------------------------------------------------------
 # ~/.claude/settings.json — registrar hooks (merge, no sobreescribir)
