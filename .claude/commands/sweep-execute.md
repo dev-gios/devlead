@@ -153,8 +153,10 @@ Capturá stdout. Procesá la salida:
 
 Ejecutá con el Bash tool:
 ```
-GH_TOKEN="${_auth_token}" bash ~/.devlead/scripts/envelope.sh plan
+bash ~/.devlead/scripts/envelope-auth.sh plan
 ```
+
+El wrapper `envelope-auth.sh` resuelve el auth internamente (mismo chain de 4 pasos que `sweep.sh`) y lo exporta en su propio proceso antes de invocar `envelope.sh plan` — por eso ya no hace falta interpolar `_auth_token` en esta línea. (`_auth_token` resuelto en E1.3 sigue usándose para `gh pr create`, que queda fuera del alcance de este fix.)
 
 Capturá stdout completo. Procesá la salida con estas reglas (en orden):
 
