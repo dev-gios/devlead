@@ -23,7 +23,8 @@ devlead — front door for DevLead
 usage: devlead <command> [args...]
 
 commands:
-  init     initialize / re-derive DevLead state for this repo
+  init     bootstrap this machine (symlinks, gh-token), scaffold the envelope,
+           then ask once whether to enroll this repo in the daily sweep
   plan     produce the recommended plan
   check    run the state check
   show     show current derived state
