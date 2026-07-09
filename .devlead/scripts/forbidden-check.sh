@@ -38,14 +38,25 @@ else
   done
 fi
 
-if [[ ${#PATHS[@]} -eq 0 ]]; then
-  # STATUS: empty-diff — no paths to check (empty/non-TTY input), fail-closed.
-  # Fires for ANY non-TTY zero-path invocation: a genuine empty git diff
-  # (nothing changed) OR a hypothetical caller bug that pipes nothing. Either
-  # way we must NOT emit STATUS: clear (that would let a no-op branch open a
-  # PR). Distinct from the TTY misuse case (exit 1) below. The caller treats
-  # any non-clear STATUS as PARK, so over-capturing here is safe by design.
-  if [[ $# -eq 0 && ! -t 0 ]]; then
+# Filter out empty-string elements before deciding whether this is an
+# empty-diff case. A single empty-string argument (e.g. `forbidden-check.sh
+# ""`) makes ${#PATHS[@]} equal 1, not 0, which would otherwise bypass the
+# empty-diff fail-closed branch below and fall through to STATUS: clear.
+_non_empty_count=0
+for _p in "${PATHS[@]}"; do
+  [[ -n "$_p" ]] && ((_non_empty_count++))
+done
+
+if [[ $_non_empty_count -eq 0 ]]; then
+  # STATUS: empty-diff — no (non-empty) paths to check, fail-closed.
+  # Fires for ANY non-TTY zero-path invocation (or an all-empty-string
+  # args invocation): a genuine empty git diff (nothing changed), a
+  # hypothetical caller bug that pipes nothing, or a caller passing only
+  # empty-string arguments. Either way we must NOT emit STATUS: clear (that
+  # would let a no-op branch open a PR). Distinct from the TTY misuse case
+  # (exit 1) below. The caller treats any non-clear STATUS as PARK, so
+  # over-capturing here is safe by design.
+  if [[ ! -t 0 || $# -gt 0 ]]; then
     echo "STATUS: empty-diff"
     exit 0
   fi

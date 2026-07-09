@@ -102,6 +102,10 @@ Si `STATUS: blocked`:
 
 Si `STATUS: clear` → procedé a B2.b.
 
+Cualquier otra salida (`STATUS: empty-diff` u otro valor que no sea exactamente `STATUS: blocked` o `STATUS: clear`):
+- Marcá la issue `escalada` con razón `"pre-check devolvió STATUS no reconocido — {salida}"`.
+- NO proceses la issue. Continuá al siguiente issue.
+
 Si los paths candidatos no se pueden derivar con certeza (issue sin labels ni referencias) → anotá "pre-check sin paths confiables — delegando a capa 2 (B2.d)" y procedé a B2.b.
 
 ---

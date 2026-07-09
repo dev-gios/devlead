@@ -463,7 +463,7 @@ Mostrá un resumen del pipeline:
 
 - Rama: {branch_name}
 - PR: {pr_url} → abierto, listo para review
-- Issue #{issue_num}: quedará cerrada cuando mergees el PR (`Closes #N`)
+- Issue #{issue_num}: el merge a `dev` (no a la default branch) NO auto-cierra el `Closes #N` — la issue queda abierta hasta que la cierres manualmente
 - CI status: pendiente de GitHub Actions (revisá en unos minutos)
 
 PR abierto. El merge — incluido a `dev` — es tuyo (Inv 3).

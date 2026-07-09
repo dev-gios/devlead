@@ -51,7 +51,7 @@ _remove_devlead_link() {
 # ---------------------------------------------------------------------------
 _section "Scripts"
 
-for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh devlead-active.sh envelope.sh sweep.sh; do
+for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh devlead-active.sh envelope.sh envelope-auth.sh sweep.sh; do
   _remove_devlead_link "$DEVLEAD_DIR/scripts/$_name" "$REPO_DIR/.devlead/scripts/$_name"
 done
 
