@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # envelope.sh — DevLead persisted per-repo envelope: parser + enrollment + dry-run planner.
-# Subcommands: check | init | show | plan. KEY:value stdout. Always exits 0 on operational outcomes.
+# Subcommands: check | init | show | plan | upgrade. KEY:value stdout. Always exits 0 on operational outcomes.
 # Envelope file: <git-root>/.devlead/envelope.yml (committed, auditable). READ-ONLY except `init` scaffold.
 set -uo pipefail
 
@@ -29,6 +29,17 @@ _emit() {
 
 _block() { echo "STATUS: blocked"; echo "GAP:    $1"; exit 0; }
 _is_bool() { [[ "$1" == "true" || "$1" == "false" ]]; }
+# _read_version_sha — reads the SHA: field from ~/.devlead/VERSION (KEY:
+# value, one per line — see upgrade's write below). Prints the sha and
+# returns 0, or returns 1 (no stdout) when VERSION is absent or has no SHA
+# line — used by `upgrade`'s idempotency gate (REQ-03).
+_read_version_sha() {
+  local vf="$HOME/.devlead/VERSION" sha
+  [[ -f "$vf" ]] || return 1
+  sha="$(awk -F': ' '/^SHA:/{print $2; exit}' "$vf" 2>/dev/null)"
+  [[ -n "$sha" ]] || return 1
+  printf '%s\n' "$sha"
+}
 _in() { local v="$1"; shift; local x; for x in "$@"; do [[ "$v" == "$x" ]] && return 0; done; return 1; }
 _assert_keys() {
   # $1=yq-path $2=label rest=allowed nested keys
@@ -168,6 +179,100 @@ _do_optin() {
       fi
       ;;
   esac
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# upgrade — versioned publish. Replaces the old always-on symlink bootstrap
+# with an explicit, stamped publish: dirty-tree honest-gap (REQ-05) -> HEAD
+# sha idempotency check (REQ-03) -> SOURCE_REPO written EARLY, before any
+# copy (REQ-11) -> copy set via bootstrap_symlinks/_systemd (REQ-01/02/08) ->
+# conditional daemon-reload (REQ-04) -> VERSION written LAST, only on a fully
+# successful copy set (set-level atomicity via heal-on-rerun, see design).
+#
+# NOTE: `return 0` throughout, never `exit` — this is called both directly
+# from the `upgrade)` dispatch case (which exits after) AND from `init`'s
+# first-time-publish branch (which must continue on to bootstrap_token_seed /
+# _do_init / _do_optin regardless of publish outcome, matching the
+# pre-existing init idiom of never aborting the init chain on a bootstrap
+# degradation).
+# ---------------------------------------------------------------------------
+_do_upgrade() {
+  local src
+  if ! src="$(_bootstrap_source_repo)"; then
+    echo "STATUS: blocked"
+    echo "GAP:    could not resolve source repo (no ~/.devlead/SOURCE_REPO anchor and bootstrap-lib.sh is not a symlink)"
+    return 0
+  fi
+
+  # REQ-05 [GATE — CARDINAL]: dirty tree blocks publish. A non-zero exit from
+  # `git status` (e.g. src is not a git checkout) is treated the same as
+  # dirty — never silently proceed on an unreadable git status.
+  local dirty
+  if ! dirty="$(git -C "$src" status --porcelain 2>/dev/null)"; then
+    echo "STATUS: blocked"
+    echo "GAP:    could not read git status for source repo '$src'"
+    return 0
+  fi
+  if [[ -n "$dirty" ]]; then
+    echo "STATUS: blocked"
+    echo "GAP:    devlead repo has uncommitted changes — refusing to publish"
+    return 0
+  fi
+
+  local head_sha head_branch
+  head_sha="$(git -C "$src" rev-parse --short HEAD 2>/dev/null)"
+  if [[ -z "$head_sha" ]]; then
+    echo "STATUS: blocked"
+    echo "GAP:    could not resolve HEAD sha in '$src'"
+    return 0
+  fi
+  head_branch="$(git -C "$src" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  [[ -z "$head_branch" ]] && head_branch="HEAD"
+
+  # REQ-03: idempotency gate against the current stamp. A failed prior run
+  # never advances SHA (see below), so this comparison is never fooled by a
+  # half-published set.
+  local current_sha
+  current_sha="$(_read_version_sha)" || current_sha=""
+  if [[ -n "$current_sha" && "$current_sha" == "$head_sha" ]]; then
+    echo "STATUS: up-to-date"
+    echo "SHA:    $head_sha"
+    return 0
+  fi
+
+  # REQ-11: SOURCE_REPO write is EARLY — before any copy — so a mid-run
+  # failure never leaves published copies without a recorded anchor.
+  mkdir -p "$HOME/.devlead" 2>/dev/null
+  printf '%s\n' "$src" > "$HOME/.devlead/SOURCE_REPO"
+
+  bootstrap_symlinks "$src"
+  if [[ ${#BOOTSTRAP_SYMLINKS_FAILED[@]} -gt 0 ]]; then
+    echo "STATUS: blocked"
+    local f
+    for f in "${BOOTSTRAP_SYMLINKS_FAILED[@]}"; do
+      echo "GAP:    failed to publish $f"
+    done
+    return 0
+  fi
+
+  bootstrap_systemd "$src"
+  if [[ "${BOOTSTRAP_SYSTEMD_RELOAD_NEEDED:-0}" == "1" ]]; then
+    systemctl --user daemon-reload 2>/dev/null \
+      || echo "upgrade: WARNING: systemctl --user daemon-reload failed" >&2
+  fi
+
+  # VERSION written LAST — only after the whole copy set succeeded.
+  local stamp
+  stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  {
+    echo "SHA: $head_sha"
+    echo "BRANCH: $head_branch"
+    echo "STAMPED: $stamp"
+  } > "$HOME/.devlead/VERSION"
+
+  echo "STATUS: ok"
+  echo "VERSION: $head_sha ($stamp)"
   return 0
 }
 
@@ -634,17 +739,31 @@ _cmd="${1:-check}"
 case "$_cmd" in
   check) _do_check ;;
   init)
-    # Phase order (locked): bootstrap (silent, authorizes nothing) ->
-    # envelope scaffold (unchanged behavior, now defaults enabled: false) ->
-    # single opt-in question (sole mutator of enrollment + timer state).
-    bootstrap_symlinks
-    bootstrap_systemd
+    # Phase order (locked, REQ-06/07): first-time-vs-versioned publish branch
+    # -> token seed (unrelated to versioning, unconditional, unchanged from
+    # before this change) -> envelope scaffold (unchanged behavior) -> single
+    # opt-in question (sole mutator of enrollment + timer state).
+    if [[ ! -f "$HOME/.devlead/VERSION" ]]; then
+      # First-time (REQ-06): no VERSION stamp yet -> run the exact same
+      # publish path as `upgrade` (dirty-check, SOURCE_REPO early, copy set,
+      # VERSION last).
+      _do_upgrade
+    else
+      # Already-versioned (REQ-07): skip re-publish entirely, but SOURCE_REPO
+      # still self-heals on every run (REQ-11) independent of the publish
+      # step — cheap, idempotent, best-effort (never blocks the rest of init).
+      _src_heal="$(_bootstrap_source_repo 2>/dev/null)" && {
+        mkdir -p "$HOME/.devlead" 2>/dev/null
+        printf '%s\n' "$_src_heal" > "$HOME/.devlead/SOURCE_REPO"
+      }
+    fi
     bootstrap_token_seed
     _do_init
     _do_optin
     exit 0
     ;;
+  upgrade) _do_upgrade; exit 0 ;;
   show)  _do_show ;;
   plan)  _do_plan ;;
-  *) echo "uso: envelope.sh {check|init|show|plan}" >&2; exit 2 ;;
+  *) echo "uso: envelope.sh {check|init|show|plan|upgrade}" >&2; exit 2 ;;
 esac
