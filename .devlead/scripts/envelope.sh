@@ -286,12 +286,12 @@ _do_upgrade() {
   local stamp
   stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local _version_tmp="$HOME/.devlead/VERSION.tmp.$$"
-  {
-    echo "SHA: $head_sha"
-    echo "BRANCH: $head_branch"
-    echo "STAMPED: $stamp"
-  } > "$_version_tmp"
-  mv -f "$_version_tmp" "$HOME/.devlead/VERSION"
+  if ! { echo "SHA: $head_sha"; echo "BRANCH: $head_branch"; echo "STAMPED: $stamp"; } > "$_version_tmp" \
+    || ! mv -f "$_version_tmp" "$HOME/.devlead/VERSION"; then
+    echo "STATUS: blocked"
+    echo "GAP:    failed to write ~/.devlead/VERSION"
+    return 0
+  fi
 
   echo "STATUS: ok"
   echo "VERSION: $head_sha ($stamp)"
