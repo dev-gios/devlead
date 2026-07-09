@@ -364,23 +364,33 @@ Si `SDD_MODE = attended`, mostrá esta línea antes de arrancar 8.3-SDD.1 (D7 �
 
 El cwd ya es el repo target de esta issue (no devlead). Corré el guard estándar contra ESE repo:
 - `mem_search(query: "sdd-init/{target-project}", project: "{target-project}")`, donde `{target-project}` = basename del repo target (derivado de `git rev-parse --show-toplevel` en el cwd actual) — NUNCA `devlead` (el `strict_tdd` de devlead no aplica al repo target).
-- Si no hay resultado, corré `sdd-init` una vez para el repo target antes de seguir.
+- Si no hay resultado, intentá correr `sdd-init` una vez para el repo target; si no es posible completarlo, seguí igual — el fallback de 8.3-SDD.3 ("si el repo target no tiene `sdd-init` corrido, el loop cae a Standard Mode sin bloquear") cubre ese caso.
 - Guardá `strict_tdd` y `test_command` del resultado — se reenvían en 8.3-SDD.3.
 
-`{target-key}` (usado en 8.3-SDD.2) = el mismo basename resuelto acá. Caso de baja probabilidad — dos repos enrollados con el mismo basename colisionarían en la misma key: si lo detectás, avisá al usuario y desambiguá manualmente (p.ej. sufijo en el key); no hay hashing automático en v1.
+`{target-key}` (usado en 8.3-SDD.2) = hash libre de colisión de la ruta absoluta canónica del repo target, mismo esquema que `sweep.sh` usa para su `{repo-key}` (ver `~/.devlead/scripts/sweep.sh`): `sha256sum` de `git rev-parse --show-toplevel`, primeros 20 caracteres hex. Para legibilidad, prefijalo con el basename del repo target: `{target-key} = "${basename}-$(git rev-parse --show-toplevel | sha256sum | cut -c1-20)"`. Al ser un hash, es libre de colisión por construcción — no hace falta desambiguación manual ni aviso al usuario.
 
 **8.3-SDD.2 — Cadena de planificación: explore → propose → spec**
 
-Corré `sdd-explore` → `sdd-propose` → `sdd-spec` (delegando a los sub-agentes `sdd-*`, mismo mecanismo de `/sdd-loop`) usando la issue #{issue_num} como input. Split de destino de artefactos (D8) — distinto del resto del pipeline SDD:
+Corré `sdd-explore` → `sdd-propose` → `sdd-spec` (delegando a los sub-agentes `sdd-*`, mismo mecanismo de `/sdd-loop`) usando la issue #{issue_num} como input.
+
+**Aclaración de mecanismo (reconcilia con ADR-3, Task 3.1 arriba en Step 8):** "mismo mecanismo de `/sdd-loop`" significa acá el MISMO fallback que ADR-3 ya declara para este archivo — si los sub-agentes `sdd-*` no son alcanzables como named sub-agents en este contexto, cae a orquestación in-session (DevLead secuencia las fases y hace el trabajo en la sesión principal), nunca un mecanismo de delegación nuevo o distinto. Además, este sub-loop NO re-dispara los gates de "preguntar una vez" de `/sdd-loop` (Execution Mode / Artifact Store Mode / Delivery Strategy / Chain Strategy) — esos quedan FIJOS para este sub-loop por-issue: `Automatic` (sin pausas entre fases, gatekeeper inline), `engram` (sin archivos), sin chaining (una sola issue, no hay PRs encadenados dentro del sub-loop). No se le pregunta nada de esto al usuario; es la config fija para toda invocación de Step 8.3-SDD, sea `attended` o `autonomous`.
+
+Al invocar `sdd-explore`, el prompt DEBE pedir explícitamente un chequeo de divergencia: "¿esta issue #{issue_num} ya está resuelta en el código actual del repo target?" — la respuesta se señaliza con un token explícito y parseable al final del resumen que devuelve explore, siguiendo el mismo patrón "rutear solo por señal explícita" que ya usa el resto del pipeline (`ref-resolver` `GAP:`/`SPEC:`, `forbidden-check` `STATUS:`, `branch.sh` `STATUS:`):
+- `DIVERGENCE: already-implemented` — la issue ya está resuelta en el código real
+- `DIVERGENCE: none` — no hay divergencia, seguí normalmente a `sdd-propose`
+
+Split de destino de artefactos (D8) — distinto del resto del pipeline SDD:
 
 | Artefacto | Destino |
 |---|---|
 | Spec generado | `.devlead/specs/issue-{issue_num}.md`, DENTRO DEL REPO TARGET — se commitea en la rama de la issue |
 | proposal / design / tasks / apply-progress / verify-report / explore / judgment-day | Engram, `sdd/issue-{issue_num}-{target-key}/*`, project = repo target (NO devlead) |
 
+Antes de escribir el spec, creá el directorio si no existe (`mkdir -p .devlead/specs`); si el archivo ya existe (de un run PARKed anterior sobre esta misma issue), sobrescribilo intencionalmente — es el mismo issue, el spec se regenera.
+
 Este aislamiento evita que el estado SDD de esta issue colisione con el propio estado SDD de devlead.
 
-Si detectás divergencia durante explore (la issue ya está implementada, o el spec generado choca con el código real) → Inv 5: en `attended` HALT y escalá al usuario; en `autonomous` (vía B2.c de batch.md) PARK la issue con la razón exacta, sin rehacer trabajo ya completado.
+Si explore devolvió `DIVERGENCE: already-implemented` (o detectás divergencia por otra vía: el spec generado choca con el código real) → Inv 5: en `attended` HALT y escalá al usuario; en `autonomous` (vía B2.c de batch.md) PARK la issue con la razón exacta, sin rehacer trabajo ya completado.
 
 **8.3-SDD.3 — Strict TDD forwarding desde el repo target (D5/REQ-3)**
 
@@ -398,6 +408,9 @@ Reenviá `strict_tdd` y `test_command` (obtenidos en 8.3-SDD.1) a los prompts in
 Si `SDD_MODE = autonomous` → SALTÁ este sub-paso completo, no hay pausa por issue (D4, Inv 1-forma-batch). Andá directo a 8.3-SDD.5.
 
 Si `SDD_MODE = attended`:
+
+Conteo de rondas explícito: la presentación inicial (punto 1 abajo, primera vez) es **ronda 0** y NO cuenta para el cap. Las rondas 1-3 son los ajustes tras feedback del usuario (cada vuelta al punto 1 tras un pedido de cambio). Al llegar a la ronda 3 sin aprobación: HALT y escalá (punto 5).
+
 1. Mostrale al usuario el contenido completo de `.devlead/specs/issue-{issue_num}.md` recién generado.
 2. Hacé **UNA** sola pregunta: "¿Aprobás este spec generado o querés ajustar algo?"
 3. **STOP** — esperá respuesta explícita. No avances a 8.3-SDD.5 sin ella.
@@ -406,15 +419,17 @@ Si `SDD_MODE = attended`:
 
 **8.3-SDD.5 — Diseño → tareas → implementación ⇄ verificación**
 
+Antes de lanzar el primer `sdd-apply` de esta issue en esta invocación, chequeá si ya existe apply-progress previo (de un run PARKed anterior sobre esta misma issue): `mem_search(query: "sdd/issue-{issue_num}-{target-key}/apply-progress", project: "{target-project}")`. Si existe, seguí el protocolo global "Apply-Progress Continuity (MANDATORY)" de `~/.claude/CLAUDE.md`: leelo completo vía `mem_get_observation`, mergeá tu nuevo progreso con el existente — NUNCA sobreescribas — y guardá el resultado combinado. Si no existe (primera corrida de esta issue), no hace falta nada especial.
+
 Corré `sdd-design` → `sdd-tasks` → `sdd-apply` ⇄ `sdd-verify` (loop apply↔verify igual que `/sdd-loop`, mismos sub-agentes `sdd-*`), reenviando `strict_tdd`/`test_command` del repo target (8.3-SDD.3) en cada launch de `sdd-apply`/`sdd-verify`. Sobre `sdd-verify` FAIL: alimentá las fallas específicas como input correctivo a un nuevo ciclo de `sdd-apply` — no marques la issue como lista sin un `sdd-verify` PASS real.
 
-**Presupuesto del loop interno (Inv 4/5 — nunca loop infinito):** heredá el mismo BUDGET de `/sdd-loop` (`~/.claude/commands/sdd-loop.md`): máximo 8 ciclos apply→verify, y STOP después de 2 ciclos consecutivos sin progreso medible (ni tareas nuevas completadas ni cambio en las fallas de verify). Si el presupuesto se agota sin `sdd-verify` PASS, es un **gate rojo** — mismo tratamiento que cualquier otro gate de este pipeline: `SDD_MODE = attended` → **HALT**, mostrale al usuario la última falla de verify y esperá decisión; `SDD_MODE = autonomous` → **PARK** la issue vía B2.c de `batch.md` con razón exacta `"SDD loop budget agotado (8 ciclos o 2 sin progreso) — última falla de sdd-verify: {detalle}"`, sin abrir PR, seguí con la próxima issue.
+**SDD_BUDGET (Inv 4/5 — nunca loop infinito):** heredá el mismo BUDGET de `/sdd-loop` (`~/.claude/commands/sdd-loop.md`): máximo 8 ciclos apply→verify, y STOP después de 2 ciclos consecutivos sin progreso medible (ni tareas nuevas completadas ni cambio en las fallas de verify). Si `SDD_BUDGET` se agota sin `sdd-verify` PASS, es un **gate rojo** — mismo tratamiento que cualquier otro gate de este pipeline: `SDD_MODE = attended` → **HALT**, mostrale al usuario la última falla de verify y esperá decisión; `SDD_MODE = autonomous` → **PARK** la issue vía B2.c de `batch.md` con razón exacta `"SDD loop budget agotado (8 ciclos o 2 sin progreso) — última falla de sdd-verify: {detalle}"`, sin abrir PR, seguí con la próxima issue.
 
 **8.3-SDD.6 — judgment-day obligatorio antes de PR-ready**
 
-Después de `sdd-verify` PASS y antes de considerar la issue lista para PR: corré `judgment-day` (dos jueces ciegos `jd-judge-a`/`jd-judge-b` + `jd-fix-agent`), igual que el paso 3e de `/sdd-loop`. Si confirma BLOCKER(s): alimentalos como un nuevo ciclo de `sdd-apply` (volvé a 8.3-SDD.5) — este ciclo adicional CONSUME presupuesto del mismo BUDGET de 8.3-SDD.5, no es un contador aparte. Si queda limpio: la issue está PR-ready.
+Después de `sdd-verify` PASS y antes de considerar la issue lista para PR: corré `judgment-day` (dos jueces ciegos `jd-judge-a`/`jd-judge-b` + `jd-fix-agent`), igual que el paso 3e de `/sdd-loop`. Si confirma BLOCKER(s): alimentalos como un nuevo ciclo de `sdd-apply` (volvé a 8.3-SDD.5) — este ciclo adicional CONSUME el mismo `SDD_BUDGET` de 8.3-SDD.5, no es un contador aparte. Si queda limpio: la issue está PR-ready.
 
-Si el presupuesto se agota con BLOCKER(s) de judgment-day aún sin resolver: mismo tratamiento que arriba — `attended` HALT, `autonomous` PARK con razón `"judgment-day BLOCKER sin resolver tras agotar el presupuesto del SDD loop"`.
+Si `SDD_BUDGET` se agota con BLOCKER(s) de judgment-day aún sin resolver: mismo tratamiento que arriba — `attended` HALT, `autonomous` PARK con razón `"judgment-day BLOCKER sin resolver tras agotar SDD_BUDGET"`.
 
 **8.3-SDD.7 — Retorno al flujo compartido**
 
@@ -441,12 +456,17 @@ Si algún gate falla:
 <!-- D7/REQ-2: si Step 8.3-SDD corrió (issue sin Spec:), el body del PR DEBE
      disclosurar que la intención fue inferida por DevLead, no acordada de
      antemano. Ver template exacto + condición más abajo. Si la issue SÍ tenía
-     Spec: (Inv 7), NO se agrega esta sección. -->
+     Spec: (Inv 7), NO se agrega esta sección. La sección va CERCA DEL INICIO
+     del body (justo después de "Closes #N", antes de "## Qué") — no al final
+     — porque el propósito es que el reviewer la vea en el skim/preview de
+     mobile sin tener que scrollear. -->
 
 Si Step 8.2 emitió `STACKED: {A-branch}`, añadí `--base {A-branch}` al comando:
 
 ```
 gh pr create --base {A-branch} --title "{conventional_commit_title}" --body "Closes #{issue_num}
+
+{si esta issue NO tenía Spec: — insertá acá la sección ## Intención completa, ver contenido exacto abajo}
 
 ## Qué
 
@@ -466,6 +486,8 @@ Si no hubo `STACKED:`, el comando queda exactamente como hoy (sin `--base`):
 ```
 gh pr create --title "{conventional_commit_title}" --body "Closes #{issue_num}
 
+{si esta issue NO tenía Spec: — insertá acá la sección ## Intención completa, ver contenido exacto abajo}
+
 ## Qué
 
 {resumen de los cambios}
@@ -481,7 +503,7 @@ gh pr create --title "{conventional_commit_title}" --body "Closes #{issue_num}
 
 El título DEBE seguir el formato conventional commit: `type(scope): descripción`.
 
-**Si esta issue NO tenía `Spec:` (corriste Step 8.3-SDD):** el `--body` DEBE incluir, después de `## Test plan`, esta sección adicional — literal, sin parafrasear (REQ-2):
+**Si esta issue NO tenía `Spec:` (corriste Step 8.3-SDD):** el `--body` DEBE incluir, inmediatamente después de `Closes #{issue_num}` y ANTES de `## Qué` (en el placeholder marcado arriba), esta sección adicional — literal, sin parafrasear (REQ-2):
 
 ```
 ## Intención (spec generado por DevLead)
@@ -498,7 +520,7 @@ Resumen:
 
 (Opcional, no bloqueante) Agregá `--label devlead-inferred-intention` al comando `gh pr create` de esta issue si el label existe en el repo target; si no existe, omitilo sin bloquear el PR.
 
-**Si esta issue SÍ tenía `Spec:`** (branch de arriba, sin cambios): NO agregues esta sección — el body queda exactamente como los templates de arriba (Inv 7).
+**Si esta issue SÍ tenía `Spec:`** (branch de arriba, sin cambios): NO agregues esta sección ni el placeholder — el body queda exactamente como los templates de arriba, sin la línea de placeholder (Inv 7).
 
 Capturá la URL y el número del PR del output.
 

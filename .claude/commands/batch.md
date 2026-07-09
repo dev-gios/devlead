@@ -43,7 +43,7 @@ Zonas prohibidas (4):
 ¿Dale para arrancar?
 ```
 
-**Nota de costo (D7):** si alguna issue de la cola no tiene `Spec:`, va a correr `Step 8.3-SDD` (ciclo SDD completo, más caro que implementación directa) en vez de implementación directa. Si sabés de antemano que varias issues de la cola no tienen spec, preferí un presupuesto ("hasta N") de 1-2 para ese batch.
+**Nota de costo (D7):** si alguna issue de la cola no tiene `Spec:`, va a correr `Step 8.3-SDD` (ciclo SDD completo, más caro que implementación directa) en vez de implementación directa. Si sabés de antemano que varias issues de la cola no tienen spec, preferí un presupuesto ("hasta N") de 1-2 para ese batch. Esta nota se muestra dentro del mismo sobre de B0 — no es un chequeo bloqueante aparte; la única espera es la confirmación explícita del sobre completo pedida más abajo.
 
 Esperá una confirmación explícita ("dale", "sí", "ok", o cualquier afirmativo) antes de continuar al Paso B1. Después de esta confirmación, los parámetros son fijos.
 
