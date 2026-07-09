@@ -102,6 +102,36 @@ _remove_devlead_link "$SYSTEMD_USER_DIR/devlead-sweep.timer" \
   "$REPO_DIR/.devlead/systemd/devlead-sweep.timer"
 
 # ---------------------------------------------------------------------------
+# ~/.devlead/gh-token + ~/.devlead/autonomous-repos — sweep credential y enrollment
+# ---------------------------------------------------------------------------
+_section "Sweep enrollment"
+
+# gh-token es una CREDENCIAL: nunca debe sobrevivir al uninstall. El `rm` vive
+# SOLO acá (nunca en init/sweep/lib) — la creación es de bootstrap_token_seed,
+# la destrucción es exclusiva de este flujo. rm -f es idempotente por sí mismo.
+if [[ -f "$DEVLEAD_DIR/gh-token" ]]; then
+  rm -f "$DEVLEAD_DIR/gh-token"
+  _ok "credencial ~/.devlead/gh-token borrada"
+else
+  _info "archivo ~/.devlead/gh-token no existe — nada que borrar"
+fi
+
+# De-enrollar ESTE repo de autonomous-repos, dejando el resto de las entradas
+# intactas. Mismo idioma dedup que devlead-active.sh `off` (grep -vxF + mktemp +
+# mv). La resolución de root DEBE coincidir con la que _do_optin usó al escribir
+# la línea: `git rev-parse --show-toplevel 2>/dev/null || pwd` (envelope.sh:15).
+_repos_file="$DEVLEAD_DIR/autonomous-repos"
+_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if [[ -f "$_repos_file" ]] && grep -qxF "$_root" "$_repos_file" 2>/dev/null; then
+  _tmp="$(mktemp)"
+  grep -vxF "$_root" "$_repos_file" > "$_tmp" 2>/dev/null || true
+  mv "$_tmp" "$_repos_file"
+  _ok "repo de-enrolled de ~/.devlead/autonomous-repos"
+else
+  _info "repo no estaba enrolled en autonomous-repos — nada que hacer"
+fi
+
+# ---------------------------------------------------------------------------
 # ~/.claude/commands/
 # ---------------------------------------------------------------------------
 _section "Slash commands"
