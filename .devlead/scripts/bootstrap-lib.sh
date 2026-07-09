@@ -178,6 +178,12 @@ bootstrap_token_seed() {
   # with restrictive perms instead of the default umask (typically 644) for
   # the brief interval before chmod ran. Subshell keeps the umask change from
   # leaking into the caller's shell (this file is sourced, never executed).
+  # rm -f first: if token_file already exists (stale/interrupted run, manual
+  # touch), the '>' redirection would truncate that existing inode instead of
+  # creating a new one, and umask has no effect on an existing inode's perms —
+  # reopening the same race for pre-existing files. Removing it first forces
+  # '>' to always create a fresh inode under the tightened umask.
+  rm -f "$token_file" 2>/dev/null
   if ( umask 077 && printf '%s' "$_tok" > "$token_file" ); then
     chmod 600 "$token_file" 2>/dev/null \
       || echo "bootstrap: WARNING: failed to chmod 600 $token_file" >&2
