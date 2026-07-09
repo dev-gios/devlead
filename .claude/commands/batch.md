@@ -173,15 +173,17 @@ Antes de abrir el PR, ejecutá con el Bash tool:
 git diff --name-only origin/dev...HEAD | bash ~/.devlead/scripts/forbidden-check.sh
 ```
 
-Si `STATUS: blocked`:
-- **PARK** la issue con razón: `"tocó zona prohibida no predicha: {zona} — {path}"`
-- **NO** abras el PR.
-- Continuá al siguiente issue.
-
-Si `STATUS: clear`:
+Si la salida es EXACTAMENTE `STATUS: clear`:
 - Ejecutá **Paso 8.5** de `arranquemos.md` para esta issue (`gh pr create ...`).
 - Capturá la URL del PR.
 - Marcá la issue `pr_listo` con la URL.
+
+Cualquier otra salida (`STATUS: blocked`, `STATUS: empty-diff`, o ausencia de `STATUS: clear`):
+- **PARK** la issue. Razón exacta:
+  - `STATUS: blocked` → `"tocó zona prohibida no predicha: {zona} — {path}"`
+  - cualquier otro caso → `"post-check sin cambios / STATUS ausente"`
+- **NO** abras el PR.
+- Continuá al siguiente issue.
 
 ---
 

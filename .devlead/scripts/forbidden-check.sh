@@ -9,6 +9,7 @@
 # Output:
 #   STATUS: clear                         → no path matched any zone (exit 0)
 #   STATUS: blocked                       → at least one match found (exit 0)
+#   STATUS: empty-diff  → no paths to check (empty/non-TTY input) — fail-closed (exit 0)
 #   ZONE:   <db-migrations|prod-config|auth-security|ci-cd>
 #   PATH:   <first matching path>
 #
@@ -38,6 +39,16 @@ else
 fi
 
 if [[ ${#PATHS[@]} -eq 0 ]]; then
+  # STATUS: empty-diff — no paths to check (empty/non-TTY input), fail-closed.
+  # Fires for ANY non-TTY zero-path invocation: a genuine empty git diff
+  # (nothing changed) OR a hypothetical caller bug that pipes nothing. Either
+  # way we must NOT emit STATUS: clear (that would let a no-op branch open a
+  # PR). Distinct from the TTY misuse case (exit 1) below. The caller treats
+  # any non-clear STATUS as PARK, so over-capturing here is safe by design.
+  if [[ $# -eq 0 && ! -t 0 ]]; then
+    echo "STATUS: empty-diff"
+    exit 0
+  fi
   echo "Usage: forbidden-check.sh <path> [<path>...]" >&2
   echo "   or: <paths-newline-separated> | forbidden-check.sh" >&2
   exit 1
