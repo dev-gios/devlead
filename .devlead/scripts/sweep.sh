@@ -9,6 +9,7 @@ set -uo pipefail
 ENVELOPE_BIN="$HOME/.devlead/scripts/envelope.sh"
 REPOS_FILE="$HOME/.devlead/autonomous-repos"
 REPORTS_DIR="$HOME/.devlead/reports"
+OUTCOMES_DIR="$HOME/.devlead/outcomes"
 TOKEN_FILE="$HOME/.devlead/gh-token"
 TODAY="$(date +%F)"
 DIGEST_FILE="$REPORTS_DIR/${TODAY}.md"
@@ -57,7 +58,16 @@ _ensure_auth() {
 }
 
 # ---------------------------------------------------------------------------
-# _sweep_repo <repo_path> — runs in a subshell; appends to digest via fd 3
+# _sweep_repo <repo_path> — runs in a subshell; emits TWO streams:
+#   fd 1 (stdout) — the plan section for this repo, captured into $_section
+#                   and concatenated into the digest's existing plan body.
+#   fd 4          — exactly ONE outcomes line for this repo (has-data /
+#                   zero-attributable / "no medible — <reason>"), captured
+#                   by the caller into $_outcomes_body and rendered once
+#                   under the digest's single grouped "## Outcomes" heading.
+# Every exit path (the 4 early-return gates, the plan-blocked/paused/error
+# branches, and the included branch via _reckon_repo) writes exactly one
+# fd-4 line — no repo is ever silently omitted from Outcomes.
 # ---------------------------------------------------------------------------
 _sweep_repo() {
   local repo_path="$1"
@@ -67,6 +77,7 @@ _sweep_repo() {
     echo "### $repo_path"
     echo "**STATUS: cannot-cd** — path does not exist or is not accessible"
     echo ""
+    echo "- $repo_path: no medible — cannot-cd; repo inaccesible." >&4
     return
   fi
 
@@ -79,6 +90,7 @@ _sweep_repo() {
     echo "### $repo_path"
     echo "**STATUS: skipped** — reason: not enrolled (ENROLLED: ${enrolled:-false})"
     echo ""
+    echo "- $repo_path: no medible — not-enrolled." >&4
     return
   fi
 
@@ -89,6 +101,7 @@ _sweep_repo() {
     echo "### $repo_path"
     echo "**STATUS: skipped** — reason: ENABLED: ${enabled:-false}"
     echo ""
+    echo "- $repo_path: no medible — not-enabled." >&4
     return
   fi
 
@@ -98,6 +111,7 @@ _sweep_repo() {
     echo "### $repo_path"
     echo "**STATUS: auth-unavailable** — no GitHub token resolved; plan not run"
     echo ""
+    echo "- $repo_path: no medible — auth-unavailable; sin token." >&4
     return
   fi
 
@@ -114,9 +128,11 @@ _sweep_repo() {
     gap=$(echo "$plan_out" | grep "^GAP:" | head -1 | sed 's/^GAP:[[:space:]]*//')
     echo "**STATUS: plan-blocked** — GAP: ${gap}"
     echo ""
+    echo "- $repo_path: no medible — plan-blocked; sin snapshot de PRs." >&4
   elif echo "$plan_out" | grep -q "^STATUS: paused"; then
     echo "**STATUS: plan-paused** — kill-switch active; plan not included"
     echo ""
+    echo "- $repo_path: no medible — plan-paused; sin snapshot de PRs." >&4
   elif echo "$plan_out" | grep -q "^=== DEVLEAD ENVELOPE PLAN"; then
     echo "**STATUS: included** — plan ran successfully"
     echo ""
@@ -128,6 +144,7 @@ _sweep_repo() {
     echo "$plan_out" | sed 's/^~~~/~~~ /; s/^```/``` /'
     echo "~~~"
     echo ""
+    _reckon_repo "$repo_path" "$_auth_token"
   else
     # Empty, crashed, or unknown output — honest error, NOT "success"
     echo "**STATUS: plan-error** — empty or unrecognized plan output (possible crash)"
@@ -139,15 +156,129 @@ _sweep_repo() {
       echo "~~~"
       echo ""
     fi
+    echo "- $repo_path: no medible — plan-error; sin snapshot de PRs." >&4
   fi
+}
+
+# ---------------------------------------------------------------------------
+# _reckon_repo <repo_path> <auth_token> — runs ONCE per repo, called only
+# from the `included` branch of _sweep_repo (gates already cleared, same
+# in-scope $_auth_token reused — no second auth resolution, REQ-2).
+# Classifies DevLead-attributed PRs (REQ-1) into merged / closed-sin-merge /
+# changes-requested / pending via a SINGLE in-jq expression — CRITICAL-1:
+# the bucket is computed INSIDE jq (one token per line); bash only counts
+# pre-classified tokens, it never parses multiple nullable fields itself
+# (that `@tsv` + bash `read` pattern was proven to silently misclassify
+# PRs with a null middle field — never reintroduce it). `merged` precedence
+# is absolute: once .mergedAt is non-null, .reviewDecision is never
+# consulted. Appends one JSONL line to ~/.devlead/outcomes/{repo-key}.jsonl
+# (REQ-5, append-only, MEASURED runs only) and emits exactly ONE outcomes
+# line to fd 4 (REQ-6: has-data / zero-attributable / gh-failed — never
+# silent, never fabricated). Zero GitHub writes — only `gh pr list` reads
+# (REQ-7). Always returns 0 (REQ-8 failure isolation — a reckoner failure
+# never tumbles the plan section already written to fd 1).
+# ---------------------------------------------------------------------------
+_reckon_repo() {
+  local repo_path="$1"
+  local tok="$2"
+
+  local _root _key
+  _root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$repo_path")"
+  _key="${_root//\//_}"
+
+  local buckets _gh_rc
+  buckets=$(GH_TOKEN="$tok" gh pr list --state all \
+    --json state,headRefName,reviewDecision,mergedAt \
+    -q '.[]
+        | select(.headRefName | test("^(feat|fix|chore|docs|refactor|perf|test)/issue-[0-9]+-"))
+        | if   .mergedAt != null                     then "merged"
+          elif .state == "CLOSED"                     then "closed-sin-merge"
+          elif .reviewDecision == "CHANGES_REQUESTED" then "changes-requested"
+          else                                             "pending"
+          end' \
+    --limit 200 2>/dev/null)
+  _gh_rc=$?
+
+  if (( _gh_rc != 0 )); then
+    echo "- $repo_path: no medible — gh pr list falló o devolvió vacío." >&4
+    return 0
+  fi
+
+  local merged=0 closed=0 changes=0 pending=0
+  if [[ -n "$buckets" ]]; then
+    while IFS= read -r _b; do
+      case "$_b" in
+        merged)            (( merged++ ))  || true ;;
+        closed-sin-merge)  (( closed++ ))  || true ;;
+        changes-requested) (( changes++ )) || true ;;
+        pending)           (( pending++ )) || true ;;
+      esac
+    done <<< "$buckets"
+  fi
+  local attributable=$(( merged + closed + changes + pending ))
+
+  # REQ-4 aging — SEPARATE single-field jq projection, pending-bucket only.
+  # `date -u -d` is a GNU-date INPUT-parsing dependency (new vs. the rest of
+  # the codebase, which only ever FORMATS with `date`); acceptable for the
+  # Linux/systemd sweep target — `|| echo "$now"` degrades a bad timestamp
+  # to age 0 instead of crashing.
+  local oldest_days=0
+  if (( attributable > 0 )); then
+    local pending_upds now
+    pending_upds=$(GH_TOKEN="$tok" gh pr list --state open \
+      --json state,headRefName,reviewDecision,mergedAt,updatedAt \
+      -q '.[]
+          | select(.headRefName | test("^(feat|fix|chore|docs|refactor|perf|test)/issue-[0-9]+-"))
+          | select(.mergedAt == null and .state != "CLOSED" and .reviewDecision != "CHANGES_REQUESTED")
+          | .updatedAt' \
+      --limit 200 2>/dev/null || true)
+    now=$(date -u +%s)
+    while IFS= read -r _u; do
+      [[ -z "$_u" ]] && continue
+      local upd d
+      upd=$(date -u -d "$_u" +%s 2>/dev/null || echo "$now")
+      d=$(( (now - upd) / 86400 ))
+      (( d > oldest_days )) && oldest_days=$d
+    done <<< "$pending_upds"
+  fi
+
+  # REQ-4 merge-rate — div-by-zero MUST be the literal string "n/a", never
+  # "0%", never an error, never silently omitted.
+  local denom merge_rate
+  denom=$(( merged + closed ))
+  if (( denom == 0 )); then
+    merge_rate="n/a"
+  else
+    merge_rate="$(awk "BEGIN{printf \"%.0f%%\", ($merged/$denom)*100}")"
+  fi
+
+  # REQ-5 — append-only JSONL line. This run genuinely measured (gh
+  # succeeded), so a line is always appended here — even when
+  # attributable == 0 ("measured, found none"). This is distinct from the
+  # early-gate/plan-blocked paths in _sweep_repo, which never measured at
+  # all and therefore append no JSONL line (absence = never measured).
+  local ts line
+  ts="$(date -u +%FT%TZ)"
+  line=$(printf '{"ts":"%s","repo":"%s","merged":%d,"closed_sin_merge":%d,"changes_requested":%d,"pending":%d,"attributable":%d,"merge_rate":"%s","oldest_pending_days":%d}' \
+    "$ts" "$_root" "$merged" "$closed" "$changes" "$pending" "$attributable" "$merge_rate" "$oldest_days")
+  printf '%s\n' "$line" >> "$OUTCOMES_DIR/${_key}.jsonl"
+
+  # REQ-6 — exactly one outcomes line to fd 4.
+  if (( attributable == 0 )); then
+    echo "- $repo_path: sin PRs de DevLead todavía" >&4
+  else
+    echo "- $repo_path: PRs DevLead: ${merged} merged, ${closed} closed-sin-merge, ${pending} pending (más viejo: ${oldest_days} días) — merge-rate ${merge_rate}" >&4
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
-# Ensure reports dir exists
+# Ensure reports + outcomes dirs exist
 mkdir -p "$REPORTS_DIR"
+mkdir -p "$OUTCOMES_DIR"
 
 # Check autonomous-repos file
 if [[ ! -f "$REPOS_FILE" ]]; then
@@ -197,12 +328,24 @@ _total=${#_repos[@]}
 _included=0
 _excluded=0
 _digest_body=""
+_outcomes_body=""
 
 for _repo in "${_repos[@]}"; do
+  # _sweep_repo is called EXACTLY ONCE per repo. It emits two streams:
+  #   fd 1 (stdout)  → plan section, captured into $_section (unchanged path)
+  #   fd 4           → outcomes line, redirected into a per-repo temp file
+  #                     and read back into $_outc. This is the ONLY way to
+  #                     capture two file descriptors from a single
+  #                     command-substitution invocation without running
+  #                     _sweep_repo a second time (which would double
+  #                     `gh pr list` reads).
+  _outc_tmp="$(mktemp "$REPORTS_DIR/.outc-XXXXXX")"
   _section="$( (
     # Subshell so cd does not affect our loop
     _sweep_repo "$_repo"
-  ) )"
+  ) 4>"$_outc_tmp" )"
+  _outc="$(cat "$_outc_tmp")"
+  rm -f "$_outc_tmp"
 
   # FIX 1: Only genuine "included" increments the included counter.
   if echo "$_section" | grep -q "^\*\*STATUS: included\*\*"; then
@@ -212,6 +355,7 @@ for _repo in "${_repos[@]}"; do
   fi
 
   _digest_body+="$_section"$'\n'
+  [[ -n "$_outc" ]] && _outcomes_body+="$_outc"$'\n'
 done
 
 # FIX 5: Atomic digest write via temp file + mv
@@ -225,6 +369,10 @@ _write_ok=0
   echo "---"
   echo ""
   printf '%s' "$_digest_body"
+  echo ""
+  echo "## Outcomes"
+  echo ""
+  printf '%s' "$_outcomes_body"
 } > "$_tmp" && _write_ok=1
 
 if [[ "$_write_ok" -eq 1 ]]; then

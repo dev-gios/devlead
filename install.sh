@@ -86,6 +86,9 @@ _ok "~/.devlead/journals/ listo (journal per-repo, se crea al primer /cerremos)"
 mkdir -p "$DEVLEAD_DIR/reports"
 _ok "~/.devlead/reports/ listo (sweep digests, se crean al primer devlead sweep)"
 
+mkdir -p "$DEVLEAD_DIR/outcomes"
+_ok "~/.devlead/outcomes/ listo (PR outcome history per-repo, .jsonl append-only)"
+
 # ---------------------------------------------------------------------------
 # ~/.claude/commands/*.md — ya publicados por bootstrap_symlinks arriba
 # ---------------------------------------------------------------------------
