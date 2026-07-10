@@ -318,7 +318,7 @@ Antes de invocar `branch.sh`, resolvé `{integration_branch}`: corré `bash ~/.d
 Invocá `branch.sh` con los 5 argumentos posicionales, siempre en una sola forma de llamado. Si Step 8.1 emitió `DEPENDS-ON: {N}`, pasalo como 4to argumento; si no, dejá el 4to argumento vacío (`""`) para que `{integration_branch}` mantenga la posición 5:
 
 ```
-bash ~/.devlead/scripts/branch.sh {issue_num} "{issue_title}" {type} {dep_num_or_empty} {integration_branch}
+bash ~/.devlead/scripts/branch.sh {issue_num} "{issue_title}" {type} {dep_num_or_empty} "{integration_branch}"
 ```
 
 Capturá del output: `BRANCH:`, `STATUS:`, y `STACKED:` (si aparece).
@@ -485,7 +485,7 @@ gh pr create --base {A-branch} --title "{conventional_commit_title}" --body "Clo
 Si no hubo `STACKED:` (PR raíz, no encadenado), el comando SIEMPRE incluye `--base {integration_branch}` — reusá el valor resuelto en Step 8.2, no vuelvas a leer `envelope.sh show`. Nunca dejes que `gh pr create` resuelva la base implícitamente contra el default branch del repo:
 
 ```
-gh pr create --base {integration_branch} --title "{conventional_commit_title}" --body "Closes #{issue_num}
+gh pr create --base "{integration_branch}" --title "{conventional_commit_title}" --body "Closes #{issue_num}
 
 {si esta issue NO tenía Spec: — insertá acá la sección ## Intención completa, ver contenido exacto abajo}
 

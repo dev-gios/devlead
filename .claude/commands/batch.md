@@ -121,7 +121,7 @@ Si los paths candidatos no se pueden derivar con certeza (issue sin labels ni re
 Ejecutá los siguientes pasos de `arranquemos.md` para ESTA issue, en este orden exacto:
 
 - **Paso 8.1** — Resolver spec de la issue (`ref-resolver.sh {issue_num}`) — capturá `DEPENDS-ON:` si aparece
-- **Paso 8.2** — Crear la rama (`branch.sh {issue_num} "{issue_title}" {type} [{dep_num}]`) — pasá `dep_num` como 4to arg solo si Paso 8.1 emitió `DEPENDS-ON:`
+- **Paso 8.2** — Crear la rama: seguí exactamente `Paso 8.2` de `arranquemos.md` para esta issue — resolvé `{integration_branch}` vía `envelope.sh show` (default `dev` si ausente o `STATUS: blocked`) e invocá `branch.sh` con la forma de 5 argumentos posicionales exacta que ese paso define, pasando `dep_num` como 4to arg solo si Paso 8.1 emitió `DEPENDS-ON:` (si no, dejalo vacío `""`). Guardá el `{integration_branch}` resuelto acá — se reutiliza en B2.d (post-check) sin volver a resolverlo
 - **Paso 8.3** — Pipeline principal: con spec si encontrado (Inv 7, branch sin cambios); si NO hay spec, corré `Step 8.3-SDD` (ciclo SDD completo — ver `arranquemos.md`) con `SDD_MODE=autonomous` (Delta 1 de acá abajo ya cubre el skip de la pausa de aprobación por issue — no hace falta un flag nuevo)
 - **Paso 8.4** — QA gates (`gate-check.sh`)
 - **Paso 9** — Gate visual de frontend (SOLO si Paso 8.1 encontró `DESIGN: {path}`)
@@ -174,10 +174,10 @@ Regla de STOP: solo las dos señales catastróficas de entorno paran el batch. C
      real porque los paths son los que la implementación REALMENTE tocó.
      Inv 5 forma post-impl: si tocó zona → PARK sin abrir PR (nunca silencioso). -->
 
-Antes de abrir el PR, ejecutá con el Bash tool:
+Antes de abrir el PR, ejecutá con el Bash tool, usando el mismo `{integration_branch}` resuelto en Paso 8.2 (B2.b) — no lo vuelvas a derivar; si por algún motivo no está disponible en este punto, usá `dev` como fallback:
 
 ```
-git diff --name-only origin/dev...HEAD | bash ~/.devlead/scripts/forbidden-check.sh
+git diff --name-only origin/{integration_branch}...HEAD | bash ~/.devlead/scripts/forbidden-check.sh
 ```
 
 Si la salida es EXACTAMENTE `STATUS: clear`:

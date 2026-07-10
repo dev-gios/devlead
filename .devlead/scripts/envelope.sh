@@ -395,6 +395,19 @@ _do_show() {
   bs=$(yq e '.base.strategy' "$ENV_FILE" 2>/dev/null)
   _in "$bs" nearest-tag dev || _block "base.strategy must be 'nearest-tag' or 'dev' (got '$bs')"
 
+  # base.integration_branch (OPTIONAL): present → non-empty !!str
+  local ib_type
+  ib_type=$(yq e '.base.integration_branch | type' "$ENV_FILE" 2>/dev/null)
+  if [[ "$ib_type" != "!!null" ]]; then
+    [[ "$ib_type" == "!!str" ]] \
+      || _block "base.integration_branch must be a YAML string when present (got type '$ib_type')"
+    local ib_val ib_trim
+    ib_val=$(yq e '.base.integration_branch' "$ENV_FILE" 2>/dev/null)
+    ib_trim=$(printf '%s' "$ib_val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ -n "$ib_trim" ]] \
+      || _block "base.integration_branch present but empty/whitespace-only"
+  fi
+
   op=$(yq e '.on_failure.policy' "$ENV_FILE" 2>/dev/null)
   [[ "$op" == "park-and-continue" ]] \
     || _block "on_failure.policy must be 'park-and-continue' in v1 (got '$op')"
