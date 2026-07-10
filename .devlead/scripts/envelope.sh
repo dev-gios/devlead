@@ -404,8 +404,8 @@ _do_show() {
     local ib_val ib_trim
     ib_val=$(yq e '.base.integration_branch' "$ENV_FILE" 2>/dev/null)
     ib_trim=$(printf '%s' "$ib_val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    [[ -n "$ib_trim" ]] \
-      || _block "base.integration_branch present but empty/whitespace-only"
+    [[ -n "$ib_trim" && "$ib_val" == "$ib_trim" ]] \
+      || _block "base.integration_branch must be a non-empty string without surrounding whitespace"
   fi
 
   op=$(yq e '.on_failure.policy' "$ENV_FILE" 2>/dev/null)

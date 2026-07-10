@@ -177,7 +177,7 @@ Regla de STOP: solo las dos señales catastróficas de entorno paran el batch. C
 Antes de abrir el PR, ejecutá con el Bash tool, usando el mismo `{integration_branch}` resuelto en Paso 8.2 (B2.b) — no lo vuelvas a derivar; si por algún motivo no está disponible en este punto, usá `dev` como fallback:
 
 ```
-git diff --name-only origin/{integration_branch}...HEAD | bash ~/.devlead/scripts/forbidden-check.sh
+git diff --name-only "origin/{integration_branch}...HEAD" | bash ~/.devlead/scripts/forbidden-check.sh
 ```
 
 Si la salida es EXACTAMENTE `STATUS: clear`:
