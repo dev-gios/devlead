@@ -218,7 +218,31 @@ Si la llamada `gh issue view {N}` falla (issue no encontrada, gh no disponible, 
 
 **Herencia del pre-flight scan:** si el pre-scan de "### Resolver la cola completa (pre-flight)" (que MODO SCOPED también corre, ver esa sección) marcó `cannot-cd`, `skipped`, o `auth-unavailable` para el repo resuelto acá, mostrá esa anotación en vez del bloque happy-path de arriba — mismo patrón que usa el preview plan-driven para mostrar `(skipped — disabled (ENABLED: false))` por repo.
 
-**Si MODO = plan-driven**, presentá exactamente este bloque antes de arrancar el outer loop:
+**Si MODO = plan-driven y SCOPE = cwd** (sin `--fleet`), presentá exactamente este bloque antes de arrancar el outer loop:
+
+```
+## sweep-execute — cola confirmada (modo: repo actual)
+
+Modo: plan-driven acotado al repo actual (cwd)
+Repo: /abs/ruta/repo-actual
+Cola (INCLUDED, orden de plan):
+  1. #[N] — [título]
+  2. #[M] — [título]
+  ...
+
+Issues INCLUDED: [m]
+⚠️ [K] de [m] issues sin Spec: → van a correr un ciclo SDD completo (Step 8.3-SDD, más caro que implementación directa).
+Política: PARK Y SIGUE — gate rojo aparca esa issue, el run continúa
+MERGE: NUNCA — cada issue termina en gh pr create. El merge es tuyo.
+
+Comenzando run...
+```
+
+Omití la línea `⚠️` de spec si `K == 0` (misma regla que en los otros dos bloques de preview). A diferencia del bloque scoped, acá NO se renderiza ninguna advertencia de política por-issue: la cola ya fue filtrada por `envelope-auth.sh plan` — cualquier issue excluida por política simplemente no aparece en INCLUDED, no hay bypass que señalar. Tampoco se muestra la línea de presupuesto `MAX_ISSUES` del bloque scoped: `envelope-auth.sh plan` ya respeta ese presupuesto al construir INCLUDED, mismo comportamiento que el bloque multi-repo de abajo (que tampoco la muestra). La señal de costo (K sobre M) reutiliza la misma lógica de "Señal de costo" de "### Resolver la cola completa (pre-flight)" arriba, computada sobre el INCLUDED de este repo.
+
+**Herencia del pre-flight scan:** igual que en el bloque scoped de arriba — si el pre-scan marcó `cannot-cd`, `skipped`, o `auth-unavailable` para el repo resuelto, mostrá esa anotación en vez del bloque happy-path de arriba.
+
+**Si MODO = plan-driven y SCOPE = fleet** (`--fleet`), presentá exactamente este bloque antes de arrancar el outer loop:
 
 ```
 ## sweep-execute — cola confirmada
@@ -319,7 +343,9 @@ Capturá stdout. Procesá la salida:
 
 **Paso 2 — Obtener cola de issues:**
 
-<!-- El SOURCE de la cola depende del MODO fijado en E0. -->
+<!-- El SOURCE de la cola depende del MODO fijado en E0. El SOURCE es idéntico en
+     plan-driven-cwd y plan-driven-fleet (SCOPE=cwd y SCOPE=fleet); solo cambia
+     cuántos repos alimentan el outer loop E1 (fijado en E0). -->
 
 **Si MODO = scoped** (la invocación trajo tokens `#N`):
 - La cola de ESTE repo (el único del run) es la lista `#N` declarada en E0, en
