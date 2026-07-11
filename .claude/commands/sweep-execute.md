@@ -34,14 +34,25 @@ Antes de leer la lista de repos, determiná el MODO de esta invocación:
 
 - **Si la invocación trae uno o más tokens `#N`** (p.ej. `/sweep-execute #1 #2 #3`)
   → **MODO SCOPED**. Parseá los números de issue con la MISMA regla de `batch.md`
-  B0 `### Parsear la cola` (batch.md líneas 12-21): extraé los `#N` en orden de
+  B0 `### Parsear la cola` (batch.md líneas 11-21): extraé los `#N` en orden de
   aparición, strippeá el `#`, y el orden declarado ES el contrato de dependencias
-  para v1. Aceptá las mismas variantes que batch.md B0 (`/sweep-execute #1 #2 #3`,
-  `haz #1, #2 y #3`, comas y `y` en español) — referenciá esa sección por nombre
-  y rango de líneas, no restatees la tabla de formatos acá. **NO** parsees un
-  presupuesto `hasta N`: la longitud de la lista declarada ES la cola; el único
-  guard de presupuesto sigue siendo `MAX_ISSUES` de `envelope.sh show` (E1.4
-  Paso 1), igual que en modo plan-driven.
+  para v1. Aceptá exactamente las mismas variantes de invocación que acepta esa
+  sección de `batch.md` — referenciá esa sección por nombre y rango de líneas,
+  no restatees la tabla de formatos acá. **NO** parsees un presupuesto `hasta N`:
+  la longitud de la lista declarada ES la cola; el único guard de presupuesto
+  sigue siendo `MAX_ISSUES` de `envelope.sh show` (E1.4 Paso 1), igual que en
+  modo plan-driven.
+
+  **Disclosure de política (D7 scoped):** MODO SCOPED NO aplica los filtros de
+  política de `envelope.sh` (exclude_labels, chequeo de assignee/ownership,
+  dedup contra branch/PR ya en vuelo para esa issue) — la lista `#N` declarada
+  ES la autorización, sin importar labels, asignación, o si la issue ya tiene
+  una rama/PR en curso (`branch.sh` puede reusar una rama existente vía su
+  propia lógica `STATUS: reused`, sin cambios). Esto es intencional — mismo
+  principio de autorización explícita que ya establece `batch.md` para su cola
+  (`haz #N #M...` es la autorización, no hay filtro de política adicional
+  detrás). No es un bug ni una omisión a corregir: es la naturaleza del modo
+  scoped.
 
   Resolvé el repo objetivo desde el cwd de la sesión:
   ```
@@ -59,7 +70,9 @@ Antes de leer la lista de repos, determiná el MODO de esta invocación:
     ```
     (Mismo shape que el early-exit `no-repos-enrolled` de más abajo: STATUS
     canónico, mensaje de remediación, exit limpio sin reporte — no se corre
-    ningún paso de E1/E2/E3.)
+    ningún paso de E1/E2/E3. Este es el early-exit PRE-repo de E0 — sin
+    reporte; no confundir con el STATUS homónimo de Delta 2 (E2.3), que es
+    una catástrofe MID-pipeline y sí genera entrada de reporte para ese repo.)
 
   Con MODO SCOPED resuelto, saltá directamente a "### Resolver la cola completa
   (pre-flight)" usando la lista de un solo repo — NO leas `~/.devlead/autonomous-repos`.
@@ -86,12 +99,21 @@ Salí limpio sin reporte.
 
 ### Resolver la cola completa (pre-flight)
 
-Para poder mostrar el preview, hacé un pre-scan liviano de cada repo:
+Para poder mostrar el preview, hacé un pre-scan liviano de cada repo. Las
+primeras tres bullets (cd / envelope check / auth check) son PREVIEW-ONLY y
+corren igual en AMBOS modos — scoped y plan-driven — con fines de health-check
+del repo:
 - `cd` al path — si falla, anotá `cannot-cd` para ese repo.
 - Corré `bash ~/.devlead/scripts/envelope.sh check` — si no está ENROLLED+ENABLED, anotá `skipped`.
 - Verificá auth con la lógica de 4 pasos de `sweep.sh:19-57` (leelo con Read tool — NO ejecutes `_ensure_auth` como comando, es una función interna de sweep.sh). Si ningún paso resuelve un token, anotá `auth-unavailable`. **Nota: este chequeo es PREVIEW-ONLY.** El token no se almacena como `_auth_token` acá; la resolución formal y el storage de `_auth_token` ocurren en E1.3 (por repo, durante el outer loop).
-- Corré `bash ~/.devlead/scripts/envelope-auth.sh plan` fresh — el wrapper `envelope-auth.sh` resuelve el auth internamente (mismo chain de 4 pasos verificado en el paso anterior) y lo exporta en su propio proceso antes de invocar `envelope.sh plan`, por lo que el token nunca aparece en la línea de comando — parseá la sección `--- INCLUDED (queue order) ---` para obtener los `#N` (ver sección E1.4 para el formato exacto). **Este plan es BEST-EFFORT: puede diferir del plan real si el auth resuelto acá difiere del de E1.3 o si el estado de GitHub cambia entre E0 y E1.4. La cola AUTORITATIVA es la re-derivada por repo en E1.4 (Inv 2 — el estado siempre se re-deriva en vivo). Que E0 y E1.4 difieran es esperado y normal; E1.4 siempre gana.**
-- **Señal de costo (D7):** para cada `#N` obtenido en el bullet anterior, corré `bash ~/.devlead/scripts/ref-resolver.sh {N}` y contá cuántos devuelven una línea que matchea el patrón usando `grep -E '^SPEC:\s+none$'` (el flag `-E` es obligatorio: `grep` plano sin flags NO interpreta `\s` como clase de whitespace y no matchea, `grep -E` sí) — **whitespace-safe**: el output real de `ref-resolver.sh` es `SPEC:   none` (espacios/tabs múltiples, verificado en el script), NUNCA compares contra el literal de un solo espacio `"SPEC: none"`. Acumulá `K` (issues sin spec) sobre `M` (total INCLUDED) a través de todos los repos — se muestra en el preview de abajo.
+
+**El siguiente bullet corre SOLO en MODO plan-driven — en MODO SCOPED se
+SALTEA por completo, nunca se invoca `envelope-auth.sh plan` acá** (misma
+prohibición que E1.4 Paso 2 ya establece para el outer loop; ver esa sección).
+La cola en modo scoped ya es la lista `#N` declarada en E0 — no hay nada que
+derivar de un plan:
+- *(Solo plan-driven)* Corré `bash ~/.devlead/scripts/envelope-auth.sh plan` fresh — el wrapper `envelope-auth.sh` resuelve el auth internamente (mismo chain de 4 pasos verificado en el paso anterior) y lo exporta en su propio proceso antes de invocar `envelope.sh plan`, por lo que el token nunca aparece en la línea de comando — parseá la sección `--- INCLUDED (queue order) ---` para obtener los `#N` (ver sección E1.4 para el formato exacto). **Este plan es BEST-EFFORT: puede diferir del plan real si el auth resuelto acá difiere del de E1.3 o si el estado de GitHub cambia entre E0 y E1.4. La cola AUTORITATIVA es la re-derivada por repo en E1.4 (Inv 2 — el estado siempre se re-deriva en vivo). Que E0 y E1.4 difieran es esperado y normal; E1.4 siempre gana.**
+- **Señal de costo (D7):** para cada `#N` corré `bash ~/.devlead/scripts/ref-resolver.sh {N}` y contá cuántos devuelven una línea que matchea el patrón usando `grep -E '^SPEC:\s+none$'` (el flag `-E` es obligatorio: `grep` plano sin flags NO interpreta `\s` como clase de whitespace y no matchea, `grep -E` sí) — **whitespace-safe**: el output real de `ref-resolver.sh` es `SPEC:   none` (espacios/tabs múltiples, verificado en el script), NUNCA compares contra el literal de un solo espacio `"SPEC: none"`. **La fuente de los `#N` depende del modo: en plan-driven son los obtenidos del bullet anterior (INCLUDED de `envelope-auth.sh plan`); en scoped son directamente la lista declarada en E0 (el bullet anterior no corrió).** Acumulá `K` (issues sin spec) sobre `M` (total INCLUDED en plan-driven, o total declarado en scoped) a través de todos los repos — se muestra en el preview de abajo.
 
 **Nota sobre las anotaciones de E0:** las etiquetas `cannot-cd`, `skipped`, `auth-unavailable` usadas arriba son labels de PREVIEW SOLAMENTE — son previsualizaciones de los STATUS canónicos de E1.x (p.ej. `skipped` aquí corresponde a `STATUS: skipped — disabled (ENABLED: false)` o `STATUS: skipped — not enrolled` en E1.2). El STATUS canónico y autoritativo se emite durante el outer loop (E1.1–E1.4), no en E0.
 
@@ -111,13 +133,18 @@ Cola (en orden declarado):
 
 Issues declaradas: [m]
 ⚠️ [K] de [m] issues sin Spec: → van a correr un ciclo SDD completo (Step 8.3-SDD, más caro que implementación directa).
+⚠️ Presupuesto (MAX_ISSUES={X}) es menor a las {m} issues declaradas — las últimas {m-X} no se van a alcanzar (no_alcanzada).
 Política: PARK Y SIGUE — gate rojo aparca esa issue, el run continúa
 MERGE: NUNCA — cada issue termina en gh pr create. El merge es tuyo.
 
 Comenzando run...
 ```
 
-Omití la línea `⚠️` si `K == 0` (misma regla que en modo plan-driven). El cómputo de la señal de costo (K sobre M) reutiliza la lógica EXISTENTE de E0 (`ref-resolver.sh {N}` + `grep -E '^SPEC:\s+none$'`, whitespace-safe, ver arriba) aplicada sobre la lista declarada en vez de sobre un plan derivado.
+Omití la línea `⚠️` de spec si `K == 0` (misma regla que en modo plan-driven). Omití la línea `⚠️` de presupuesto si `[m] <= MAX_ISSUES` (mismo patrón omit-when-not-applicable) — solo se muestra cuando la cola declarada excede el presupuesto del repo (`MAX_ISSUES` obtenido de `envelope.sh show`, E1.4 Paso 1, que en scoped también corre sin cambios). El cómputo de la señal de costo (K sobre M) reutiliza la lógica EXISTENTE de E0 (`ref-resolver.sh {N}` + `grep -E '^SPEC:\s+none$'`, whitespace-safe, ver arriba) aplicada sobre la lista declarada en vez de sobre un plan derivado.
+
+**Resolución del título:** `[título si disponible]` se resuelve con `gh issue view {N} --json title -q .title`. Si esa llamada falla (issue no encontrada, gh no disponible, etc.), renderizá la línea solo con el número (`1. #[N]`), sin título — no es un gap sin especificar.
+
+**Herencia del pre-flight scan:** si el pre-scan de "### Resolver la cola completa (pre-flight)" (que MODO SCOPED también corre, ver esa sección) marcó `cannot-cd`, `skipped`, o `auth-unavailable` para el repo resuelto acá, mostrá esa anotación en vez del bloque happy-path de arriba — mismo patrón que usa el preview plan-driven para mostrar `(skipped — disabled (ENABLED: false))` por repo.
 
 **Si MODO = plan-driven**, presentá exactamente este bloque antes de arrancar el outer loop:
 
@@ -227,8 +254,9 @@ Capturá stdout. Procesá la salida:
   orden declarado. NO invocás `envelope-auth.sh plan`.
 - Como NO hay llamada a plan, **NINGUNO** de los guards de plan aplica en este
   modo: `plan-blocked` (STATUS: blocked), `skipped — paused` (STATUS: paused),
-  `zero-issues` ((none)) y `parse-miss` NO se evalúan — todos son señales del
-  output de `envelope.sh plan`, que acá no corre. La cola nunca puede quedar
+  `zero-issues` ((none)), `parse-miss`, y `plan-error` (output vacío o no
+  reconocido — ver E1.4 Paso 2, rama plan-driven) NO se evalúan — todos son
+  señales del output de `envelope.sh plan`, que acá no corre. La cola nunca puede quedar
   vacía en scoped (el usuario declaró ≥1 issue por construcción de la detección
   de modo; si hubiera declarado 0, E0 nunca habría entrado en modo scoped).
 - Los STATUS de nivel repo que provienen de show/auth/enroll (E1.2, E1.3,
@@ -322,20 +350,22 @@ Ejecutá los sub-pasos B2.a → B2.e de `batch.md` para ESTA issue. Para el deta
 La autorización y la cola ya están fijadas desde la invocación del comando (E0). No hacés B0: no parseás invocación, no mostrás sobre de batch, no esperás confirmación. El Paso 7 de arranquemos.md tampoco corre.
 
 **Delta 2 — HALT → PARK extendido.**
-Heredás la tabla HALT→PARK completa de batch.md B2.c (batch.md:139-158). Agregás estas dos filas extra al final de la tabla:
+Heredás la tabla HALT→PARK completa de batch.md B2.c (batch.md:149-163, tabla
+completa incluyendo header y las 13 filas, desde `branch.sh STATUS: blocked`
+hasta `NOT_A_GIT_REPO o gh auth perdido`). Agregás estas dos filas extra al final de la tabla:
 
 | Señal | Acción en sweep-execute | Sección del reporte |
 |---|---|---|
 | `gh pr create` retorna permission error | **PARK** `auth: PR creation requires write scope (repo) — token is read-only` | Aparcadas |
 | Chrome MCP no disponible (gate visual) | **PARK** `gate visual no completable sin Chrome MCP` | Aparcadas |
 
-Y modificás la fila de catástrofe de entorno de batch.md:154:
+Y modificás la fila de catástrofe de entorno de batch.md:163:
 
 | Señal | Acción en batch.md | Acción en sweep-execute |
 |---|---|---|
 | `NOT_A_GIT_REPO` o `gh auth` perdido | STOP BATCH ENTERO | **PARK** issue actual + marcar REPO como `STATUS: auth-lost` o `STATUS: not-a-git-repo` + **continuar outer loop** (NO detener el run) |
 
-Esta es la diferencia semántica fundamental: en batch, catástrofe = stop global. En sweep-execute, catástrofe = stop de ESE REPO, run continúa con el siguiente.
+Esta es la diferencia semántica fundamental: en batch, catástrofe = stop global. En sweep-execute, catástrofe = stop de ESE REPO, run continúa con el siguiente. **Nota de desambiguación (ver también E0):** el `STATUS: not-a-git-repo` de esta fila es una catástrofe MID-pipeline detectada durante E2.3 (dentro del outer loop, con repo ya en curso) y SÍ genera una entrada de reporte para ese repo — no confundir con el `STATUS: not-a-git-repo` del early-exit PRE-repo de E0 (sección "Detección de modo"), que corta el run entero sin reporte antes de que exista ningún repo resuelto.
 
 **Delta 3 — Composite tracking key.**
 Cada resultado de issue se registra bajo `(repo-path, issue-num)`, no solo `issue-num`. Cuando actualizás el tally en E2.4, el key de la entrada es la tupla completa.
