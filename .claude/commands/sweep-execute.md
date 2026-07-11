@@ -1,4 +1,4 @@
-Sos DevLead en modo execute autónomo. El trigger de esta invocación (`/sweep-execute`) ES la autorización permanente para todos los repos enrollados y todas las issues INCLUDED en sus envelopes actuales. No confirmás por repo ni por issue. Seguí estos pasos en orden exacto.
+Sos DevLead en modo execute autónomo. El trigger de esta invocación (`/sweep-execute`) ES la autorización permanente — para el repo resuelto (por `#N` explícitos o por cwd en plan-driven) y sus issues INCLUDED, o para TODOS los repos enrollados si se invoca con `--fleet` — y todas las issues INCLUDED en el/los envelope(s) vigente(s). No confirmás por repo ni por issue. Seguí estos pasos en orden exacto.
 
 ---
 
@@ -218,6 +218,8 @@ Si la llamada `gh issue view {N}` falla (issue no encontrada, gh no disponible, 
 
 **Herencia del pre-flight scan:** si el pre-scan de "### Resolver la cola completa (pre-flight)" (que MODO SCOPED también corre, ver esa sección) marcó `cannot-cd`, `skipped`, o `auth-unavailable` para el repo resuelto acá, mostrá esa anotación en vez del bloque happy-path de arriba — mismo patrón que usa el preview plan-driven para mostrar `(skipped — disabled (ENABLED: false))` por repo.
 
+**Nota `--fleet` ignorado (si aplica):** si la invocación también incluía el token `--fleet` junto a los `#N` declarados, agregá esta línea informativa al preview (antes de "Comenzando run..."): `Nota: --fleet fue ignorado — MODO SCOPED (#N explícitos) tiene precedencia (ver "### Detección de modo").` Esto evita que el usuario asuma que `--fleet` tuvo efecto cuando en realidad MODO SCOPED ganó.
+
 **Si MODO = plan-driven y SCOPE = cwd** (sin `--fleet`), presentá exactamente este bloque antes de arrancar el outer loop:
 
 ```
@@ -234,11 +236,12 @@ Issues INCLUDED: [m]
 ⚠️ [K] de [m] issues sin Spec: → van a correr un ciclo SDD completo (Step 8.3-SDD, más caro que implementación directa).
 Política: PARK Y SIGUE — gate rojo aparca esa issue, el run continúa
 MERGE: NUNCA — cada issue termina en gh pr create. El merge es tuyo.
+Fleet: para barrer todos los repos enrollados en vez de solo este, invocá con --fleet: /sweep-execute --fleet
 
 Comenzando run...
 ```
 
-Omití la línea `⚠️` de spec si `K == 0` (misma regla que en los otros dos bloques de preview). A diferencia del bloque scoped, acá NO se renderiza ninguna advertencia de política por-issue: la cola ya fue filtrada por `envelope-auth.sh plan` — cualquier issue excluida por política simplemente no aparece en INCLUDED, no hay bypass que señalar. Tampoco se muestra la línea de presupuesto `MAX_ISSUES` del bloque scoped: `envelope-auth.sh plan` ya respeta ese presupuesto al construir INCLUDED, mismo comportamiento que el bloque multi-repo de abajo (que tampoco la muestra). La señal de costo (K sobre M) reutiliza la misma lógica de "Señal de costo" de "### Resolver la cola completa (pre-flight)" arriba, computada sobre el INCLUDED de este repo.
+Omití la línea `⚠️` de spec si `K == 0` (misma regla que en los otros dos bloques de preview). A diferencia del bloque scoped, acá NO se renderiza ninguna advertencia de política por-issue: la cola ya fue filtrada por `envelope-auth.sh plan` — cualquier issue excluida por política simplemente no aparece en INCLUDED, no hay bypass que señalar. Tampoco se muestra la línea de presupuesto `MAX_ISSUES` del bloque scoped: `envelope-auth.sh plan` ya respeta ese presupuesto al construir INCLUDED, mismo comportamiento que el bloque multi-repo de abajo (que tampoco la muestra). La línea `Fleet:` es fija en este bloque — siempre se muestra, no es condicional como las líneas `⚠️`. La señal de costo (K sobre M) reutiliza la misma lógica de "Señal de costo" de "### Resolver la cola completa (pre-flight)" arriba, computada sobre el INCLUDED de este repo.
 
 **Herencia del pre-flight scan:** igual que en el bloque scoped de arriba — si el pre-scan marcó `cannot-cd`, `skipped`, o `auth-unavailable` para el repo resuelto, mostrá esa anotación en vez del bloque happy-path de arriba.
 
@@ -266,9 +269,9 @@ Comenzando run...
 
 Omití la línea `⚠️` si `K == 0`.
 
-**Guía de costo (D7, requisito, no nota informal):** cuando `K > 0`, `MAX_ISSUES` del repo (o de los repos) involucrado DEBERÍA estar en 1-2 — cada issue sin spec corre un ciclo SDD completo. Si el `MAX_ISSUES` configurado en el envelope de algún repo es mayor y no es intencional, agregá una línea de advertencia extra dentro del mismo bloque de preview de arriba (antes de "Comenzando run..."). Esta línea es **report-only, no bloqueante** — mismo patrón que la línea `⚠️ deps sin verificar` de `batch.md:157` (heredada transitivamente vía B2.c, que este archivo invoca en E2.3): reporte no-bloqueante, sin esperar respuesta, y el outer loop arranca igual sin confirmación.
+**Guía de costo (D7, requisito, no nota informal):** aplica a AMBOS bloques de preview plan-driven de arriba (SCOPE = cwd y SCOPE = fleet) — cuando `K > 0`, `MAX_ISSUES` del repo (o de los repos) involucrado DEBERÍA estar en 1-2 — cada issue sin spec corre un ciclo SDD completo. Si el `MAX_ISSUES` configurado en el envelope de algún repo es mayor y no es intencional, agregá una línea de advertencia extra dentro del bloque de preview correspondiente (antes de "Comenzando run..."): en el bloque SCOPE=cwd, inmediatamente bajo la línea `⚠️ [K] de [m] issues sin Spec`; en el bloque SCOPE=fleet, en el mismo lugar de siempre. Esta línea es **report-only, no bloqueante** — mismo patrón que la línea `⚠️ deps sin verificar` de `batch.md:157` (heredada transitivamente vía B2.c, que este archivo invoca en E2.3): reporte no-bloqueante, sin esperar respuesta, y el outer loop arranca igual sin confirmación.
 
-Después de mostrar el preview (cualquiera de los dos modos), arrancá el outer loop **sin esperar confirmación**.
+Después de mostrar el preview (cualquiera de los tres bloques posibles — scoped, plan-driven SCOPE=cwd, o plan-driven SCOPE=fleet), arrancá el outer loop **sin esperar confirmación**.
 
 ---
 
