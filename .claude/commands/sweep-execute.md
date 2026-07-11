@@ -74,16 +74,56 @@ Antes de leer la lista de repos, determiná el MODO de esta invocación:
     canónico, mensaje de remediación, exit limpio sin reporte — no se corre
     ningún paso de E1/E2/E3. Este es el early-exit PRE-repo de E0 — sin
     reporte; no confundir con el STATUS homónimo de Delta 2 (E2.3), que es
-    una catástrofe MID-pipeline y sí genera entrada de reporte para ese repo.)
+    una catástrofe MID-pipeline y sí genera entrada de reporte para ese repo.
+    Este mismo shape PRE-repo — STATUS canónico, remediación, exit limpio sin
+    reporte, sin E1/E2/E3 — es reusado también por el early-exit análogo de
+    MODO PLAN-DRIVEN cuando SCOPE = cwd y `git rev-parse --show-toplevel`
+    falla (ver más abajo, sub-branch `--fleet` ausente → SCOPE = cwd): ambos
+    modos comparten la misma forma de early-exit; solo cambia el texto de
+    remediación.)
 
   Con MODO SCOPED resuelto, saltá directamente a "### Resolver la cola completa
   (pre-flight)" usando la lista de un solo repo — NO leas `~/.devlead/autonomous-repos`.
 
-- **Si la invocación NO trae ningún token `#N`** → **MODO PLAN-DRIVEN** (default
-  actual, sin cambios). Corré "### Leer la lista de repos" y el resto de E0
-  exactamente como hoy.
+- **Si la invocación NO trae ningún token `#N`** → **MODO PLAN-DRIVEN**. Determiná
+  el sub-flag `SCOPE` según la presencia del token `--fleet` en la invocación
+  (escaneo posición-agnóstico, mismo principio que el escaneo de `#N` de
+  arriba — no importa dónde aparezca `--fleet` en la línea de invocación):
 
-<!-- Esta sección corre SOLO en modo plan-driven. -->
+  - **`--fleet` presente → SCOPE = fleet** (comportamiento actual, sin
+    cambios). Corré "### Leer la lista de repos" y el resto de E0 exactamente
+    como hoy — barre TODOS los repos enrollados en `~/.devlead/autonomous-repos`.
+
+  - **`--fleet` ausente → SCOPE = cwd**. Resolvé el repo objetivo desde el
+    cwd de la sesión, reusando el MISMO comando que MODO SCOPED usa arriba
+    ("Resolvé el repo objetivo desde el cwd de la sesión", líneas 59-62):
+    ```
+    git rev-parse --show-toplevel
+    ```
+    - Éxito → ese path absoluto es el ÚNICO repo del run (lista de un
+      elemento que alimenta el outer loop E1). NO leas
+      `~/.devlead/autonomous-repos` en esta rama. NO escribís ese path a ese
+      archivo. A diferencia de MODO SCOPED, la cola de ESE repo SIGUE siendo
+      derivada por `envelope-auth.sh plan` en E1.4 — la política sigue
+      aplicando sin cambios; el cwd solo acota QUÉ repo corre, no CÓMO se
+      deriva su cola. Saltá directamente a "### Resolver la cola completa
+      (pre-flight)" usando la lista de un solo repo.
+    - Falla (no es un repo git) → emití este bloque y salí limpio sin reporte:
+      ```
+      STATUS: not-a-git-repo
+      No se pudo resolver el repo actual (git rev-parse --show-toplevel falló).
+      El modo plan-driven por defecto se acota al repo actual y requiere ejecutarse dentro de un repo git.
+      Para barrer todos los repos enrollados, invocá con --fleet:  /sweep-execute --fleet
+      ```
+
+  **Nota:** un token `#N` combinado con `--fleet` no es una combinación
+  definida en este alcance — MODO SCOPED se decide primero (el chequeo de
+  `#N` de arriba tiene precedencia) y gana; `--fleet` queda ignorado si
+  aparecen ambos.
+
+<!-- Esta sección corre SOLO en modo plan-driven CON `--fleet` (SCOPE = fleet). En
+     plan-driven sin `--fleet` (SCOPE = cwd), el único repo del run ya fue
+     resuelto por cwd en "### Detección de modo" y esta sección se saltea. -->
 ### Leer la lista de repos
 
 Leé `~/.devlead/autonomous-repos` línea por línea. Aplicá las mismas reglas de dedup/CRLF que usa `sweep.sh` (referencia: líneas 166-181 de `~/.devlead/scripts/sweep.sh`):
