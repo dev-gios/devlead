@@ -44,8 +44,10 @@ Antes de leer la lista de repos, determiná el MODO de esta invocación:
   modo plan-driven.
 
   **Disclosure de política (D7 scoped):** MODO SCOPED NO aplica los filtros de
-  política de `envelope.sh` (exclude_labels, chequeo de assignee/ownership,
-  dedup contra branch/PR ya en vuelo para esa issue) — la lista `#N` declarada
+  política de `envelope.sh` (exclude_labels, require_readiness — issues con
+  body vacío/placeholder, normalmente excluidas por "no listas" —, chequeo de
+  assignee/ownership, dedup contra branch/PR ya en vuelo para esa issue) — la
+  lista `#N` declarada
   ES la autorización, sin importar labels, asignación, o si la issue ya tiene
   una rama/PR en curso (`branch.sh` puede reusar una rama existente vía su
   propia lógica `STATUS: reused`, sin cambios). Esto es intencional — mismo
@@ -100,20 +102,23 @@ Salí limpio sin reporte.
 ### Resolver la cola completa (pre-flight)
 
 Para poder mostrar el preview, hacé un pre-scan liviano de cada repo. Las
-primeras tres bullets (cd / envelope check / auth check) son PREVIEW-ONLY y
-corren igual en AMBOS modos — scoped y plan-driven — con fines de health-check
-del repo:
+primeras cuatro bullets (cd / envelope check / auth check / envelope show) son
+PREVIEW-ONLY y corren igual en AMBOS modos — scoped y plan-driven — con fines
+de health-check del repo:
 - `cd` al path — si falla, anotá `cannot-cd` para ese repo.
 - Corré `bash ~/.devlead/scripts/envelope.sh check` — si no está ENROLLED+ENABLED, anotá `skipped`.
 - Verificá auth con la lógica de 4 pasos de `sweep.sh:19-57` (leelo con Read tool — NO ejecutes `_ensure_auth` como comando, es una función interna de sweep.sh). Si ningún paso resuelve un token, anotá `auth-unavailable`. **Nota: este chequeo es PREVIEW-ONLY.** El token no se almacena como `_auth_token` acá; la resolución formal y el storage de `_auth_token` ocurren en E1.3 (por repo, durante el outer loop).
+- Corré `bash ~/.devlead/scripts/envelope.sh show` y extraé `MAX_ISSUES:` de la salida — es el único subcomando que emite ese campo (`envelope.sh check` no lo emite). Recolectá este valor en AMBOS modos; solo el preview SCOPED lo renderiza como línea de advertencia (ver "Mostrar preview completo" más abajo) — plan-driven no muestra hoy esa línea. **Este valor es BEST-EFFORT, mismo patrón que el bullet de plan-derivation de abajo: puede diferir del `MAX_ISSUES` re-derivado en E1.4 Paso 1 si el envelope cambia entre E0 y el outer loop. La fuente AUTORITATIVA sigue siendo `envelope.sh show` de E1.4 Paso 1 (Inv 2 — el estado siempre se re-deriva en vivo); este valor de pre-flight existe solo para poder mostrar el preview.**
 
-**El siguiente bullet corre SOLO en MODO plan-driven — en MODO SCOPED se
-SALTEA por completo, nunca se invoca `envelope-auth.sh plan` acá** (misma
-prohibición que E1.4 Paso 2 ya establece para el outer loop; ver esa sección).
-La cola en modo scoped ya es la lista `#N` declarada en E0 — no hay nada que
-derivar de un plan:
+**El bullet inmediatamente siguiente (envelope-auth plan) corre SOLO en MODO
+plan-driven — en MODO SCOPED se SALTEA por completo, nunca se invoca
+`envelope-auth.sh plan` acá** (misma prohibición que E1.4 Paso 2 ya establece
+para el outer loop; ver esa sección). La cola en modo scoped ya es la lista
+`#N` declarada en E0 — no hay nada que derivar de un plan. El bullet de
+"Señal de costo" que sigue a continuación es distinto: ese SÍ corre en AMBOS
+modos (ver su propio texto para el detalle de fuente por modo):
 - *(Solo plan-driven)* Corré `bash ~/.devlead/scripts/envelope-auth.sh plan` fresh — el wrapper `envelope-auth.sh` resuelve el auth internamente (mismo chain de 4 pasos verificado en el paso anterior) y lo exporta en su propio proceso antes de invocar `envelope.sh plan`, por lo que el token nunca aparece en la línea de comando — parseá la sección `--- INCLUDED (queue order) ---` para obtener los `#N` (ver sección E1.4 para el formato exacto). **Este plan es BEST-EFFORT: puede diferir del plan real si el auth resuelto acá difiere del de E1.3 o si el estado de GitHub cambia entre E0 y E1.4. La cola AUTORITATIVA es la re-derivada por repo en E1.4 (Inv 2 — el estado siempre se re-deriva en vivo). Que E0 y E1.4 difieran es esperado y normal; E1.4 siempre gana.**
-- **Señal de costo (D7):** para cada `#N` corré `bash ~/.devlead/scripts/ref-resolver.sh {N}` y contá cuántos devuelven una línea que matchea el patrón usando `grep -E '^SPEC:\s+none$'` (el flag `-E` es obligatorio: `grep` plano sin flags NO interpreta `\s` como clase de whitespace y no matchea, `grep -E` sí) — **whitespace-safe**: el output real de `ref-resolver.sh` es `SPEC:   none` (espacios/tabs múltiples, verificado en el script), NUNCA compares contra el literal de un solo espacio `"SPEC: none"`. **La fuente de los `#N` depende del modo: en plan-driven son los obtenidos del bullet anterior (INCLUDED de `envelope-auth.sh plan`); en scoped son directamente la lista declarada en E0 (el bullet anterior no corrió).** Acumulá `K` (issues sin spec) sobre `M` (total INCLUDED en plan-driven, o total declarado en scoped) a través de todos los repos — se muestra en el preview de abajo.
+- **Señal de costo (D7, ambos modos):** para cada `#N` corré `bash ~/.devlead/scripts/ref-resolver.sh {N}` y contá cuántos devuelven una línea que matchea el patrón usando `grep -E '^SPEC:\s+none$'` (el flag `-E` es obligatorio: `grep` plano sin flags NO interpreta `\s` como clase de whitespace y no matchea, `grep -E` sí) — **whitespace-safe**: el output real de `ref-resolver.sh` es `SPEC:   none` (espacios/tabs múltiples, verificado en el script), NUNCA compares contra el literal de un solo espacio `"SPEC: none"`. **La fuente de los `#N` depende del modo: en plan-driven son los obtenidos del bullet anterior (INCLUDED de `envelope-auth.sh plan`); en scoped son directamente la lista declarada en E0 (el bullet anterior no corrió).** Acumulá `K` (issues sin spec) sobre `M` (total INCLUDED en plan-driven, o total declarado en scoped) — en plan-driven, la acumulación es a través de todos los repos del run; en scoped hay un solo repo, así que `K` y `M` son directamente los de ESE repo. Se muestra en el preview de abajo.
 
 **Nota sobre las anotaciones de E0:** las etiquetas `cannot-cd`, `skipped`, `auth-unavailable` usadas arriba son labels de PREVIEW SOLAMENTE — son previsualizaciones de los STATUS canónicos de E1.x (p.ej. `skipped` aquí corresponde a `STATUS: skipped — disabled (ENABLED: false)` o `STATUS: skipped — not enrolled` en E1.2). El STATUS canónico y autoritativo se emite durante el outer loop (E1.1–E1.4), no en E0.
 
@@ -140,7 +145,7 @@ MERGE: NUNCA — cada issue termina en gh pr create. El merge es tuyo.
 Comenzando run...
 ```
 
-Omití la línea `⚠️` de spec si `K == 0` (misma regla que en modo plan-driven). Omití la línea `⚠️` de presupuesto si `[m] <= MAX_ISSUES` (mismo patrón omit-when-not-applicable) — solo se muestra cuando la cola declarada excede el presupuesto del repo (`MAX_ISSUES` obtenido de `envelope.sh show`, E1.4 Paso 1, que en scoped también corre sin cambios). El cómputo de la señal de costo (K sobre M) reutiliza la lógica EXISTENTE de E0 (`ref-resolver.sh {N}` + `grep -E '^SPEC:\s+none$'`, whitespace-safe, ver arriba) aplicada sobre la lista declarada en vez de sobre un plan derivado.
+Omití la línea `⚠️` de spec si `K == 0` (misma regla que en modo plan-driven). Omití la línea `⚠️` de presupuesto si `[m] <= MAX_ISSUES` (mismo patrón omit-when-not-applicable) — solo se muestra cuando la cola declarada excede el presupuesto del repo (`MAX_ISSUES` obtenido del bullet `envelope.sh show` de "### Resolver la cola completa (pre-flight)" arriba — BEST-EFFORT, ver ese bullet; la fuente autoritativa sigue siendo `envelope.sh show` de E1.4 Paso 1). El cómputo de la señal de costo (K sobre M) reutiliza la lógica EXISTENTE de E0 (`ref-resolver.sh {N}` + `grep -E '^SPEC:\s+none$'`, whitespace-safe, ver arriba) aplicada sobre la lista declarada en vez de sobre un plan derivado.
 
 **Resolución del título:** `[título si disponible]` se resuelve con `gh issue view {N} --json title -q .title`. Si esa llamada falla (issue no encontrada, gh no disponible, etc.), renderizá la línea solo con el número (`1. #[N]`), sin título — no es un gap sin especificar.
 
