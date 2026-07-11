@@ -28,6 +28,47 @@ Sos DevLead en modo execute autónomo. El trigger de esta invocación (`/sweep-e
 <!-- La invocación del comando ES la autorización (Inv 1 forma batch extendida).
      No se pide confirmación por repo ni por issue. El sobre se fija aquí. -->
 
+### Detección de modo (scoped vs plan-driven)
+
+Antes de leer la lista de repos, determiná el MODO de esta invocación:
+
+- **Si la invocación trae uno o más tokens `#N`** (p.ej. `/sweep-execute #1 #2 #3`)
+  → **MODO SCOPED**. Parseá los números de issue con la MISMA regla de `batch.md`
+  B0 `### Parsear la cola` (batch.md líneas 12-21): extraé los `#N` en orden de
+  aparición, strippeá el `#`, y el orden declarado ES el contrato de dependencias
+  para v1. Aceptá las mismas variantes que batch.md B0 (`/sweep-execute #1 #2 #3`,
+  `haz #1, #2 y #3`, comas y `y` en español) — referenciá esa sección por nombre
+  y rango de líneas, no restatees la tabla de formatos acá. **NO** parsees un
+  presupuesto `hasta N`: la longitud de la lista declarada ES la cola; el único
+  guard de presupuesto sigue siendo `MAX_ISSUES` de `envelope.sh show` (E1.4
+  Paso 1), igual que en modo plan-driven.
+
+  Resolvé el repo objetivo desde el cwd de la sesión:
+  ```
+  git rev-parse --show-toplevel
+  ```
+  - Éxito → ese path absoluto es el ÚNICO repo del run (lista de un elemento
+    que alimenta el outer loop E1). NO leas `~/.devlead/autonomous-repos` en
+    esta rama. NO escribís ese path a ese archivo. La cola de ESE repo es la
+    lista `#N` declarada, en orden declarado.
+  - Falla (no es un repo git) → emití este bloque y salí limpio sin reporte:
+    ```
+    STATUS: not-a-git-repo
+    No se pudo resolver el repo actual (git rev-parse --show-toplevel falló).
+    El modo scoped (#N explícitos) requiere ejecutarse dentro de un repo git.
+    ```
+    (Mismo shape que el early-exit `no-repos-enrolled` de más abajo: STATUS
+    canónico, mensaje de remediación, exit limpio sin reporte — no se corre
+    ningún paso de E1/E2/E3.)
+
+  Con MODO SCOPED resuelto, saltá directamente a "### Resolver la cola completa
+  (pre-flight)" usando la lista de un solo repo — NO leas `~/.devlead/autonomous-repos`.
+
+- **Si la invocación NO trae ningún token `#N`** → **MODO PLAN-DRIVEN** (default
+  actual, sin cambios). Corré "### Leer la lista de repos" y el resto de E0
+  exactamente como hoy.
+
+<!-- Esta sección corre SOLO en modo plan-driven. -->
 ### Leer la lista de repos
 
 Leé `~/.devlead/autonomous-repos` línea por línea. Aplicá las mismas reglas de dedup/CRLF que usa `sweep.sh` (referencia: líneas 166-181 de `~/.devlead/scripts/sweep.sh`):
@@ -56,7 +97,29 @@ Para poder mostrar el preview, hacé un pre-scan liviano de cada repo:
 
 ### Mostrar preview completo
 
-Presentá exactamente este bloque antes de arrancar el outer loop:
+**Si MODO = scoped**, presentá exactamente este bloque antes de arrancar el outer loop:
+
+```
+## sweep-execute — cola confirmada (modo: issues explícitas)
+
+Modo: issues explícitas sobre {repo actual resuelto por git rev-parse}
+Repo: /abs/ruta/repo-actual
+Cola (en orden declarado):
+  1. #[N] — [título si disponible]
+  2. #[M] — [título si disponible]
+  ...
+
+Issues declaradas: [m]
+⚠️ [K] de [m] issues sin Spec: → van a correr un ciclo SDD completo (Step 8.3-SDD, más caro que implementación directa).
+Política: PARK Y SIGUE — gate rojo aparca esa issue, el run continúa
+MERGE: NUNCA — cada issue termina en gh pr create. El merge es tuyo.
+
+Comenzando run...
+```
+
+Omití la línea `⚠️` si `K == 0` (misma regla que en modo plan-driven). El cómputo de la señal de costo (K sobre M) reutiliza la lógica EXISTENTE de E0 (`ref-resolver.sh {N}` + `grep -E '^SPEC:\s+none$'`, whitespace-safe, ver arriba) aplicada sobre la lista declarada en vez de sobre un plan derivado.
+
+**Si MODO = plan-driven**, presentá exactamente este bloque antes de arrancar el outer loop:
 
 ```
 ## sweep-execute — cola confirmada
@@ -82,7 +145,7 @@ Omití la línea `⚠️` si `K == 0`.
 
 **Guía de costo (D7, requisito, no nota informal):** cuando `K > 0`, `MAX_ISSUES` del repo (o de los repos) involucrado DEBERÍA estar en 1-2 — cada issue sin spec corre un ciclo SDD completo. Si el `MAX_ISSUES` configurado en el envelope de algún repo es mayor y no es intencional, agregá una línea de advertencia extra dentro del mismo bloque de preview de arriba (antes de "Comenzando run..."). Esta línea es **report-only, no bloqueante** — mismo patrón que la línea `⚠️ deps sin verificar` de `batch.md:157` (heredada transitivamente vía B2.c, que este archivo invoca en E2.3): reporte no-bloqueante, sin esperar respuesta, y el outer loop arranca igual sin confirmación.
 
-Después de mostrar el preview, arrancá el outer loop **sin esperar confirmación**.
+Después de mostrar el preview (cualquiera de los dos modos), arrancá el outer loop **sin esperar confirmación**.
 
 ---
 
@@ -155,7 +218,24 @@ Capturá stdout. Procesá la salida:
 - Extraé `SKIP_DEPENDENTS:` de la salida (boolean). Si ausente → asumir `false`.
 - Extraé `MAX_ISSUES:` de la salida para el presupuesto per-repo.
 
-**Paso 2 — Obtener cola de issues (envelope plan):**
+**Paso 2 — Obtener cola de issues:**
+
+<!-- El SOURCE de la cola depende del MODO fijado en E0. -->
+
+**Si MODO = scoped** (la invocación trajo tokens `#N`):
+- La cola de ESTE repo (el único del run) es la lista `#N` declarada en E0, en
+  orden declarado. NO invocás `envelope-auth.sh plan`.
+- Como NO hay llamada a plan, **NINGUNO** de los guards de plan aplica en este
+  modo: `plan-blocked` (STATUS: blocked), `skipped — paused` (STATUS: paused),
+  `zero-issues` ((none)) y `parse-miss` NO se evalúan — todos son señales del
+  output de `envelope.sh plan`, que acá no corre. La cola nunca puede quedar
+  vacía en scoped (el usuario declaró ≥1 issue por construcción de la detección
+  de modo; si hubiera declarado 0, E0 nunca habría entrado en modo scoped).
+- Los STATUS de nivel repo que provienen de show/auth/enroll (E1.2, E1.3,
+  E1.4 Paso 1) SÍ siguen aplicando sin cambios — scoped no los desactiva.
+- Procedé directo a E1.5 con la cola = lista `#N` declarada.
+
+**Si MODO = plan-driven** (invocación sin tokens `#N`):
 
 Ejecutá con el Bash tool:
 ```
@@ -191,7 +271,7 @@ Tras un parse exitoso de plan (y show), inicializá el bloque de tracking en-mem
 
 ```
 REPO: /abs/path
-  COLA: #N→pending #M→pending ...   (en orden del plan)
+  COLA: #N→pending #M→pending ...   (en orden de la cola resuelta en E1.4)
   BLOQUEADAS: {}    ← se llena con #s aparcadas/bloqueadas DE ESTE REPO ÚNICAMENTE
   STOP_AT: HH:MM|null        ← extraído de envelope show (no de plan)
   SKIP_DEPENDENTS: true|false ← extraído de envelope show (no de plan)
@@ -305,6 +385,36 @@ Obtené la fecha con el Bash tool: `date +%Y-%m-%d`.
 **NUNCA** escribás ni modifiques `~/.devlead/reports/YYYY-MM-DD.md` (el plan digest de sweep.sh). El sufijo `-execute` es lo que los distingue.
 
 ### Formato del reporte
+
+**Si MODO = scoped**, el reporte tiene UNA sola sección de repo (el repo del cwd resuelto en E0), sin tabla multi-repo. El header colapsa a un repo:
+
+```markdown
+# DevLead Execute — YYYY-MM-DD (modo: issues explícitas)
+
+**Repo:** /abs/ruta/repo-actual | **Issues declaradas:** M | **PRs creados:** P | **Aparcadas:** A | **Escaladas:** E | **No alcanzadas:** X
+
+---
+
+### /abs/ruta/repo-actual
+
+**STATUS: completado**
+
+| Issue | Resultado |
+|-------|-----------|
+| #N | pr-created (URL) |
+| #M | parked-gate-check: {razón exacta} |
+...
+
+---
+
+## Resumen
+
+El merge de los PRs es tuyo — DevLead se detiene acá.
+```
+
+El destino del archivo es el MISMO en ambos modos: `~/.devlead/reports/YYYY-MM-DD-execute.md`, NUNCA `YYYY-MM-DD.md` (ver regla más abajo — no se duplica por modo). El vocabulario de resultado por issue y el vocabulario de STATUS por repo (tablas más abajo) son los MISMOS en ambos modos — no se copian acá, se referencian.
+
+**Si MODO = plan-driven**, el reporte usa el formato multi-repo de siempre:
 
 ```markdown
 # DevLead Execute — YYYY-MM-DD
