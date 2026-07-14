@@ -114,7 +114,7 @@ La issue **apunta a su spec por path relativo** (línea `Spec: docs/facturacion/
 | Componente | Tipo | Ubicación | Qué hace |
 |---|---|---|---|
 | `/arranquemos` | Slash command | `.claude/commands/` | Entry point del día: orquesta estado → journal → standup → recomendación |
-| Persona DevLead | CLAUDE.md | `.claude/CLAUDE.md` | Define tono, reglas, invariantes (sección 2) |
+| Persona DevLead | CLAUDE.md | `.claude/CLAUDE.md` | Define tono, reglas; espejos A1-A4 inline. Invariantes normativos: ver `.claude/GOVERNANCE.md` |
 | Script de ensamblado de estado | Script (bash/py) | `.devlead/scripts/` | Re-deriva el *qué* en vivo: git + GitHub |
 | Script de branching | Script | `.devlead/scripts/` | Rama desde el tag más cercano de dev (`git describe --tags`), determinista |
 | Journal | Estado per-repo | `~/.devlead/journals/<repo-key>.md` (per-repo, clave = git root) | Guarda solo el *porqué* y notas |
@@ -280,12 +280,9 @@ A diferencia de Nivel 2 (read-only), `/sweep-execute` llama `gh pr create`. Tu P
 
 ### Invariantes aplicadas
 
-| Invariante | Aplicación en `/sweep-execute` |
-|---|---|
-| **Inv 3 — Nunca auto-merge** | ABSOLUTO. El comando no contiene `git merge` ni `gh pr merge` en ninguna rama de código. El merge es tuyo. |
-| **Inv 4 — Gate rojo = PARK** | Gate rojo aparca ESA issue con la razón exacta del gate. El run continúa con la siguiente. Nunca auto-aprueba. |
-| **Inv 5 — Divergencia = PARK** | Si spec choca con código, la issue se aparca con razón detallada. El loop continúa. |
-| **Catástrofe de entorno** | `NOT_A_GIT_REPO` o `gh auth` perdido detiene SOLO ese repo. El run continúa con el siguiente repo. (Delta clave vs. `/batch`, donde catástrofe = stop global.) |
+Detalle normativo: ver `.claude/GOVERNANCE.md §sweep-scoped-profile / §sweep-plan-driven-profile`.
+
+Resumen narrativo: `/sweep-execute` aplica A3 (nunca auto-merge), A4 (PARK con razón exacta), y catástrofe de entorno scoped al REPO ACTUAL (no al run completo — diferencia clave vs. `/batch` donde catástrofe = stop global). Ver GOVERNANCE.md §sweep-scoped-profile para el detalle completo.
 
 ### Reporte de run
 
@@ -308,10 +305,6 @@ Vocabulario de resultado por issue: `pr-created (URL)` / `parked-<razón>` / `es
 
 ## 9. Invariantes (lo que NUNCA se rompe)
 
-1. DevLead **no auto-inicia trabajo** sin tu OK explícito (en single-task, por tarea; en batch, el "haz todo esto").
-2. El **estado real siempre se re-deriva en vivo**; el journal guarda solo el *porqué*; la referencia se carga **por-issue on-demand**. Ninguna segunda fuente de verdad.
-3. **Nunca auto-merge** a `dev`. El merge es tuyo.
-4. Un **gate que falla detiene esa issue**; el agente nunca se auto-aprueba.
-5. **Escalada por divergencia obligatoria**: si la realidad no coincide con el plan (issue mucho más grande, toca zona prohibida, el doc/diseño choca con el código), para y te avisa — aunque hayas dicho "arranca".
-6. La **recomendación es sugerencia, no autoridad.** El día que DevLead arranque solo sin que se lo digas, perdimos el punto.
-7. **Documentación y diseño = intención, no verdad.** Lo que sale de Claude Design o de un FRD no se da por bueno: pasa por los qa gates y, si choca con el código, es divergencia (invariante 5).
+Los invariantes normativos viven en `.claude/GOVERNANCE.md`. Esta sección es histórica/narrativa — no es la fuente de autoridad.
+
+Para el modelo de autorización en capas, los absolutos A1-A4, los perfiles por modo, y las meta-reglas (narrow-not-widen, generate→show→approve), ver `.claude/GOVERNANCE.md`.

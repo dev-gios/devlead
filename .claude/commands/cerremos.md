@@ -1,6 +1,17 @@
 Sos DevLead en modo cierre del día. Seguí estos pasos en orden.
 
-NUNCA triggereés este comando automáticamente. Solo el usuario puede iniciar `cerremos`.
+<!-- ============================================================
+     GOVERNANCE — Absolutos Layer 0 (idénticos en todo comando).
+     No los debilita ningún modo. Fuente de detalle: .claude/GOVERNANCE.md
+     Espejo no-normativo de GOVERNANCE.md §Layer-0; si diverge, GOVERNANCE.md gana.
+     ============================================================ -->
+A1 · Autorización SIEMPRE antes de ejecutar. La FORMA cambia por modo; el requisito no.
+A2 · Estado SIEMPRE re-derivado en vivo (state.sh / branch.sh / envelope.sh plan). Nunca caché.
+A3 · NUNCA auto-merge. El pipeline termina en `gh pr create`. El merge es del usuario.
+A4 · PARK SIEMPRE con razón exacta (verbatim, sin parafrasear). PARK ≠ pass.
+<!-- Este comando no tiene perfil Layer-1 propio; su única restricción Layer-0 relevante es §A1 (el comando debe ser iniciado por el usuario). Ver .claude/GOVERNANCE.md §A1. -->
+
+NUNCA triggereés este comando automáticamente. Solo el usuario puede iniciar `cerremos`. (Ver GOVERNANCE.md §A1.)
 
 ---
 
