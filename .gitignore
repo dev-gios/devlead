@@ -1,3 +1,16 @@
 # DevLead journal — local only, not committed
 # This file is read-only in Fase 0; write-back is Fase 1
 .devlead/today.md
+
+# Camera/phone captures that stray into the repo — never commit
+IMG_*.jpg
+IMG_*.jpeg
+IMG_*.png
+
+# Skill registry — generated per-machine index (absolute local paths).
+# Regenerated on each machine via the skill-registry skill / sdd-init.
+.atl/
+
+# The DevLead tool repo does NOT self-enroll: each enrolled repo scaffolds
+# its own envelope. Keeping it out preserves the enabled:false safety default.
+.devlead/envelope.yml
