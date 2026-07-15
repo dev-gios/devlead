@@ -90,7 +90,11 @@ _slug=$(printf '%s' "$ISSUE_TITLE" \
 # Remove trailing dash
 _slug="${_slug%-}"
 
-BRANCH_NAME="${TYPE}/issue-${ISSUE_NUM}-${_slug}"
+if [[ "$ISSUE_NUM" =~ ^[0-9]+$ ]]; then
+  BRANCH_NAME="${TYPE}/issue-${ISSUE_NUM}-${_slug}"
+else
+  BRANCH_NAME="${TYPE}/${ISSUE_NUM}-${_slug}"
+fi
 
 # ---------------------------------------------------------------------------
 # Dependency resolution: predecessor branch (Depends-on 4th arg)

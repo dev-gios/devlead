@@ -14,3 +14,6 @@ IMG_*.png
 # The DevLead tool repo does NOT self-enroll: each enrolled repo scaffolds
 # its own envelope. Keeping it out preserves the enabled:false safety default.
 .devlead/envelope.yml
+
+# LOCAL-PLAN plan file — personal/ephemeral, must not be committed (REQ-1.5)
+.devlead/plan.local.yml

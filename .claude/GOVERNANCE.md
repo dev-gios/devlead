@@ -69,7 +69,7 @@ Por lo tanto: un modo que responde con PARK ante un gate rojo (en lugar de HALT)
 | `batch` | usuario una vez, confirmado en B0 | usuario declara | batch entero (sobre fijo en B0) | PARK + continuar | PARK + silencioso + reporte B3 | BATCH ENTERO (solo `NOT_A_GIT_REPO` o `gh auth` perdido) | no mid-run — reporte B3 al final |
 | `sweep-scoped` | usuario una vez (lista explícita) | usuario declara | run entero | PARK + continuar | PARK + silencioso + reporte en archivo | REPO ACTUAL únicamente | no mid-run — reporte en archivo |
 | `sweep-plan-driven` | usuario una vez (delegación permanente vía envelope policy) | DevLead (envelope.sh plan + policy) | run entero | PARK + continuar | PARK + silencioso + reporte en archivo | REPO ACTUAL únicamente | no mid-run — reporte en archivo |
-| `sweep-local-plan` RESERVADO | usuario vía gate generate→show→approve (delegación ad-hoc) | DevLead (desde texto crudo) | run entero, DESPUÉS de la aprobación del plan | PARK + continuar | PARK + silencioso + reporte | REPO ACTUAL únicamente | no mid-run (el gate de aprobación reemplaza la notificación mid-run) |
+| `sweep-local-plan` | usuario vía gate generate→show→approve (delegación ad-hoc) | DevLead (desde texto crudo) | run entero, DESPUÉS de la aprobación del plan | PARK + continuar | PARK + silencioso + reporte | REPO ACTUAL únicamente | no mid-run (el gate de aprobación reemplaza la notificación mid-run) |
 
 ### §manual-profile
 
@@ -124,13 +124,9 @@ Por lo tanto: un modo que responde con PARK ante un gate rojo (en lugar de HALT)
 - **Cómo satisface A1:** la envelope policy ES una delegación permanente pre-autorizada. El usuario configuró el scope de antemano. Ver §inv6-governance.
 - **Chequeo narrow-not-widen:** la envelope policy no amplía — restringe el scope al envelope configurado. DevLead no puede ejecutar fuera del envelope.
 
-### §sweep-local-plan-profile RESERVADO
+### §sweep-local-plan-profile
 
-**Este perfil está RESERVADO. Pendiente de la implementación del cambio SDD `sweep-local-plan-source` (explorado en engram `sdd/sweep-local-plan-source/explore`).**
-
-El slot se declara ahora para fijar el contrato de autorización antes de que comience la implementación. Una vez implementado, el comando podrá conectarse a este perfil sin requerir una edición de governance.
-
-- **Comando/trigger:** futuro `/sweep-execute --plan <file>` (pendiente: cambio `sweep-local-plan-source`; el nombre exacto del flag se fija en su proposal)
+- **Comando/trigger:** `/sweep-execute --plan <file>`
 - **Autorizador:** usuario vía gate generate→show→approve (delegación ad-hoc, por invocación)
 - **Autor del work-list:** DevLead (desde texto crudo / descripción no estructurada)
 - **Granularidad de autorización:** run entero, DESPUÉS de la aprobación explícita del plan generado
@@ -140,8 +136,6 @@ El slot se declara ahora para fijar el contrato de autorización antes de que co
 - **Mid-run notify:** no mid-run — el gate de aprobación del plan reemplaza la notificación mid-run
 - **Cómo satisface A1:** el gate generate→show→approve ES la autorización. DevLead genera el plan, lo muestra al usuario, y espera aprobación explícita antes de ejecutar cualquier parte. Ver §generate-show-approve.
 - **Chequeo narrow-not-widen:** la aprobación explícita por invocación es más estricta que la delegación permanente de sweep-plan-driven. No amplía.
-
-**Rationale del slot reservado:** declarar el contrato de autorización ahora garantiza que LOCAL-PLAN pueda conectarse más tarde sin otra edición de governance. El generate→show→approve es el gate que satisface A1 en este perfil; eso está fijado antes de que exista el código.
 
 ---
 
@@ -178,7 +172,7 @@ Este gate es el mecanismo que satisface A1 en el perfil `sweep-local-plan`. Sin 
 | `DEVLEAD.md` | Documento narrativo/histórico. No es fuente de autoridad para invariantes. | Ver §Layer-0 + perfiles |
 | `.claude/commands/arranquemos.md` | Espejo no-normativo de A1-A4 inline + referencia a §manual-profile | Ver §manual-profile |
 | `.claude/commands/batch.md` | Espejo no-normativo de A1-A4 inline + referencia a §batch-profile | Ver §batch-profile |
-| `.claude/commands/sweep-execute.md` | Espejo no-normativo de A1-A4 inline + referencia a §sweep-scoped-profile / §sweep-plan-driven-profile | Ver §sweep-scoped-profile, §sweep-plan-driven-profile |
+| `.claude/commands/sweep-execute.md` | Espejo no-normativo de A1-A4 inline + referencia a §sweep-scoped-profile / §sweep-plan-driven-profile / §sweep-local-plan-profile | Ver §sweep-scoped-profile, §sweep-plan-driven-profile, §sweep-local-plan-profile |
 | `.claude/commands/cerremos.md` | Espejo no-normativo de A1-A4 inline + referencia a §A1 | Ver §A1 |
 
 **Regla de tie-breaker:** el único texto normativo es GOVERNANCE.md. Los bloques A1-A4 inline en comandos y en CLAUDE.md son ESPEJOS de §Layer-0 por presencia-en-contexto. Si divergen del texto de GOVERNANCE.md, GOVERNANCE.md gana y el espejo se corrige.
