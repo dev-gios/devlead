@@ -35,6 +35,8 @@ commands:
   check    run the state check
   show     show current derived state
   sweep    run the plan-only multi-repo sweep
+  doctor   report whether the artifacts published to this machine match
+           the repo's reviewed trunk (STATUS: ok|drifted|unknown)
   help     show this help
 
 All commands forward to ~/.devlead/scripts/ unchanged.
@@ -51,6 +53,10 @@ case "$_cmd" in
   sweep)
     shift
     exec bash "$SCRIPTS_DIR/sweep.sh" "$@"
+    ;;
+  doctor)
+    shift
+    exec bash "$SCRIPTS_DIR/doctor.sh" "$@"
     ;;
   # To route a NEW command to a DIFFERENT script later, add its name here:
   #   state)

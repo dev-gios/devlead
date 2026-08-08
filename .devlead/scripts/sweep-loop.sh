@@ -74,14 +74,37 @@
 #                           when both are given (see FIX 7: the systemd unit has no
 #                           WorkingDirectory pointed at a real repo, so LOCAL-PLAN's
 #                           cwd-derived repo resolution needs an explicit target)
+#   DEVLEAD_ALLOW_DRIFT=1   escape hatch for supervised development: proceed even
+#                           when the drift guard below (doctor.sh) reports the
+#                           published artifacts are stale or unreviewed. Prints a
+#                           prominent multi-line warning naming what differs — this
+#                           is meant to be impossible to miss in a journal, never
+#                           the default posture for an unattended run.
+#   DEVLEAD_DOCTOR_BIN      doctor.sh binary the drift guard invokes (default:
+#                           the sibling doctor.sh next to this script) — override
+#                           for testing with a stub.
+#
+# DRIFT GUARD — this loop IS the unattended path; a human typing
+# /sweep-execute interactively does not go through it, and can eyeball
+# whether their own checkout looks right. Before the FIRST invocation this
+# loop runs doctor.sh, which reports whether the artifacts published to this
+# machine (gate-check.sh, envelope.sh's A3 guard, the governance mirrors in
+# the command files, this very script) match the repo's REVIEWED TRUNK. A
+# non-zero doctor.sh means the loop refuses to run — see the guard block
+# below for the exact remedy printed. Skipped ENTIRELY under
+# DEVLEAD_LOOP_DRYRUN=1, deliberately: nothing is invoked in dry-run, so
+# there is nothing at risk running against whatever happens to be installed,
+# and dry-run is also how the guard's own wiring gets tested without a real
+# git sandbox.
 #
 # Exit codes:
 #   0  plan exhausted, cap reached, or dry run — all normal outcomes
 #   1  usage error, a plan file that cannot be read, --repo does not exist,
-#      the resolved cwd is not inside a git work tree (pre-check), or a
-#      dispatched invocation reported `STATUS: not-a-git-repo` (reactive
-#      check) — in the last case the loop stops immediately, it does not
-#      keep iterating
+#      the resolved cwd is not inside a git work tree (pre-check), doctor.sh
+#      reports drifted/unknown artifacts (drift guard, unless
+#      DEVLEAD_ALLOW_DRIFT=1), or a dispatched invocation reported
+#      `STATUS: not-a-git-repo` (reactive check) — in these cases the loop
+#      stops immediately, it does not keep iterating
 #
 # The cap is a backstop, never a schedule: with --plan the loop stops as soon as
 # run-state.sh reports every task settled. Without one there is no completion
@@ -276,6 +299,39 @@ fi
 if [[ -n "$PLAN_FILE" && ! -f "$PLAN_FILE" ]]; then
   echo "sweep-loop: plan file not found: $PLAN_FILE" >&2
   exit 1
+fi
+
+# --- Drift guard: refuse to run unattended against stale/unreviewed artifacts
+# See the header comment above for the full rationale. Skipped entirely under
+# DEVLEAD_LOOP_DRYRUN=1 — dry-run invokes nothing, so nothing is at risk.
+DOCTOR_BIN="${DEVLEAD_DOCTOR_BIN:-$_SCRIPT_DIR/doctor.sh}"
+if [[ "$DRYRUN" != "1" ]]; then
+  _DOCTOR_OUT="$(bash "$DOCTOR_BIN" 2>&1)"
+  _DOCTOR_RC=$?
+  if [[ "$_DOCTOR_RC" -ne 0 ]]; then
+    if [[ "${DEVLEAD_ALLOW_DRIFT:-0}" == "1" ]]; then
+      {
+        echo "############################################################"
+        echo "# sweep-loop: DEVLEAD_ALLOW_DRIFT=1 — PROCEEDING ANYWAY.  #"
+        echo "# The published DevLead artifacts on this machine do NOT  #"
+        echo "# verify against the repo's reviewed trunk (see doctor.sh #"
+        echo "# output below for exactly what differs). This run uses   #"
+        echo "# UNREVIEWED OR STALE artifacts, including whatever code  #"
+        echo "# enforces DevLead's own limits. Do not leave this set    #"
+        echo "# for unattended/nightly runs.                            #"
+        echo "############################################################"
+        echo "$_DOCTOR_OUT"
+      } >&2
+    else
+      {
+        echo "sweep-loop: doctor.sh reports the published artifacts do not verify against the reviewed trunk — refusing to run unattended"
+        echo "$_DOCTOR_OUT"
+        echo "sweep-loop: remedy: git checkout <trunk> && git pull && bash install.sh"
+        echo "sweep-loop: escape hatch for supervised development: DEVLEAD_ALLOW_DRIFT=1"
+      } >&2
+      exit 1
+    fi
+  fi
 fi
 
 # --- Run id: derived from plan CONTENT, matching sweep-execute Paso 8.0 -----
