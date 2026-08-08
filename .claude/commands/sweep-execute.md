@@ -74,6 +74,15 @@ Antes de leer la lista de repos, determiná el MODO de esta invocación:
     modos comparten la misma forma de early-exit; solo cambia el texto de
     remediación.)
 
+    **Contrato de la línea `STATUS: not-a-git-repo` (aplica a los tres
+    early-exits PRE-repo de esta sección — scoped, local-plan y
+    plan-driven-cwd):** tiene que ser la PRIMERA línea del bloque emitido,
+    sin indentar, byte-exacta. No es solo texto para humanos — es una línea
+    de contrato machine-readable: `.devlead/scripts/sweep-loop.sh` captura
+    la salida de cada invocación y escanea `^STATUS: not-a-git-repo` para
+    decidir si el loop reactivo aborta en vez de seguir iterando. Quien
+    cambie este string tiene que actualizar también a ese consumer.
+
   Con MODO SCOPED resuelto, saltá directamente a "### Resolver la cola completa
   (pre-flight)" usando la lista de un solo repo — NO leas `~/.devlead/autonomous-repos`.
 
@@ -97,6 +106,8 @@ Antes de leer la lista de repos, determiná el MODO de esta invocación:
     No se pudo resolver el repo actual (git rev-parse --show-toplevel falló).
     El modo LOCAL-PLAN (--plan <file>) requiere ejecutarse dentro de un repo git.
     ```
+    (Mismo contrato machine-readable que el `STATUS: not-a-git-repo` de MODO
+    SCOPED arriba — ver la nota debajo de ese bloque.)
   Con MODO LOCAL-PLAN resuelto, saltá a "### Resolver la cola completa (pre-flight)"
   sin leer `~/.devlead/autonomous-repos`.
 
@@ -130,6 +141,8 @@ Antes de leer la lista de repos, determiná el MODO de esta invocación:
       El modo plan-driven por defecto se acota al repo actual y requiere ejecutarse dentro de un repo git.
       Para barrer todos los repos enrollados, invocá con --fleet:  /sweep-execute --fleet
       ```
+      (Mismo contrato machine-readable que el `STATUS: not-a-git-repo` de MODO
+      SCOPED arriba — ver la nota debajo de ese bloque.)
 
   **Nota:** un token `#N` combinado con `--fleet` no es una combinación
   definida en este alcance — MODO SCOPED se decide primero (el chequeo de
