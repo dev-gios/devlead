@@ -565,7 +565,29 @@ En ambos casos: **E3 corre exactamente una vez, solo después de que TODOS los r
 **PR-terminal**: el inner loop termina en B2.d `gh pr create`. NUNCA invocás `git merge` ni `gh pr merge`. Si ves esas palabras en tu cabeza: STOP. El merge es del usuario, siempre. Al leer `arranquemos.md` para el detalle del cuerpo, EXCLUÍ cualquier paso de merge o `gh issue close` que encuentres — no existen en execute.
 
 **Delta 5 — Adaptador de pipeline LOCAL-PLAN (solo activo en MODO LOCAL-PLAN).**
-Para cada tarea del plan, los pasos B2.b Paso 8.1 y Paso 8.2 de `arranquemos.md` se adaptan así (el resto del pipeline B2.b — Paso 8.3, Paso 8.4, Paso 9, B2.d — corre sin cambios):
+Para cada tarea del plan, los pasos B2.b Paso 8.1 y Paso 8.2 de `arranquemos.md` se adaptan así (el resto del pipeline B2.b — Paso 8.3, Paso 8.4, Paso 9, B2.d — corre sin cambios), más dos pasos nuevos de estado en disco (8.0 y 8.6):
+
+- **Paso 8.0 — Skip de tareas ya completadas (resume):**
+  ANTES de cualquier otro paso de esta tarea, consultá el estado persistido:
+  ```
+  bash ~/.devlead/scripts/run-state.sh is-done {run_id} {task.id}
+  ```
+  Exit 0 → la tarea ya terminó en una invocación anterior de ESTE MISMO plan.
+  Saltala por completo (no corras 8.1–8.6), registrala en el reporte como
+  `skipped-already-done`, y pasá a la siguiente. Exit 1 → procedé normalmente.
+
+  **`{run_id}` se deriva del CONTENIDO del plan**, no de su path ni de la hora:
+  ```
+  run_id="plan-$(sha256sum {plan_file_path} | cut -c1-16)"
+  ```
+  Esa elección es la que hace correcto el resume: reinvocar con el mismo plan
+  reanuda donde quedó, y editar el plan produce otro `run_id`, o sea un run
+  nuevo desde cero. Un plan distinto NUNCA hereda el progreso de otro.
+
+  Si `run-state.sh` no existe o falla, NO aparques la tarea: emití una nota al
+  reporte (`resume-unavailable`) y procedé como si nada estuviera registrado.
+  El resume es una optimización, nunca un gate — un estado de disco ilegible
+  no puede impedir que el trabajo avance.
 
 - **Paso 8.1 — ref-resolver adaptado:**
   - Si la tarea tiene campo `spec:` (no vacío): NO invocás `ref-resolver.sh {issue_num}`. En su lugar, invocá:
@@ -589,6 +611,25 @@ Para cada tarea del plan, los pasos B2.b Paso 8.1 y Paso 8.2 de `arranquemos.md`
   La rama resultante tiene la forma `{type}/plan-{task.id}-{slug}` (consistente con el preview de E0). Esto habilita idempotencia por nombre exacto: como el plan queda bloqueado en E0, el mismo `task.id` + `task.title` recomputan el MISMO nombre de rama `{type}/plan-{task.id}-{slug}`; si esa rama exacta ya existe, `branch.sh` la retoma y emite `STATUS: reused` (se hace checkout y el pipeline continúa desde donde quedó, aprovechando el apply-progress en engram si existe). `branch.sh` NO busca por glob ni detecta PRs abiertos — si ya hubiera un PR abierto para esa rama exacta, Paso 8.5 intentaría abrir otro; esa detección queda fuera del alcance de v1.
 
   *Esta adaptación cita arranquemos.md Step 8.2: sustituye el primer arg de `branch.sh` de `{issue_num}` a `plan-{task.id}` para LOCAL-PLAN.*
+
+- **Paso 8.6 — Registrar el desenlace de la tarea (resume):**
+  DESPUÉS de que la tarea alcanzó su estado terminal — `gh pr create` devolvió
+  URL, o la tarea fue aparcada — persistí ese desenlace:
+  ```
+  bash ~/.devlead/scripts/run-state.sh mark {run_id} {task.id} done   "pr-created {URL}"
+  bash ~/.devlead/scripts/run-state.sh mark {run_id} {task.id} parked "{razón exacta verbatim}"
+  ```
+  La razón de un PARK se pasa **verbatim, sin parafrasear** (§A4). `run-state.sh`
+  la guarda y la devuelve byte a byte, multilínea incluida.
+
+  **Solo `done` habilita el skip de 8.0.** Una tarea aparcada se reintenta en la
+  próxima invocación: PARK ≠ pass (§A4), así que aparcar nunca puede convertirse
+  en "ya está hecho" por el mero paso del tiempo.
+
+  **Este paso corre en el borde de la tarea, jamás durante el Paso 8.4.** Las
+  smoke suites de este repo verifican que `~/.devlead` quede byte-idéntico
+  durante su propia corrida; escribir estado ahí mientras el gate ejecuta tests
+  hace fallar esa verificación contra sí misma.
 
 **Para LOCAL-PLAN:** en el PR body (arranquemos.md Paso 8.5), SUSTITUÍ la primera línea
 `Closes #{issue_num}` por:
