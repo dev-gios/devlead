@@ -72,6 +72,13 @@ contains "ExecStart passes a plan" "$svc" "--plan"
 contains "no plan means the unit is skipped, not failed" "$svc" "ConditionPathExists"
 contains "the loop is not killed by the oneshot timeout" "$svc" "TimeoutStartSec=infinity"
 
+# --- FIX 7: an explicit WorkingDirectory replaces the implicit $HOME default,
+# and the real target repo comes from a documented, user-controlled env file
+# (never silently from $HOME) ------------------------------------------------
+contains "the service declares an explicit WorkingDirectory" "$svc" "WorkingDirectory="
+contains "the target repo is sourced from a documented env file" "$svc" "EnvironmentFile=-%h/.devlead/loop.env"
+contains "the env file documents DEVLEAD_LOOP_REPO" "$svc" "DEVLEAD_LOOP_REPO"
+
 # --- The timer must NOT catch up a missed night ----------------------------
 # devlead-sweep.timer is plan-only and read-only, so Persistent=true is free
 # there. This one creates branches, commits and PRs: firing a missed run the

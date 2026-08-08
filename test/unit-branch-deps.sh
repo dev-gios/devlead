@@ -106,6 +106,38 @@ out="$(bash "$BRANCH_SH" plan-delta "Root plan task" feat "" "main" 2>&1)"
 check "no dep: STATUS created" "$(field "$out" STATUS)" "created"
 check "no dep: no STACKED emitted" "$(field "$out" STACKED)" ""
 
+git checkout -q main
+
+# --- FIX 5 regression: a '.' in the dep slug must NOT act as a regex --------
+# wildcard in the "already merged" fallback check. A dep id like "plan-a.b"
+# (no local/remote branch, so branch.sh falls back to the gh-merged-PRs
+# check) must not match an unrelated branch "plan-aXb-something" — the '.'
+# is a literal character in a dep slug, never a basic-regex any-char.
+FAKEBIN="$(mktemp -d /tmp/devlead-branch-deps-fakebin.XXXXXX)"
+cat > "$FAKEBIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+  # Merged-PR headRefNames: only the UNRELATED branch is merged. The real
+  # predecessor ("plan-a.b-...") is never merged.
+  echo "plan-aXb-something"
+  exit 0
+fi
+exit 0
+EOF
+chmod +x "$FAKEBIN/gh"
+
+out="$(PATH="$FAKEBIN:$PATH" bash "$BRANCH_SH" plan-epsilon "Dotted dep task" feat "plan-a.b" "main" 2>&1)"
+check "dotted dep: '.' does not regex-match an unrelated branch — STATUS blocked" \
+  "$(field "$out" STATUS)" "blocked"
+contains "dotted dep: GAP names the real (unmerged) predecessor" "$out" "plan-a.b"
+rm -rf "$FAKEBIN"
+
+git checkout -q main
+
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
 cd /tmp || exit 1

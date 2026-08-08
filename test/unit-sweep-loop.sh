@@ -95,6 +95,54 @@ out="$(DEVLEAD_LOOP_DRYRUN=1 bash "$LOOP" --max-iterations 2 2>&1)"
 check "planless run honours the cap" "$(printf '%s' "$out" | grep -c 'would run')" "2"
 contains "planless command carries no --plan" "$out" 'claude -p "/sweep-execute"'
 
+# ===========================================================================
+# FIX 7 regression: the loop must fail loudly outside a git work tree, and
+# --repo / DEVLEAD_LOOP_REPO must be able to point it at the real target.
+# ===========================================================================
+NON_GIT_DIR="$SANDBOX/not-a-repo"
+mkdir -p "$NON_GIT_DIR"
+
+GIT_REPO_DIR="$SANDBOX/target-repo"
+mkdir -p "$GIT_REPO_DIR"
+git -C "$GIT_REPO_DIR" init -q
+git -C "$GIT_REPO_DIR" config user.email smoke@example.com
+git -C "$GIT_REPO_DIR" config user.name "Smoke Test"
+
+# --- Outside a git work tree: fails loudly instead of a silent no-op -------
+out="$(cd "$NON_GIT_DIR" && DEVLEAD_LOOP_DRYRUN=1 bash "$LOOP" --max-iterations 1 2>&1)"
+rc=$?
+check "running outside a git work tree exits non-zero" "$rc" "1"
+contains "the diagnostic names the non-git cwd" "$out" "not inside a git work tree"
+check "nothing was attempted outside a git work tree" \
+  "$(printf '%s' "$out" | grep -c 'would run')" "0"
+
+# --- --repo cds into the target repo before the guard runs -----------------
+out="$(cd "$NON_GIT_DIR" && DEVLEAD_LOOP_DRYRUN=1 bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 1 2>&1)"
+rc=$?
+check "--repo pointed at a real git repo exits 0" "$rc" "0"
+contains "--repo run reaches the dry-run announcement" "$out" "would run"
+
+# --- --repo on a non-existent directory is a clean usage error -------------
+out="$(cd "$NON_GIT_DIR" && bash "$LOOP" --repo "$SANDBOX/does-not-exist" --max-iterations 1 2>&1)"
+rc=$?
+check "--repo on a missing directory exits 1" "$rc" "1"
+contains "the diagnostic names the missing --repo path" "$out" "does-not-exist"
+
+# --- DEVLEAD_LOOP_REPO is honoured when --repo is not given -----------------
+out="$(cd "$NON_GIT_DIR" && DEVLEAD_LOOP_REPO="$GIT_REPO_DIR" DEVLEAD_LOOP_DRYRUN=1 \
+  bash "$LOOP" --max-iterations 1 2>&1)"
+rc=$?
+check "DEVLEAD_LOOP_REPO alone exits 0" "$rc" "0"
+contains "DEVLEAD_LOOP_REPO run reaches the dry-run announcement" "$out" "would run"
+
+# --- --repo wins over DEVLEAD_LOOP_REPO when both are set -------------------
+OTHER_NON_GIT="$SANDBOX/other-not-a-repo"
+mkdir -p "$OTHER_NON_GIT"
+out="$(cd "$NON_GIT_DIR" && DEVLEAD_LOOP_REPO="$OTHER_NON_GIT" DEVLEAD_LOOP_DRYRUN=1 \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 1 2>&1)"
+rc=$?
+check "--repo overrides a DEVLEAD_LOOP_REPO pointed elsewhere" "$rc" "0"
+
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
 rm -rf "$SANDBOX"

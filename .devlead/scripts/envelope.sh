@@ -28,6 +28,32 @@ _emit() {
 }
 
 _block() { echo "STATUS: blocked"; echo "GAP:    $1"; exit 0; }
+# _resolve_default_branch — ground truth for "what is the repo's default
+# branch", used by A3 clause 2 (an integration branch must never BE the
+# default branch). Prefers `gh repo view` (live remote query) over the local
+# `refs/remotes/origin/HEAD` symref, because git never auto-updates that
+# symref: if the remote default branch is renamed after cloning, the symref
+# still points at the OLD name and a comparison against it would approve
+# merging into what is now the real default branch. Falls back to the
+# symref only when `gh` is unavailable or unauthenticated. Prints the
+# branch name and returns 0, or returns 1 (no stdout) when neither source
+# resolves — callers fail closed on that case (GOVERNANCE.md §A3).
+_resolve_default_branch() {
+  local _db
+  if command -v gh &>/dev/null && gh auth status &>/dev/null; then
+    _db=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)
+    if [[ -n "$_db" ]]; then
+      printf '%s' "$_db"
+      return 0
+    fi
+  fi
+  _db=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+  if [[ -n "$_db" ]]; then
+    printf '%s' "$_db"
+    return 0
+  fi
+  return 1
+}
 _is_bool() { [[ "$1" == "true" || "$1" == "false" ]]; }
 # _read_version_sha — reads the SHA: field from ~/.devlead/VERSION (KEY:
 # value, one per line — see upgrade's write below). Prints the sha and
@@ -458,9 +484,9 @@ _do_show() {
     if [[ -z "$_ib" || "$_ib" == "null" ]]; then
       _block "merge.mode 'integration-branch' requires base.integration_branch to be declared"
     else
-      _default_branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+      _default_branch="$(_resolve_default_branch)" || _default_branch=""
       if [[ -z "$_default_branch" ]]; then
-        _block "merge.mode 'integration-branch' requires a resolvable default branch (git symbolic-ref refs/remotes/origin/HEAD failed) — cannot prove base.integration_branch is not the trunk"
+        _block "merge.mode 'integration-branch' requires a resolvable default branch (gh repo view and git symbolic-ref refs/remotes/origin/HEAD both failed) — cannot prove base.integration_branch is not the trunk"
       elif [[ "$_ib" == "$_default_branch" ]]; then
         _block "base.integration_branch ('$_ib') must not be the default branch — that would grant merge-to-trunk (GOVERNANCE.md §A3)"
       fi

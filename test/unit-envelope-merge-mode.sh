@@ -118,6 +118,40 @@ write_envelope "  integration_branch: feature/nightly" "integration-branch"
 out="$(bash "$ENVELOPE_SH" show 2>&1)"
 lacks "a non-default integration branch is accepted" "$out" "STATUS: blocked"
 
+# --- FIX 6 regression: a STALE local symref must not defeat the guard ------
+# `git remote set-head origin main` (used by the fixture above) is exactly
+# what hides this bug in real life: it points refs/remotes/origin/HEAD at
+# "main" and git never re-checks it. Scenario: the remote's real default
+# branch was RENAMED to "trunk" after the clone. The stale local symref
+# still says "main". An attacker declares integration_branch: trunk — the
+# NEW real default branch. A guard that trusts ONLY the stale symref would
+# compare "trunk" != "main" and wrongly APPROVE it, granting merge-to-trunk.
+# `envelope.sh` must prefer a live `gh repo view` lookup (which reports the
+# true current default, "trunk") over the stale symref, and still block.
+git remote set-head origin main 2>/dev/null  # re-assert the stale symref
+FAKEBIN_GH="$(mktemp -d /tmp/devlead-envmerge-fakebin.XXXXXX)"
+cat > "$FAKEBIN_GH/gh" <<'EOF'
+#!/usr/bin/env bash
+set -uo pipefail
+if [[ "${1:-}" == "auth" && "${2:-}" == "status" ]]; then
+  exit 0
+fi
+if [[ "${1:-}" == "repo" && "${2:-}" == "view" ]]; then
+  # Ground truth: the remote's real default branch is now "trunk", NOT the
+  # stale local symref's "main".
+  echo "trunk"
+  exit 0
+fi
+exit 0
+EOF
+chmod +x "$FAKEBIN_GH/gh"
+
+write_envelope "  integration_branch: trunk" "integration-branch"
+out="$(PATH="$FAKEBIN_GH:$PATH" bash "$ENVELOPE_SH" show 2>&1)"
+contains "stale symref: guard still blocks using gh ground truth" "$out" "STATUS: blocked"
+contains "stale symref: block names the trunk risk" "$out" "must not be the default branch"
+rm -rf "$FAKEBIN_GH"
+
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
 cd /tmp || exit 1

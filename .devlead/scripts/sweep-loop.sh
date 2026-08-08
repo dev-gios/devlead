@@ -7,8 +7,8 @@
 # reached, so an interrupted run resumes instead of stopping for the night.
 #
 # Usage:
-#   sweep-loop.sh --plan <file> [--max-iterations N]
-#   sweep-loop.sh [--max-iterations N] [-- <extra sweep-execute args>]
+#   sweep-loop.sh --plan <file> [--repo <path>] [--max-iterations N]
+#   sweep-loop.sh [--repo <path>] [--max-iterations N] [-- <extra sweep-execute args>]
 #
 # Environment:
 #   DEVLEAD_LOOP_DRYRUN=1   print the exact `claude -p` command per iteration
@@ -16,10 +16,15 @@
 #   DEVLEAD_LOOP_MAX        default iteration cap (default 10; --max-iterations wins)
 #   DEVLEAD_LOOP_SLEEP      seconds between iterations (default 5)
 #   DEVLEAD_CLAUDE_BIN      claude binary (default: claude)
+#   DEVLEAD_LOOP_REPO       target repo path to cd into before running; --repo wins
+#                           when both are given (see FIX 7: the systemd unit has no
+#                           WorkingDirectory pointed at a real repo, so LOCAL-PLAN's
+#                           cwd-derived repo resolution needs an explicit target)
 #
 # Exit codes:
 #   0  plan exhausted, cap reached, or dry run — all normal outcomes
-#   1  usage error, or a plan file that cannot be read
+#   1  usage error, a plan file that cannot be read, --repo does not exist,
+#      or the resolved cwd is not inside a git work tree
 #
 # The cap is a backstop, never a schedule: with --plan the loop stops as soon as
 # run-state.sh reports every task settled. Without one there is no completion
@@ -34,11 +39,12 @@ MAX_ITER="${DEVLEAD_LOOP_MAX:-10}"
 SLEEP_SECS="${DEVLEAD_LOOP_SLEEP:-5}"
 DRYRUN="${DEVLEAD_LOOP_DRYRUN:-0}"
 PLAN_FILE=""
+REPO_DIR="${DEVLEAD_LOOP_REPO:-}"
 EXTRA_ARGS=""
 
 _usage() {
-  echo "usage: sweep-loop.sh --plan <file> [--max-iterations N]" >&2
-  echo "       sweep-loop.sh [--max-iterations N] [-- <extra args>]" >&2
+  echo "usage: sweep-loop.sh --plan <file> [--repo <path>] [--max-iterations N]" >&2
+  echo "       sweep-loop.sh [--repo <path>] [--max-iterations N] [-- <extra args>]" >&2
 }
 
 # --- Arguments -------------------------------------------------------------
@@ -61,6 +67,15 @@ while [[ $# -gt 0 ]]; do
       fi
       shift 2
       ;;
+    --repo)
+      REPO_DIR="${2:-}"
+      if [[ -z "$REPO_DIR" ]]; then
+        echo "sweep-loop: --repo requires a directory path" >&2
+        _usage
+        exit 1
+      fi
+      shift 2
+      ;;
     --)
       shift
       EXTRA_ARGS="$*"
@@ -77,6 +92,42 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# Resolve PLAN_FILE to an absolute path BEFORE any --repo cd below, so a
+# relative path typed from the caller's original cwd keeps working after
+# the cwd moves.
+if [[ -n "$PLAN_FILE" ]]; then
+  case "$PLAN_FILE" in
+    /*) ;;
+    *) PLAN_FILE="$PWD/$PLAN_FILE" ;;
+  esac
+fi
+
+# --- Target repo: --repo wins over $DEVLEAD_LOOP_REPO ----------------------
+if [[ -n "$REPO_DIR" ]]; then
+  if [[ ! -d "$REPO_DIR" ]]; then
+    echo "sweep-loop: --repo/DEVLEAD_LOOP_REPO directory not found: $REPO_DIR" >&2
+    exit 1
+  fi
+  cd "$REPO_DIR" || {
+    echo "sweep-loop: could not cd into --repo/DEVLEAD_LOOP_REPO: $REPO_DIR" >&2
+    exit 1
+  }
+fi
+
+# --- Guard: refuse to run outside a git work tree ---------------------------
+# LOCAL-PLAN resolves its target repo from cwd via `git rev-parse
+# --show-toplevel` (FIX 7). Without this guard, a misconfigured systemd unit
+# (no WorkingDirectory pointed at a real repo, no DEVLEAD_LOOP_REPO) lands
+# cwd on something that is not a git repo — historically $HOME, systemd's
+# default cwd for a user unit with no WorkingDirectory= — and the loop would
+# silently no-op every night while systemd still reports success (oneshot
+# exits 0). Fail loudly instead so the failure is visible.
+if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+  echo "sweep-loop: cwd is not inside a git work tree: $PWD" >&2
+  echo "sweep-loop: pass --repo <path>, set \$DEVLEAD_LOOP_REPO, or run from inside a repo" >&2
+  exit 1
+fi
 
 if [[ -n "$PLAN_FILE" && ! -f "$PLAN_FILE" ]]; then
   echo "sweep-loop: plan file not found: $PLAN_FILE" >&2
