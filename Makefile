@@ -16,6 +16,7 @@ test:
 	bash test/unit-envelope-merge-mode.sh
 	bash test/unit-gate-check.sh
 	bash test/unit-publish-manifest.sh
+	bash test/unit-doctor.sh
 	bash test/unit-sweep-loop.sh
 	bash test/unit-loop-units.sh
 	bash test/smoke-outcomes.sh

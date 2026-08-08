@@ -98,6 +98,94 @@ done < <(printf '%s\n' "$manifest" \
   | sort -u)
 report "the manifest names no file that has vanished" "$missing"
 
+# --- test/smoke-pinned-release.sh carries its OWN independent hardcoded --
+# --- publish manifest (two heredocs) — keep it in sync with bootstrap- ----
+# --- lib.sh's _pairs tables, in both directions. -------------------------
+#
+# smoke-pinned-release.sh deliberately pins its own expected set rather than
+# deriving it from bootstrap-lib.sh (that is its whole value as an
+# independent check) — so unlike the manifest checks above, this cannot be
+# a textual "is it present" scan against bootstrap-lib.sh; it has to compare
+# two DIFFERENT path shapes (destination-relative-to-$HOME vs
+# source-relative-to-repo-root) entry-for-entry against bootstrap-lib.sh's
+# own tables. run-state.sh, sweep-loop.sh, doctor.sh and the
+# devlead-loop.service/.timer units were added to bootstrap-lib.sh but
+# missed in both smoke heredocs — this section is what would have caught
+# that.
+SMOKE="$REPO_ROOT/test/smoke-pinned-release.sh"
+
+# Pulls the body of a `<<'EOF' ... EOF` heredoc that follows a
+# `<fn>() {` line, without sourcing smoke-pinned-release.sh (which has real
+# side effects — mktemp, git clone — at its top level).
+_extract_heredoc() {
+  local fn="$1" start end
+  start="$(grep -n "^${fn}() {" "$SMOKE" | head -1 | cut -d: -f1)"
+  start=$((start + 2))
+  end="$(awk -v s="$start" 'NR>=s && /^EOF$/{print NR; exit}' "$SMOKE")"
+  sed -n "${start},$((end - 1))p" "$SMOKE"
+}
+
+smoke_targets="$(_extract_heredoc all_publish_targets)"
+smoke_sources="$(_extract_heredoc all_source_paths)"
+
+# Every `"$repo_dir/SRC|$VAR/DST|mode"` entry across BOTH _pairs tables in
+# bootstrap-lib.sh (bootstrap_symlinks and bootstrap_systemd share this exact
+# textual shape, so one grep walks both tables in file order), normalized to
+# the same two path shapes the smoke heredocs use.
+pairs_src=""
+pairs_dst=""
+while IFS= read -r raw; do
+  [[ -n "$raw" ]] || continue
+  entry="${raw%\"}"; entry="${entry#\"}"
+  src_field="${entry%%|*}"
+  rest="${entry#*|}"
+  dst_field="${rest%%|*}"
+
+  src_rel="${src_field#'$repo_dir/'}"
+  case "$dst_field" in
+    '$devlead_dir/'*)     dst_rel=".devlead/${dst_field#'$devlead_dir/'}" ;;
+    '$local_bin/'*)       dst_rel=".local/bin/${dst_field#'$local_bin/'}" ;;
+    '$claude_commands/'*) dst_rel=".claude/commands/${dst_field#'$claude_commands/'}" ;;
+    '$systemd_dir/'*)     dst_rel=".config/systemd/user/${dst_field#'$systemd_dir/'}" ;;
+    *)                    dst_rel="UNRECOGNIZED-DEST-VAR:$dst_field" ;;
+  esac
+
+  pairs_src+="$src_rel"$'\n'
+  pairs_dst+="$dst_rel"$'\n'
+done < <(grep -oE '"\$repo_dir/[^"]*"' "$LIB")
+
+missing=""
+while IFS= read -r s; do
+  [[ -n "$s" ]] || continue
+  grep -qxF "$s" <<< "$smoke_sources" \
+    || missing+="$s (in bootstrap-lib.sh _pairs, absent from smoke-pinned-release.sh all_source_paths)"$'\n'
+done <<< "$pairs_src"
+report "every bootstrap-lib.sh _pairs source is in smoke-pinned-release.sh all_source_paths" "$missing"
+
+missing=""
+while IFS= read -r d; do
+  [[ -n "$d" ]] || continue
+  grep -qxF "$d" <<< "$smoke_targets" \
+    || missing+="$d (in bootstrap-lib.sh _pairs, absent from smoke-pinned-release.sh all_publish_targets)"$'\n'
+done <<< "$pairs_dst"
+report "every bootstrap-lib.sh _pairs destination is in smoke-pinned-release.sh all_publish_targets" "$missing"
+
+missing=""
+while IFS= read -r s; do
+  [[ -n "$s" ]] || continue
+  grep -qxF "$s" <<< "$pairs_src" \
+    || missing+="$s (in smoke-pinned-release.sh all_source_paths, absent from bootstrap-lib.sh _pairs)"$'\n'
+done <<< "$smoke_sources"
+report "smoke-pinned-release.sh all_source_paths names nothing absent from bootstrap-lib.sh _pairs" "$missing"
+
+missing=""
+while IFS= read -r d; do
+  [[ -n "$d" ]] || continue
+  grep -qxF "$d" <<< "$pairs_dst" \
+    || missing+="$d (in smoke-pinned-release.sh all_publish_targets, absent from bootstrap-lib.sh _pairs)"$'\n'
+done <<< "$smoke_targets"
+report "smoke-pinned-release.sh all_publish_targets names nothing absent from bootstrap-lib.sh _pairs" "$missing"
+
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed ==="
 [[ "$FAIL_COUNT" -eq 0 ]]

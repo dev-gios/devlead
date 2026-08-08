@@ -83,6 +83,9 @@ all_publish_targets() {
 .devlead/scripts/envelope.sh
 .devlead/scripts/envelope-auth.sh
 .devlead/scripts/sweep.sh
+.devlead/scripts/run-state.sh
+.devlead/scripts/sweep-loop.sh
+.devlead/scripts/doctor.sh
 .local/bin/devlead
 .devlead/hooks/post-edit.sh
 .devlead/hooks/gate-check.sh
@@ -92,6 +95,8 @@ all_publish_targets() {
 .claude/commands/sweep-execute.md
 .config/systemd/user/devlead-sweep.service
 .config/systemd/user/devlead-sweep.timer
+.config/systemd/user/devlead-loop.service
+.config/systemd/user/devlead-loop.timer
 EOF
 }
 all_source_paths() {
@@ -105,6 +110,9 @@ all_source_paths() {
 .devlead/scripts/envelope.sh
 .devlead/scripts/envelope-auth.sh
 .devlead/scripts/sweep.sh
+.devlead/scripts/run-state.sh
+.devlead/scripts/sweep-loop.sh
+.devlead/scripts/doctor.sh
 .devlead/bin/devlead
 .claude/hooks/post-edit.sh
 .claude/hooks/gate-check.sh
@@ -114,6 +122,8 @@ all_source_paths() {
 .claude/commands/sweep-execute.md
 .devlead/systemd/devlead-sweep.service
 .devlead/systemd/devlead-sweep.timer
+.devlead/systemd/devlead-loop.service
+.devlead/systemd/devlead-loop.timer
 EOF
 }
 
