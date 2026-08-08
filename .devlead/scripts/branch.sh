@@ -129,7 +129,7 @@ if [[ -n "$DEP_NUM" ]]; then
   _dep_name="${_dep_branch#remotes/origin/}"
   if [[ -n "$_dep_branch" ]]; then
     BASE_REF="$_dep_ref"; STACKED_BRANCH="$_dep_name"
-  elif command -v gh &>/dev/null && gh auth status &>/dev/null && gh pr list --state merged --limit 200 --json headRefName -q '.[].headRefName' 2>/dev/null | grep -q "${_dep_slug}-"; then
+  elif command -v gh &>/dev/null && gh auth status &>/dev/null && gh pr list --state merged --limit 200 --json headRefName -q '.[].headRefName' 2>/dev/null | grep -qF -- "${_dep_slug}-"; then
     : # merged: the integration branch already has the predecessor → fall through to tag block
   else
     echo "BRANCH: $BRANCH_NAME"; echo "BASE:   "; echo "STATUS: blocked"

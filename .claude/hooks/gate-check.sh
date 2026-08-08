@@ -326,16 +326,26 @@ _check_shellcheck() {
   _base="$(_resolve_base_branch)" || _base=""
 
   local _sh_files
-  _sh_files="$(
-    {
-      git diff --name-only HEAD 2>/dev/null
-      git diff --cached --name-only HEAD 2>/dev/null
-      [[ -n "$_base" ]] && git diff --name-only "${_base}...HEAD" 2>/dev/null
-    } \
-      | sort -u \
-      | grep '\.sh$' \
-      | xargs -r printf '%s\n' \
-  )"
+  if [[ -z "$_base" ]]; then
+    # Cannot prove what this branch changed → shellcheck EVERY tracked .sh
+    # file. Mirrors _check_tests' fallback: speed never comes at the cost of
+    # silently inspecting nothing (see FIX 1 — the pipeline commits before
+    # gating, so an unresolved base left the other two sources empty too,
+    # and the gate reported "clean" without checking a single file).
+    echo "gate-check: no integration branch resolved — shellchecking all tracked .sh files (cannot prove scope)" >&2
+    _sh_files="$(git ls-files '*.sh' 2>/dev/null | sort -u)"
+  else
+    _sh_files="$(
+      {
+        git diff --name-only HEAD 2>/dev/null
+        git diff --cached --name-only HEAD 2>/dev/null
+        git diff --name-only "${_base}...HEAD" 2>/dev/null
+      } \
+        | sort -u \
+        | grep '\.sh$' \
+        | xargs -r printf '%s\n' \
+    )"
+  fi
 
   if [[ -z "$_sh_files" ]]; then
     return

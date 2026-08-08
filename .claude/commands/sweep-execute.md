@@ -344,7 +344,14 @@ Si falla:
 
 ### E1.2 — Gate: ENROLLED + ENABLED (envelope check)
 
-Ejecutá con el Bash tool:
+**E1.2 NO aplica para LOCAL-PLAN.** LOCAL-PLAN opera sobre cualquier repo git sin
+enrollment ni `envelope.yml` (el plan aprobado por `--plan <file>` YA es la autorización —
+ver GOVERNANCE.md §generate-show-approve). En MODO local-plan, **saltá este gate
+completo y andá directo a E1.3** (el auth chain SÍ aplica: `gh pr create` necesita token
+de escritura). Detalle completo de las adaptaciones de LOCAL-PLAN en E1.4 Paso 2, rama
+local-plan.
+
+Para scoped y plan-driven, ejecutá con el Bash tool:
 ```
 bash ~/.devlead/scripts/envelope.sh check
 ```
@@ -390,6 +397,29 @@ bash ~/.devlead/scripts/envelope.sh show
 
 Capturá stdout. Procesá la salida:
 
+**Si MODO = local-plan, este `show` corre BEST-EFFORT y con un carve-out explícito** —
+LOCAL-PLAN opera sobre cualquier repo git sin enrollment (ver E1.2), así que
+`.devlead/envelope.yml` puede no existir. `envelope.sh show` bloquea incondicionalmente
+cuando el envelope está ausente (`_do_show`: `[[ -f "$ENV_FILE" ]] || _block "no envelope.yml —
+repo not enrolled"`); sin este carve-out, ESE `STATUS: blocked` aparcaría el repo entero
+antes de correr una sola tarea del plan aprobado.
+- **Si la salida contiene `^STATUS: blocked` Y la razón es la ausencia del envelope**
+  (`GAP: no envelope.yml — repo not enrolled`): NO es `plan-blocked`. Seteá `MERGE_MODE =
+  never` y dejá `INTEGRATION_BRANCH` sin definir, y continuá el run normalmente (E1.4 Paso
+  2, rama local-plan). **La ausencia de envelope NUNCA se lee como permiso de merge** — es
+  exactamente lo opuesto: sin envelope, no hay `merge.mode` declarado, así que el default
+  seguro (`never`) aplica.
+- **Si la salida contiene `^STATUS: blocked` por cualquier OTRA razón** (yq no disponible,
+  YAML inválido, schema drift, etc. — el envelope SÍ existe pero es inválido): esto sigue
+  siendo `plan-blocked`, igual que en los demás modos (ver abajo). Un envelope presente pero
+  corrupto no es lo mismo que ausencia de envelope.
+- **Si `show` no retorna `STATUS: blocked`** (existe y es válido): leé `MERGE_MODE:` e
+  `INTEGRATION_BRANCH:` de la salida exactamente igual que los demás modos (ver abajo) — esto
+  es lo que permite que Delta 6 dispare bajo LOCAL-PLAN cuando el repo SÍ tiene un envelope
+  declarado.
+
+**Para todos los demás modos** (scoped, plan-driven), el comportamiento es sin carve-out:
+
 **Si la salida contiene `^STATUS: blocked`** (yq no disponible u otro problema de validación):
 - Registrá `REPO → STATUS: plan-blocked — GAP: show returned STATUS: blocked` y aparcá todas las issues como `parked-plan-blocked: envelope show blocked`.
 - Continuá con el siguiente repo.
@@ -399,6 +429,12 @@ Capturá stdout. Procesá la salida:
 - Extraé `SKIP_DEPENDENTS:` de la salida (boolean). Si ausente → asumir `false`.
 - Extraé `MAX_ISSUES:` de la salida para el presupuesto per-repo.
 - Extraé `MERGE_MODE:` y `INTEGRATION_BRANCH:` de la salida. `MERGE_MODE` gobierna Delta 6; si está ausente, asumí `never` (el default seguro — la ausencia NUNCA se lee como permiso). `INTEGRATION_BRANCH` es el destino del merge bajo `integration-branch`, y ya es el valor que Paso 8.2 le pasa a `branch.sh` como 5to argumento.
+
+**Nota LOCAL-PLAN (presupuesto):** esta lectura de `show` (STOP_AT/SKIP_DEPENDENTS/MAX_ISSUES)
+NO aplica a LOCAL-PLAN — ver Paso 2, rama local-plan, "Nota sobre presupuesto" para el
+comportamiento completo (PRESUPUESTO = M, STOP_AT = null, SKIP_DEPENDENTS = true). Solo
+`MERGE_MODE`/`INTEGRATION_BRANCH` de este Paso 1 aplican a LOCAL-PLAN, vía el carve-out de
+arriba.
 
 **Paso 2 — Obtener cola de issues:**
 
@@ -444,7 +480,7 @@ Capturá stdout. Procesá la salida:
 
   Los seis producen un STATUS de nivel repo + clean exit sin E1/E2/E3. La cola no puede
   quedar vacía cuando E1.5 ejecuta.
-- **E1.2 NO aplica para LOCAL-PLAN** — no se requiere enrollment ni `envelope.yml`; saltá E1.2 y andá directo a E1.3. E1.3 (auth chain) SÍ aplica porque `gh pr create` necesita token de escritura.
+- **E1.2 NO aplica para LOCAL-PLAN** — ver E1.2 (definición completa de esta excepción, verificada antes de llegar acá).
 - **Nota sobre presupuesto (REQ-4.4 superseded por Design Decision 8):** `envelope.sh show`
   MAX_ISSUES / STOP_AT / SKIP_DEPENDENTS NO se leen bajo LOCAL-PLAN. PRESUPUESTO = M
   (longitud del plan). STOP_AT = null. **SKIP_DEPENDENTS = true.** E2.1 es no-op para este
@@ -713,15 +749,41 @@ igual que siempre.
 1. `MERGE_MODE` de `envelope.sh show` es exactamente `integration-branch`.
 2. El gate de Paso 8.4 salió VERDE para esta unidad. Un gate rojo ya aparcó la tarea y
    nunca llega acá. **Nunca mergeás algo que no pasó el gate** (§A4).
-3. La rama destino NO es la rama por defecto del repo:
+3. La rama destino NO es la rama por defecto del repo. `refs/remotes/origin/HEAD` es un
+   symref LOCAL que git nunca actualiza solo: si el remoto renombra su rama por defecto
+   después del clone, el symref queda apuntando al nombre viejo y una comparación contra
+   él sola puede aprobar mergear a lo que hoy es el tronco real. Por eso la resolución
+   PREFIERE la verdad del remoto y usa el symref solo como fallback — MISMA lógica que
+   `_resolve_default_branch` en `~/.devlead/scripts/envelope.sh` (usala como referencia
+   de implementación; no la reescribas en prosa acá, para que las dos no puedan divergir
+   de nuevo):
    ```
+   # 1. Preferido: verdad viva del remoto (gh disponible y autenticado),
+   #    acotado por timeout (default 10s, override vía DEVLEAD_GH_TIMEOUT_SECS)
+   timeout "$GH_TIMEOUT_SECS" gh repo view --json defaultBranchRef -q .defaultBranchRef.name
+   # 2. Fallback: symref local, si gh no está disponible, no autenticado,
+   #    O si se venció el timeout — un gh colgado se trata igual que un gh
+   #    ausente, nunca como "no hay rama por defecto"
    git symbolic-ref --quiet --short refs/remotes/origin/HEAD | sed 's|^origin/||'
    ```
-   Si el destino coincide, o si el comando falla y no podés PROBAR que difieren →
+   **`$GH_TIMEOUT_SECS` se valida ANTES de pasarlo a `timeout`, nunca se usa el override
+   crudo** — mismo chequeo que `envelope.sh` aplica antes de este mismo `_resolve_default_branch`:
+   solo un entero positivo (`>= 1`) es aceptado; `0`, negativo, o no-numérico caen al
+   default de 10s con un warning de una línea a stderr que nombra el valor ofrecido y el
+   valor efectivamente usado. Sin esta validación, `DEVLEAD_GH_TIMEOUT_SECS=0` reinstala
+   el cuelgue sin límite que este guard cierra — `timeout` con duración `0` de GNU
+   coreutils significa "sin timeout" — el mismo bug en el segundo lugar donde vive esta
+   misma lógica.
+   Un timeout que dispara se trata EXACTAMENTE igual que "gh no disponible" y cae al
+   symref local; deja una nota en stderr (visible en el journal) para que una red
+   degradada no cambie de fuente en silencio.
+   Si el destino coincide con lo que resuelve (1), o (1) no resuelve y coincide con (2), o
+   NINGUNA de las dos fuentes resuelve y no podés PROBAR que difieren →
    **PARK** con razón `merge-abortado: no se pudo probar que {destino} no es la rama por
-   defecto`. `envelope.sh show` ya bloquea esta configuración (§A3 cláusula 2); este
-   chequeo es defensa en profundidad porque el costo de equivocarse es escribir en el
-   tronco.
+   defecto`. Ese bloque fail-closed aplica SOLO cuando ninguna de las dos fuentes resuelve
+   — no antes. `envelope.sh show` ya bloquea esta configuración con el mismo orden de
+   resolución (§A3 cláusula 2); este chequeo es defensa en profundidad porque el costo de
+   equivocarse es escribir en el tronco.
 
 **El merge:**
 ```
