@@ -92,8 +92,9 @@ Por lo tanto: un modo que responde con PARK ante un gate rojo (en lugar de HALT)
 | `sweep-scoped` | usuario una vez (lista explícita) | usuario declara | run entero | PARK + continuar | PARK + silencioso + reporte en archivo | REPO ACTUAL únicamente | no mid-run — reporte en archivo |
 | `sweep-plan-driven` | usuario una vez (delegación permanente vía envelope policy) | DevLead (envelope.sh plan + policy) | run entero | PARK + continuar | PARK + silencioso + reporte en archivo | REPO ACTUAL únicamente | no mid-run — reporte en archivo |
 | `sweep-local-plan` | usuario vía gate generate→show→approve (delegación ad-hoc) | DevLead (desde texto crudo) | run entero, DESPUÉS de la aprobación del plan | PARK + continuar | PARK + silencioso + reporte | REPO ACTUAL únicamente | no mid-run (el gate de aprobación reemplaza la notificación mid-run) |
+| `sweep-discover` | usuario una vez (delegación permanente vía `discover.enabled: true` en el envelope) | DevLead (explora `discover.modules[].path` contra `discover.modules[].spec`) | run entero — sin autoridad de ejecución, solo `gh issue create` | PARK + continuar | PARK + silencioso + reporte en archivo | REPO ACTUAL únicamente | no mid-run — reporte en archivo |
 
-**Merge (columna omitida de la tabla por ancho):** `manual` es `never` siempre — estrecha por debajo del techo. `batch`, `sweep-scoped`, `sweep-plan-driven` y `sweep-local-plan` heredan el techo de §A3: lo que conceda `merge.mode` del envelope del repo, y `never` si no hay envelope.
+**Merge (columna omitida de la tabla por ancho):** `manual` es `never` siempre — estrecha por debajo del techo. `batch`, `sweep-scoped`, `sweep-plan-driven` y `sweep-local-plan` heredan el techo de §A3: lo que conceda `merge.mode` del envelope del repo, y `never` si no hay envelope. `sweep-discover` no tiene columna de merge aplicable — no abre PRs, así que `merge.mode` nunca entra en juego.
 
 ### §manual-profile
 
@@ -162,6 +163,21 @@ Por lo tanto: un modo que responde con PARK ante un gate rojo (en lugar de HALT)
 - **Cómo satisface A1:** el gate generate→show→approve ES la autorización. DevLead genera el plan, lo muestra al usuario, y espera aprobación explícita antes de ejecutar cualquier parte. Ver §generate-show-approve.
 - **Chequeo narrow-not-widen:** la aprobación explícita por invocación es más estricta que la delegación permanente de sweep-plan-driven. No amplía.
 
+### §sweep-discover-profile
+
+- **Comando/trigger:** `/sweep-discover` (o el flag equivalente en `/sweep-execute` cuando `discover.enabled: true`)
+- **Autorizador:** usuario una vez — delegación permanente pre-autorizada vía `discover.enabled: true` y la lista de `discover.modules[]` declarada en `.devlead/envelope.yml`
+- **Autor del work-list:** DevLead explora cada `discover.modules[].path` contra su `discover.modules[].spec` declarado y deriva los gaps
+- **Granularidad de autorización:** run entero — pero sin autoridad de ejecución. Este perfil no crea ramas, no abre PRs, no mergea. Su ÚNICO output es `gh issue create`. Es la propiedad que define el perfil, y lo vuelve ESTRICTAMENTE MÁS ESTRECHO que cualquier otro perfil de esta tabla: todos los demás terminan, en algún punto, en código tocando el repo o en un PR abierto; este termina en una issue.
+- **Gate failure:** PARK + continuar (razón exacta verbatim) — si un módulo declarado no puede explorarse (path inexistente, spec inexistente, o falla de lectura), DevLead aparca ESE módulo y sigue con el próximo. No hay gate de código que correr porque no hay código que tocar; el "gate" acá es poder completar la comparación módulo-vs-spec.
+- **Divergencia:** PARK + silencioso + reporte en archivo — si lo que encuentra en el módulo no coincide con lo que el spec describe, DevLead no decide por su cuenta qué hacer con la brecha: la registra como issue con `discover.label` y sigue. La decisión sobre esa brecha queda para el humano que la revise.
+- **Catástrofe (scope):** REPO ACTUAL únicamente (igual que sweep-scoped y sweep-plan-driven) — `NOT_A_GIT_REPO` o `gh auth` perdido para SOLO el repo en curso; el run continúa con el siguiente.
+- **Mid-run notify:** no mid-run — reporte en archivo al final. No hay nada que aprobar en vivo porque no hay ejecución en vivo: cada hallazgo se materializa como issue, no como acción.
+- **Cómo satisface A1:** `discover.enabled: true` más la lista de `discover.modules[]` declarada en el envelope ES la delegación permanente pre-autorizada, exactamente como §inv6-governance ya establece para la envelope policy en general. El usuario decidió, al declarar esos módulos y sus specs, qué superficie puede explorar DevLead — no en el momento de correr, sino de antemano.
+- **Por qué NO necesita el gate generate→show→approve** (a pesar de que a primera vista parece que debería): §inv6-governance y §generate-show-approve exigen ese gate cuando DevLead deriva un work-list AD-HOC — porque ese work-list se va a EJECUTAR (ramas, PRs, código tocando el repo) y la aprobación tiene que pasar antes de que eso ocurra. Discovery deriva un work-list también, pero ese work-list se materializa como ISSUES, no como ejecución. No se crea ninguna rama, no se abre ningún PR, no se toca código. La aprobación no se salteó — se RELOCALIZÓ al punto donde el trabajo realmente empieza: modo plan-driven decide, según policy, si esas issues se trabajan; y `discover.label`, sostenido por la regla de acoplamiento del schema (`discover.label` debe figurar en `select.exclude_labels`, ver `.devlead/scripts/envelope.sh`), las mantiene afuera del work-list de plan-driven hasta que un humano las revise y les saque la label o las reclasifique. El gate sigue existiendo; vive en el próximo perfil de la cadena, no en este.
+- **El ciclo de dos noches:** esta es la forma que gobierna el perfil. Noche uno, `sweep-discover` corre, explora los módulos declarados contra sus specs, y archiva una issue por cada gap con `discover.label` puesto. Vos mirás esas issues. Noche dos, `sweep-plan-driven` (o el modo que corresponda) decide qué de lo que sobrevivió a tu revisión se trabaja — y solo lo hace si vos ya sacaste o cambiaste la label, porque mientras `discover.label` siga puesto y siga en `select.exclude_labels`, plan-driven las sigue ignorando. El label ES el mecanismo que mantiene el ciclo abierto entre las dos noches; sin él, discovery se archivaría trabajo a sí mismo y lo ejecutaría en la corrida siguiente, sin que nadie lo mire — que es exactamente el agujero que la regla de acoplamiento del schema existe para cerrar.
+- **Chequeo narrow-not-widen:** este perfil no gana ninguna autoridad que los demás no tengan — la pierde. No puede crear ramas, no puede abrir PRs, no puede mergear; ninguno de los otros verbos de Layer 0 (A3, merge) aplica porque nunca llega a ese punto. Es un perfil de SOLO LECTURA sobre el repo y SOLO ESCRITURA sobre el issue tracker. Estrecha por debajo de todos los perfiles existentes, no los iguala ni los amplía.
+
 ---
 
 ## §inv6-governance — Autoridad de la envelope policy
@@ -198,6 +214,7 @@ Este gate es el mecanismo que satisface A1 en el perfil `sweep-local-plan`. Sin 
 | `.claude/commands/arranquemos.md` | Espejo no-normativo de A1-A4 inline + referencia a §manual-profile | Ver §manual-profile |
 | `.claude/commands/batch.md` | Espejo no-normativo de A1-A4 inline + referencia a §batch-profile | Ver §batch-profile |
 | `.claude/commands/sweep-execute.md` | Espejo no-normativo de A1-A4 inline + referencia a §sweep-scoped-profile / §sweep-plan-driven-profile / §sweep-local-plan-profile | Ver §sweep-scoped-profile, §sweep-plan-driven-profile, §sweep-local-plan-profile |
+| `.claude/commands/sweep-discover.md` | Espejo no-normativo de A1-A4 inline + referencia a §sweep-discover-profile | Ver §sweep-discover-profile |
 | `.claude/commands/cerremos.md` | Espejo no-normativo de A1-A4 inline + referencia a §A1 | Ver §A1 |
 
 **Regla de tie-breaker:** el único texto normativo es GOVERNANCE.md. Los bloques A1-A4 inline en comandos y en CLAUDE.md son ESPEJOS de §Layer-0 por presencia-en-contexto. Si divergen del texto de GOVERNANCE.md, GOVERNANCE.md gana y el espejo se corrige.
