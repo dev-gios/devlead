@@ -237,6 +237,7 @@ bootstrap_symlinks() {
     "$repo_dir/.claude/commands/cerremos.md|$claude_commands/cerremos.md|"
     "$repo_dir/.claude/commands/batch.md|$claude_commands/batch.md|"
     "$repo_dir/.claude/commands/sweep-execute.md|$claude_commands/sweep-execute.md|"
+    "$repo_dir/.claude/commands/sweep-discover.md|$claude_commands/sweep-discover.md|"
   )
 
   local _entry _src _dst _mode

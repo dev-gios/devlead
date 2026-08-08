@@ -93,6 +93,7 @@ all_publish_targets() {
 .claude/commands/cerremos.md
 .claude/commands/batch.md
 .claude/commands/sweep-execute.md
+.claude/commands/sweep-discover.md
 .config/systemd/user/devlead-sweep.service
 .config/systemd/user/devlead-sweep.timer
 .config/systemd/user/devlead-loop.service
@@ -120,6 +121,7 @@ all_source_paths() {
 .claude/commands/cerremos.md
 .claude/commands/batch.md
 .claude/commands/sweep-execute.md
+.claude/commands/sweep-discover.md
 .devlead/systemd/devlead-sweep.service
 .devlead/systemd/devlead-sweep.timer
 .devlead/systemd/devlead-loop.service
