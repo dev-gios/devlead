@@ -374,11 +374,13 @@ check "no scratch file remains after the normal-cap path" \
 
 # ===========================================================================
 # Drift guard: sweep-loop refuses to run unattended when doctor.sh reports
-# the published artifacts do not verify against the reviewed trunk. A stub
-# doctor.sh stands in via DEVLEAD_DOCTOR_BIN — doctor.sh's own drift-detection
-# logic is covered separately by test/unit-doctor.sh; this only exercises the
-# wiring: does sweep-loop call it, honor its exit code, and respect
-# DEVLEAD_ALLOW_DRIFT / DEVLEAD_LOOP_DRYRUN correctly.
+# the installed artifacts do not verify AS THE REVIEWED TRUNK. A stub
+# doctor.sh stands in via DEVLEAD_DOCTOR_BIN — doctor.sh's own integrity/
+# provenance detection logic is covered separately by test/unit-doctor.sh;
+# this only exercises the wiring: does sweep-loop call it, read its
+# STATUS/NOTE output (NOT just its exit code — STATUS: ok with a provenance
+# NOTE also exits 0), and respect DEVLEAD_ALLOW_DRIFT / DEVLEAD_LOOP_DRYRUN
+# correctly.
 # ===========================================================================
 
 FAKE_DOCTOR_FAIL="$SANDBOX/fake-doctor-fail"
@@ -392,6 +394,23 @@ echo "DIFF:   /fake/home/.devlead/hooks/gate-check.sh (content differs from the 
 exit 1
 FAKE
 chmod +x "$FAKE_DOCTOR_FAIL"
+
+# A doctor stub reporting STATUS: ok (exit 0, integrity intact) but from a
+# BRANCH, not the trunk — a provenance gap, not an integrity failure. This is
+# the exact case the feature exists for: sweep-loop must not key off the
+# exit code alone, because this one is 0.
+FAKE_DOCTOR_BRANCH="$SANDBOX/fake-doctor-branch"
+cat > "$FAKE_DOCTOR_BRANCH" <<'FAKE'
+#!/usr/bin/env bash
+echo "STATUS: ok"
+echo "MATCHES: feature @ deadbee"
+echo "TRUNK:  main @ cafebabe"
+echo "SOURCE: /fake/source/repo"
+echo "NOTE:   installed from a branch, not the trunk — expected during development;"
+echo "        an unattended run still requires the trunk"
+exit 0
+FAKE
+chmod +x "$FAKE_DOCTOR_BRANCH"
 
 # FAKE_DOCTOR_OK is already defined above, in the "Reactive check" section.
 
@@ -446,6 +465,47 @@ rc=$?
 check "passing doctor: exits 0" "$rc" "0"
 not_contains "passing doctor: prints no drift warning" "$out" "STATUS: drifted"
 check "passing doctor: claude WAS invoked" "$([[ -f "$MARKER_FILE" ]] && echo yes || echo no)" "yes"
+
+# ===========================================================================
+# Provenance: doctor.sh exits 0 for "STATUS: ok, from a branch" — the loop
+# must not treat that exit code as sufficient. It must read the NOTE and
+# still refuse to run unattended, exactly as it does for STATUS: drifted.
+# ===========================================================================
+
+# --- doctor says ok-but-from-a-branch -> loop BLOCKS, message names
+#     provenance specifically, invokes nothing ------------------------------
+rm -f "$MARKER_FILE"
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_BRANCH" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 3 2>&1)"
+rc=$?
+check "ok-but-branch exits non-zero" "$rc" "1"
+contains "ok-but-branch: the message names provenance" "$out" "provenance"
+contains "ok-but-branch: doctor's own STATUS: ok is surfaced" "$out" "STATUS: ok"
+contains "ok-but-branch: doctor's own NOTE is surfaced" "$out" "installed from a branch"
+contains "ok-but-branch: the remedy is printed" "$out" "git checkout <trunk>"
+contains "ok-but-branch: the escape hatch is mentioned" "$out" "DEVLEAD_ALLOW_DRIFT=1"
+check "ok-but-branch: claude was never invoked" "$([[ -f "$MARKER_FILE" ]] && echo yes || echo no)" "no"
+
+# --- doctor says ok-but-from-a-branch + DEVLEAD_ALLOW_DRIFT=1 -> loop
+#     proceeds AND prints the warning ----------------------------------------
+rm -f "$MARKER_FILE"
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_BRANCH" DEVLEAD_ALLOW_DRIFT=1 \
+  DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 1 2>&1)"
+rc=$?
+check "ok-but-branch + ALLOW_DRIFT: exits 0" "$rc" "0"
+contains "ok-but-branch + ALLOW_DRIFT: prints the ALLOW_DRIFT warning" "$out" "DEVLEAD_ALLOW_DRIFT=1 — PROCEEDING ANYWAY"
+contains "ok-but-branch + ALLOW_DRIFT: still surfaces the doctor NOTE" "$out" "installed from a branch"
+check "ok-but-branch + ALLOW_DRIFT: claude WAS invoked" "$([[ -f "$MARKER_FILE" ]] && echo yes || echo no)" "yes"
+
+# --- doctor says ok-and-trunk (no NOTE) -> loop proceeds, no block ---------
+rm -f "$MARKER_FILE"
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
+  DEVLEAD_LOOP_SLEEP=0 bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 1 2>&1)"
+rc=$?
+check "ok-and-trunk: exits 0" "$rc" "0"
+not_contains "ok-and-trunk: no provenance block message" "$out" "provenance"
+check "ok-and-trunk: claude WAS invoked" "$([[ -f "$MARKER_FILE" ]] && echo yes || echo no)" "yes"
 
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
