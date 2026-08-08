@@ -177,7 +177,13 @@ _check_tests() {
 
   # --- Result cache: identical tree state → identical result. Long suites ---
   # --- (this repo: ~4 min) must run at most ONCE per tree state.          ---
-  local _cache_dir="$HOME/.devlead/cache/gate-tests"
+  # ---                                                                    ---
+  # --- Deliberately OUTSIDE ~/.devlead: this repo's smoke suites assert    ---
+  # --- that ~/.devlead is byte-identical before and after they run. Cache  ---
+  # --- and log writes under that tree make the suite fail against itself   ---
+  # --- whenever it is driven by this gate. Gate bookkeeping is harness     ---
+  # --- state, not DevLead operational state, so it belongs in ~/.cache.    ---
+  local _cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/devlead/gate-tests"
   mkdir -p "$_cache_dir"
   # Prune stale entries so the cache never grows unbounded
   find "$_cache_dir" -type f -mtime +7 -delete 2>/dev/null
