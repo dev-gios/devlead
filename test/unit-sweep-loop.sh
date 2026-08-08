@@ -35,6 +35,15 @@ contains() {
   fi
 }
 
+not_contains() {
+  if [[ "$2" != *"$3"* ]]; then
+    echo "PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "FAIL  $1"; echo "        unexpected substring: [$3]"; echo "        actual: [$2]"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
 PLAN="$SANDBOX/plan.yml"
 cat > "$PLAN" <<'YML'
 version: 1
@@ -293,6 +302,210 @@ rc=$?
 check "-- --fleet --plan f.yml (round-4 anchor) still fires the guard (exit 1)" "$rc" "1"
 contains "the diagnostic names the non-git cwd (round-4 --fleet --plan)" "$out" "not inside a git work tree"
 rm -rf "$R4_DIR_F"
+
+# ===========================================================================
+# Reactive check: the pre-check guard above is a fast path, not the
+# guarantee. sweep-loop must react to a `STATUS: not-a-git-repo` line in the
+# dispatched invocation's own output and stop immediately — no matter what
+# the pre-check predicted. A fake `claude` on DEVLEAD_CLAUDE_BIN stands in so
+# nothing real is ever invoked. Each scenario gets its OWN throwaway TMPDIR so
+# leftover-scratch-file assertions never see another test's files.
+# ===========================================================================
+
+# A passing doctor stub — these reactive-check scenarios are not testing the
+# drift guard, so they must not be at the mercy of whatever the REAL machine
+# running this test currently has installed under ~/.devlead (see the
+# dedicated "Drift guard" section further below for that).
+FAKE_DOCTOR_OK="$SANDBOX/fake-doctor-ok"
+cat > "$FAKE_DOCTOR_OK" <<'FAKE'
+#!/usr/bin/env bash
+echo "STATUS: ok"
+exit 0
+FAKE
+chmod +x "$FAKE_DOCTOR_OK"
+
+FAKE_CLAUDE_NOTAGITREPO="$SANDBOX/fake-claude-notagitrepo"
+cat > "$FAKE_CLAUDE_NOTAGITREPO" <<'FAKE'
+#!/usr/bin/env bash
+echo "STATUS: not-a-git-repo"
+echo "No se pudo resolver el repo actual (git rev-parse --show-toplevel falló)."
+exit 0
+FAKE
+chmod +x "$FAKE_CLAUDE_NOTAGITREPO"
+
+FAKE_CLAUDE_NORMAL="$SANDBOX/fake-claude-normal"
+cat > "$FAKE_CLAUDE_NORMAL" <<'FAKE'
+#!/usr/bin/env bash
+echo "sweep-execute: did some normal work here"
+exit 0
+FAKE
+chmod +x "$FAKE_CLAUDE_NORMAL"
+
+# --- A STATUS: not-a-git-repo line stops the loop after the FIRST iteration,
+#     even with a generous cap, prints a diagnostic, and exits non-zero -----
+REACT_TMP_A="$SANDBOX/react-tmp-a"
+mkdir -p "$REACT_TMP_A"
+out="$(TMPDIR="$REACT_TMP_A" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOTAGITREPO" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 5 2>&1)"
+rc=$?
+check "STATUS: not-a-git-repo from claude's own output exits non-zero" "$rc" "1"
+contains "the diagnostic names the reactive STATUS line" "$out" "STATUS: not-a-git-repo"
+contains "the diagnostic names the cwd that was used" "$out" "cwd used was"
+contains "the diagnostic suggests --repo or DEVLEAD_LOOP_REPO" "$out" "DEVLEAD_LOOP_REPO"
+check "exactly one iteration was invoked" "$(printf '%s' "$out" | grep -c -- '— invoking')" "1"
+not_contains "a second iteration never starts, even with --max-iterations 5" "$out" "iteration 2/5"
+check "no scratch file remains after the reactive exit" \
+  "$(find "$REACT_TMP_A" -name 'sweep-loop-out.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+# --- Normal output iterates to the cap and exits 0 as before, and the
+#     dispatched invocation's own output is still streamed to the caller ----
+REACT_TMP_B="$SANDBOX/react-tmp-b"
+mkdir -p "$REACT_TMP_B"
+out="$(TMPDIR="$REACT_TMP_B" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NORMAL" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 2 2>&1)"
+rc=$?
+check "normal output iterates to the cap and exits 0" "$rc" "0"
+contains "the fake claude's own output is streamed to the caller" "$out" "did some normal work here"
+check "both iterations were invoked" "$(printf '%s' "$out" | grep -c -- '— invoking')" "2"
+contains "the cap-reached message still appears" "$out" "iteration cap"
+check "no scratch file remains after the normal-cap path" \
+  "$(find "$REACT_TMP_B" -name 'sweep-loop-out.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+
+# ===========================================================================
+# Drift guard: sweep-loop refuses to run unattended when doctor.sh reports
+# the installed artifacts do not verify AS THE REVIEWED TRUNK. A stub
+# doctor.sh stands in via DEVLEAD_DOCTOR_BIN — doctor.sh's own integrity/
+# provenance detection logic is covered separately by test/unit-doctor.sh;
+# this only exercises the wiring: does sweep-loop call it, read its
+# STATUS/NOTE output (NOT just its exit code — STATUS: ok with a provenance
+# NOTE also exits 0), and respect DEVLEAD_ALLOW_DRIFT / DEVLEAD_LOOP_DRYRUN
+# correctly.
+# ===========================================================================
+
+FAKE_DOCTOR_FAIL="$SANDBOX/fake-doctor-fail"
+cat > "$FAKE_DOCTOR_FAIL" <<'FAKE'
+#!/usr/bin/env bash
+echo "STATUS: drifted"
+echo "TRUNK:  main @ deadbee"
+echo "SOURCE: /fake/source/repo"
+echo "DRIFT:  1 of 4 artifacts differ from the trunk"
+echo "DIFF:   /fake/home/.devlead/hooks/gate-check.sh (content differs from the trunk)"
+exit 1
+FAKE
+chmod +x "$FAKE_DOCTOR_FAIL"
+
+# A doctor stub reporting STATUS: ok (exit 0, integrity intact) but from a
+# BRANCH, not the trunk — a provenance gap, not an integrity failure. This is
+# the exact case the feature exists for: sweep-loop must not key off the
+# exit code alone, because this one is 0.
+FAKE_DOCTOR_BRANCH="$SANDBOX/fake-doctor-branch"
+cat > "$FAKE_DOCTOR_BRANCH" <<'FAKE'
+#!/usr/bin/env bash
+echo "STATUS: ok"
+echo "MATCHES: feature @ deadbee"
+echo "TRUNK:  main @ cafebabe"
+echo "SOURCE: /fake/source/repo"
+echo "NOTE:   installed from a branch, not the trunk — expected during development;"
+echo "        an unattended run still requires the trunk"
+exit 0
+FAKE
+chmod +x "$FAKE_DOCTOR_BRANCH"
+
+# FAKE_DOCTOR_OK is already defined above, in the "Reactive check" section.
+
+MARKER_FILE="$SANDBOX/claude-was-invoked"
+FAKE_CLAUDE_MARKER="$SANDBOX/fake-claude-marker"
+cat > "$FAKE_CLAUDE_MARKER" <<FAKE
+#!/usr/bin/env bash
+touch "$MARKER_FILE"
+echo "sweep-execute: ran"
+exit 0
+FAKE
+chmod +x "$FAKE_CLAUDE_MARKER"
+
+# --- doctor fails -> loop exits non-zero, invokes nothing ------------------
+rm -f "$MARKER_FILE"
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_FAIL" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 3 2>&1)"
+rc=$?
+check "doctor failure exits non-zero" "$rc" "1"
+contains "the doctor's own drifted output is surfaced" "$out" "STATUS: drifted"
+contains "the doctor's DIFF line is surfaced" "$out" "gate-check.sh"
+contains "the remedy is printed" "$out" "git checkout <trunk>"
+contains "the escape hatch is mentioned" "$out" "DEVLEAD_ALLOW_DRIFT=1"
+check "claude was never invoked" "$([[ -f "$MARKER_FILE" ]] && echo yes || echo no)" "no"
+
+# --- doctor fails + DEVLEAD_ALLOW_DRIFT=1 -> loop proceeds AND prints the
+#     warning ---------------------------------------------------------------
+rm -f "$MARKER_FILE"
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_FAIL" DEVLEAD_ALLOW_DRIFT=1 \
+  DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 1 2>&1)"
+rc=$?
+check "ALLOW_DRIFT proceeds: exits 0" "$rc" "0"
+contains "ALLOW_DRIFT proceeds: prints the ALLOW_DRIFT warning" "$out" "DEVLEAD_ALLOW_DRIFT=1 — PROCEEDING ANYWAY"
+contains "ALLOW_DRIFT proceeds: still surfaces what differs" "$out" "gate-check.sh"
+check "ALLOW_DRIFT proceeds: claude WAS invoked" "$([[ -f "$MARKER_FILE" ]] && echo yes || echo no)" "yes"
+
+# --- DEVLEAD_LOOP_DRYRUN=1 -> the drift check is skipped entirely, no
+#     failure even with a failing doctor -------------------------------------
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_FAIL" DEVLEAD_LOOP_DRYRUN=1 \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 1 2>&1)"
+rc=$?
+check "dry-run skips the drift check even with a failing doctor: exits 0" "$rc" "0"
+not_contains "dry-run never surfaces doctor output" "$out" "STATUS: drifted"
+contains "dry-run still reaches the announcement" "$out" "would run"
+
+# --- A passing doctor is silent and does not block a normal run ------------
+rm -f "$MARKER_FILE"
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
+  DEVLEAD_LOOP_SLEEP=0 bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 1 2>&1)"
+rc=$?
+check "passing doctor: exits 0" "$rc" "0"
+not_contains "passing doctor: prints no drift warning" "$out" "STATUS: drifted"
+check "passing doctor: claude WAS invoked" "$([[ -f "$MARKER_FILE" ]] && echo yes || echo no)" "yes"
+
+# ===========================================================================
+# Provenance: doctor.sh exits 0 for "STATUS: ok, from a branch" — the loop
+# must not treat that exit code as sufficient. It must read the NOTE and
+# still refuse to run unattended, exactly as it does for STATUS: drifted.
+# ===========================================================================
+
+# --- doctor says ok-but-from-a-branch -> loop BLOCKS, message names
+#     provenance specifically, invokes nothing ------------------------------
+rm -f "$MARKER_FILE"
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_BRANCH" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 3 2>&1)"
+rc=$?
+check "ok-but-branch exits non-zero" "$rc" "1"
+contains "ok-but-branch: the message names provenance" "$out" "provenance"
+contains "ok-but-branch: doctor's own STATUS: ok is surfaced" "$out" "STATUS: ok"
+contains "ok-but-branch: doctor's own NOTE is surfaced" "$out" "installed from a branch"
+contains "ok-but-branch: the remedy is printed" "$out" "git checkout <trunk>"
+contains "ok-but-branch: the escape hatch is mentioned" "$out" "DEVLEAD_ALLOW_DRIFT=1"
+check "ok-but-branch: claude was never invoked" "$([[ -f "$MARKER_FILE" ]] && echo yes || echo no)" "no"
+
+# --- doctor says ok-but-from-a-branch + DEVLEAD_ALLOW_DRIFT=1 -> loop
+#     proceeds AND prints the warning ----------------------------------------
+rm -f "$MARKER_FILE"
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_BRANCH" DEVLEAD_ALLOW_DRIFT=1 \
+  DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 1 2>&1)"
+rc=$?
+check "ok-but-branch + ALLOW_DRIFT: exits 0" "$rc" "0"
+contains "ok-but-branch + ALLOW_DRIFT: prints the ALLOW_DRIFT warning" "$out" "DEVLEAD_ALLOW_DRIFT=1 — PROCEEDING ANYWAY"
+contains "ok-but-branch + ALLOW_DRIFT: still surfaces the doctor NOTE" "$out" "installed from a branch"
+check "ok-but-branch + ALLOW_DRIFT: claude WAS invoked" "$([[ -f "$MARKER_FILE" ]] && echo yes || echo no)" "yes"
+
+# --- doctor says ok-and-trunk (no NOTE) -> loop proceeds, no block ---------
+rm -f "$MARKER_FILE"
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
+  DEVLEAD_LOOP_SLEEP=0 bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 1 2>&1)"
+rc=$?
+check "ok-and-trunk: exits 0" "$rc" "0"
+not_contains "ok-and-trunk: no provenance block message" "$out" "provenance"
+check "ok-and-trunk: claude WAS invoked" "$([[ -f "$MARKER_FILE" ]] && echo yes || echo no)" "yes"
 
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="

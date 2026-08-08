@@ -229,6 +229,7 @@ bootstrap_symlinks() {
     "$repo_dir/.devlead/scripts/sweep.sh|$devlead_dir/scripts/sweep.sh|x"
     "$repo_dir/.devlead/scripts/run-state.sh|$devlead_dir/scripts/run-state.sh|x"
     "$repo_dir/.devlead/scripts/sweep-loop.sh|$devlead_dir/scripts/sweep-loop.sh|x"
+    "$repo_dir/.devlead/scripts/doctor.sh|$devlead_dir/scripts/doctor.sh|x"
     "$repo_dir/.devlead/bin/devlead|$local_bin/devlead|x"
     "$repo_dir/.claude/hooks/post-edit.sh|$devlead_dir/hooks/post-edit.sh|x"
     "$repo_dir/.claude/hooks/gate-check.sh|$devlead_dir/hooks/gate-check.sh|x"
@@ -236,6 +237,7 @@ bootstrap_symlinks() {
     "$repo_dir/.claude/commands/cerremos.md|$claude_commands/cerremos.md|"
     "$repo_dir/.claude/commands/batch.md|$claude_commands/batch.md|"
     "$repo_dir/.claude/commands/sweep-execute.md|$claude_commands/sweep-execute.md|"
+    "$repo_dir/.claude/commands/sweep-discover.md|$claude_commands/sweep-discover.md|"
   )
 
   local _entry _src _dst _mode

@@ -10,39 +10,63 @@
 #   sweep-loop.sh --plan <file> [--repo <path>] [--max-iterations N]
 #   sweep-loop.sh [--repo <path>] [--max-iterations N] [-- <extra sweep-execute args>]
 #
-# The cwd-work-tree guard below defaults every invocation to cwd-dependent
-# and skips ONLY when cwd-independence is positively proven: an exact --fleet
-# token present AND no --plan anywhere AND no #N issue token forwarded after
-# `--`. See the guard's own comment block for why this must be derived from
-# sweep-execute.md's mode-selector precedence rather than an enumerated flag
-# list.
+# Two guards protect this loop from running a cwd-dependent sweep-execute
+# outside a git work tree, and they are NOT redundant — one is a fast path,
+# the other is the actual guarantee:
 #
-# KNOWN LIMITATION — the guard cannot be made exact here, and a fifth attempt
-# would not help. It inspects the argv ARRAY; sweep-execute only ever sees the
-# FLATTENED prompt string, and its mode detection is natural language read by
-# an LLM. batch.md's queue grammar, which sweep-execute imports verbatim for
-# MODO SCOPED, accepts "cualquier variante en español con números de issue
-# precedidos de `#`" — an open grammar no shell regex can mirror. So these
-# slip past and skip the guard even though the dispatched run is SCOPED and
-# does resolve its repo from cwd:
+# 1. PRE-CHECK (fast path, best-effort). Before spending a `claude -p`
+#    invocation, this loop tries to PREDICT whether the dispatched
+#    /sweep-execute will resolve its repo from cwd, by inspecting its own
+#    argv. It defaults every invocation to cwd-dependent and skips ONLY when
+#    cwd-independence is positively proven: an exact --fleet token present
+#    AND no --plan anywhere AND no #N issue token forwarded after `--`. See
+#    the guard's own comment block below for why this must be derived from
+#    sweep-execute.md's mode-selector precedence rather than an enumerated
+#    flag list. It is worth keeping — it fails fast, before paying for an
+#    invocation — but five rounds of adversarial review established that it
+#    CANNOT be made exact here, so it is not the safety property.
+#
+# 2. REACTIVE CHECK (the guarantee). sweep-execute's own PRE-repo early
+#    exits print `STATUS: not-a-git-repo` as the first line of their output
+#    when they cannot resolve a repo from cwd (see sweep-execute.md's
+#    "Detección de modo" — the contract note under the first such block).
+#    After every iteration this loop scans the captured output for that
+#    line. A hit means the dispatched invocation structurally could not
+#    work, no matter what the pre-check predicted — so the loop stops and
+#    exits non-zero instead of quietly re-invoking the same broken
+#    invocation N more times. Whatever the pre-check misses, this catches,
+#    loudly.
+#
+# KNOWN LIMITATION (of the pre-check only) — it inspects the argv ARRAY;
+# sweep-execute only ever sees the FLATTENED prompt string, and its mode
+# detection is natural language read by an LLM. batch.md's queue grammar,
+# which sweep-execute imports verbatim for MODO SCOPED, accepts "cualquier
+# variante en español con números de issue precedidos de `#`" — an open
+# grammar no shell regex can mirror. So these two shapes still slip past the
+# pre-check and it does not fail fast for them, even though the dispatched
+# run is SCOPED and does resolve its repo from cwd:
 #
 #   sweep-loop.sh -- --fleet '#12,'                        (comma-suffixed)
 #   sweep-loop.sh -- --fleet --note "closes #42 tonight"   (#N inside a value)
 #
 # Neither shape is used by any shipped systemd unit; both require hand-passing
-# free text alongside --fleet from a non-repo directory. The failure is a
-# silent no-op, not a wrong-repo write.
-#
-# The real fix inverts the direction: sweep-execute already has a
-# `not-a-git-repo` early exit, but it exits clean and silent, which is what
-# makes it invisible here. Give that exit a distinguishable signal and have
-# this loop react to what HAPPENED instead of predicting what will happen.
-# Prediction belongs where the knowledge is, and the knowledge is in
-# sweep-execute, not in the loop that invokes it.
+# free text alongside --fleet from a non-repo directory. But they are no
+# longer a silent no-op: the reactive check catches BOTH of them after the
+# first iteration, because sweep-execute still emits `STATUS: not-a-git-repo`
+# when it cannot resolve a repo, regardless of which shape reached it. The
+# loop reports the failure and exits non-zero instead of re-invoking a
+# structurally broken command up to the iteration cap. This is what closes
+# the gap the five review rounds escalated — not by making the pre-check
+# exact (proven impossible), but by making the loop react to what actually
+# happened instead of only predicting what will happen. Prediction belongs
+# where the knowledge is, and the knowledge is in sweep-execute, not in the
+# loop that invokes it.
 #
 # Environment:
 #   DEVLEAD_LOOP_DRYRUN=1   print the exact `claude -p` command per iteration
-#                           and exit 0 without invoking anything
+#                           and exit 0 without invoking anything (the reactive
+#                           check never fires in this mode — claude is never
+#                           invoked, so there is no output to scan)
 #   DEVLEAD_LOOP_MAX        default iteration cap (default 10; --max-iterations wins)
 #   DEVLEAD_LOOP_SLEEP      seconds between iterations (default 5)
 #   DEVLEAD_CLAUDE_BIN      claude binary (default: claude)
@@ -50,11 +74,49 @@
 #                           when both are given (see FIX 7: the systemd unit has no
 #                           WorkingDirectory pointed at a real repo, so LOCAL-PLAN's
 #                           cwd-derived repo resolution needs an explicit target)
+#   DEVLEAD_ALLOW_DRIFT=1   escape hatch for supervised development: proceed even
+#                           when the drift guard below (doctor.sh) reports the
+#                           published artifacts are stale or unreviewed. Prints a
+#                           prominent multi-line warning naming what differs — this
+#                           is meant to be impossible to miss in a journal, never
+#                           the default posture for an unattended run.
+#   DEVLEAD_DOCTOR_BIN      doctor.sh binary the drift guard invokes (default:
+#                           the sibling doctor.sh next to this script) — override
+#                           for testing with a stub.
+#
+# DRIFT GUARD — this loop IS the unattended path; a human typing
+# /sweep-execute interactively does not go through it, and can eyeball
+# whether their own checkout looks right. Before the FIRST invocation this
+# loop runs doctor.sh, which reports whether the artifacts published to this
+# machine (gate-check.sh, envelope.sh's A3 guard, the governance mirrors in
+# the command files, this very script) are INTEGRITY-ok — do they match some
+# coherent commit at all — and separately, as PROVENANCE, whether that
+# commit IS the reviewed trunk (see doctor.sh's own header comment for the
+# full split). doctor.sh's exit code alone answers only the integrity
+# question: it exits 0 for BOTH "matches the trunk" and "matches a branch
+# tip during active development" — both are coherent installs. This loop's
+# question is narrower than doctor.sh's: an UNATTENDED run must use
+# REVIEWED artifacts specifically, so it does not key off doctor.sh's exit
+# code alone. Instead it reads doctor.sh's own STATUS/NOTE lines and
+# proceeds only when the installed set matches the trunk with no provenance
+# NOTE attached. Anything else — STATUS: drifted, STATUS: unknown, or
+# STATUS: ok with a provenance NOTE (installed from some other branch) — is
+# treated the same way: the loop refuses to run, naming exactly which of the
+# three it saw. See the guard block below for the exact remedy printed.
+# Skipped ENTIRELY under DEVLEAD_LOOP_DRYRUN=1, deliberately: nothing is
+# invoked in dry-run, so there is nothing at risk running against whatever
+# happens to be installed, and dry-run is also how the guard's own wiring
+# gets tested without a real git sandbox.
 #
 # Exit codes:
 #   0  plan exhausted, cap reached, or dry run — all normal outcomes
 #   1  usage error, a plan file that cannot be read, --repo does not exist,
-#      or the resolved cwd is not inside a git work tree
+#      the resolved cwd is not inside a git work tree (pre-check), the
+#      installed artifacts do not verify as the reviewed trunk — doctor.sh
+#      reported drifted, unknown, or ok-but-from-a-branch (drift guard,
+#      unless DEVLEAD_ALLOW_DRIFT=1) — or a dispatched invocation reported
+#      `STATUS: not-a-git-repo` (reactive check) — in these cases the loop
+#      stops immediately, it does not keep iterating
 #
 # The cap is a backstop, never a schedule: with --plan the loop stops as soon as
 # run-state.sh reports every task settled. Without one there is no completion
@@ -251,6 +313,68 @@ if [[ -n "$PLAN_FILE" && ! -f "$PLAN_FILE" ]]; then
   exit 1
 fi
 
+# --- Drift guard: refuse to run unattended against stale/unreviewed artifacts
+# See the header comment above for the full rationale. Skipped entirely under
+# DEVLEAD_LOOP_DRYRUN=1 — dry-run invokes nothing, so nothing is at risk.
+#
+# doctor.sh's exit code answers INTEGRITY only (does the install match SOME
+# commit at all) — it is 0 for both "matches the trunk" and "matches a
+# branch tip". This loop's bar is PROVENANCE: the matched commit must BE the
+# trunk. So the exit code alone is not read here; doctor.sh's own STATUS and
+# NOTE lines are parsed to tell the three refusal cases apart from the one
+# case that is allowed to proceed unattended.
+DOCTOR_BIN="${DEVLEAD_DOCTOR_BIN:-$_SCRIPT_DIR/doctor.sh}"
+if [[ "$DRYRUN" != "1" ]]; then
+  _DOCTOR_OUT="$(bash "$DOCTOR_BIN" 2>&1)"
+  _DOCTOR_STATUS="$(printf '%s\n' "$_DOCTOR_OUT" | grep -m1 '^STATUS: ' | sed 's/^STATUS: //')"
+  _DOCTOR_HAS_NOTE=false
+  printf '%s\n' "$_DOCTOR_OUT" | grep -q '^NOTE:' && _DOCTOR_HAS_NOTE=true
+
+  # The only case allowed to proceed unattended: doctor.sh matched the
+  # installed set to the trunk itself, with no provenance NOTE attached.
+  _TRUNK_VERIFIED=false
+  if [[ "$_DOCTOR_STATUS" == "ok" && "$_DOCTOR_HAS_NOTE" == "false" ]]; then
+    _TRUNK_VERIFIED=true
+  fi
+
+  if [[ "$_TRUNK_VERIFIED" == "false" ]]; then
+    if [[ "${DEVLEAD_ALLOW_DRIFT:-0}" == "1" ]]; then
+      {
+        echo "############################################################"
+        echo "# sweep-loop: DEVLEAD_ALLOW_DRIFT=1 — PROCEEDING ANYWAY.  #"
+        echo "# The published DevLead artifacts on this machine do NOT  #"
+        echo "# verify as the repo's reviewed trunk (see doctor.sh      #"
+        echo "# output below for exactly why). This run uses UNREVIEWED #"
+        echo "# OR STALE artifacts, including whatever code enforces    #"
+        echo "# DevLead's own limits. Do not leave this set for         #"
+        echo "# unattended/nightly runs.                                #"
+        echo "############################################################"
+        echo "$_DOCTOR_OUT"
+      } >&2
+    else
+      _reason="doctor.sh did not report a recognizable STATUS — refusing to run unattended"
+      case "$_DOCTOR_STATUS" in
+        drifted)
+          _reason="doctor.sh reports STATUS: drifted (integrity) — the installed artifacts do not match any known commit — refusing to run unattended"
+          ;;
+        unknown)
+          _reason="doctor.sh reports STATUS: unknown — the reviewed trunk could not be resolved — refusing to run unattended"
+          ;;
+        ok)
+          _reason="doctor.sh reports STATUS: ok but from a branch, not the trunk (provenance) — installed artifacts are coherent but not reviewed — refusing to run unattended"
+          ;;
+      esac
+      {
+        echo "sweep-loop: $_reason"
+        echo "$_DOCTOR_OUT"
+        echo "sweep-loop: remedy: git checkout <trunk> && git pull && bash install.sh"
+        echo "sweep-loop: escape hatch for supervised development: DEVLEAD_ALLOW_DRIFT=1"
+      } >&2
+      exit 1
+    fi
+  fi
+fi
+
 # --- Run id: derived from plan CONTENT, matching sweep-execute Paso 8.0 -----
 # Same plan -> same id -> the loop sees the progress the run recorded. Edit the
 # plan and the id changes, which is a different run by definition.
@@ -295,6 +419,23 @@ _sweep_display() {
   printf '%s -p "%s"' "$CLAUDE_BIN" "$(_sweep_prompt)"
 }
 
+# --- Reactive not-a-git-repo detection --------------------------------------
+# The pre-check guard above is a fast path, not the guarantee (see the header
+# comment block). This is the guarantee: each iteration's output is streamed
+# to the caller AND captured via `tee` to a scratch file, then scanned for the
+# `STATUS: not-a-git-repo` contract line sweep-execute.md documents. A hit
+# means the dispatched invocation structurally could not resolve a repo, no
+# matter what the pre-check predicted — re-invoking it again would just waste
+# another turn, so the loop stops immediately instead of running out the cap.
+# Never created in dry-run mode: claude is never invoked there, so there is
+# nothing to capture. The trap guarantees cleanup on every exit path this
+# script takes after the file is created, including the reactive exit below.
+_SWEEP_OUT=""
+if [[ "$DRYRUN" != "1" ]]; then
+  _SWEEP_OUT="$(mktemp "${TMPDIR:-/tmp}/sweep-loop-out.XXXXXX")"
+  trap '[[ -n "$_SWEEP_OUT" ]] && rm -f "$_SWEEP_OUT"' EXIT
+fi
+
 # --- Loop ------------------------------------------------------------------
 _iter=0
 while [[ "$_iter" -lt "$MAX_ITER" ]]; do
@@ -316,9 +457,17 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
   fi
 
   echo "sweep-loop: iteration $_iter/$MAX_ITER — invoking $CLAUDE_BIN"
-  "$CLAUDE_BIN" -p "$(_sweep_prompt)"
-  _rc=$?
+  "$CLAUDE_BIN" -p "$(_sweep_prompt)" | tee "$_SWEEP_OUT"
+  _rc=${PIPESTATUS[0]}
   echo "sweep-loop: iteration $_iter exited $_rc"
+
+  if grep -q '^STATUS: not-a-git-repo' "$_SWEEP_OUT"; then
+    echo "sweep-loop: dispatched invocation reported STATUS: not-a-git-repo — it could not resolve a repo from cwd" >&2
+    echo "sweep-loop: cwd used was: $PWD" >&2
+    echo "sweep-loop: pass --repo <path> or set \$DEVLEAD_LOOP_REPO to the target repo instead" >&2
+    echo "sweep-loop: stopping after iteration $_iter — re-invoking would repeat the same failure" >&2
+    exit 1
+  fi
 
   if [[ "$_iter" -lt "$MAX_ITER" ]]; then
     sleep "$SLEEP_SECS"
