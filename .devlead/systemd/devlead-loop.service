@@ -1,0 +1,18 @@
+[Unit]
+Description=DevLead autonomous loop (headless sweep-execute re-invocation)
+Documentation=file:%h/.devlead/scripts/sweep-loop.sh
+# No plan, no run. Without this the unit would fail every night on a machine
+# that simply has nothing queued, training you to ignore the failure.
+ConditionPathExists=%h/.devlead/plan.local.yml
+
+[Service]
+Type=oneshot
+ExecStart=%h/.devlead/scripts/sweep-loop.sh --plan %h/.devlead/plan.local.yml
+StandardOutput=journal
+StandardError=journal
+# A loop drives several full sweep-execute passes; the default oneshot timeout
+# would kill it mid-run and leave branches half-built.
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=default.target
