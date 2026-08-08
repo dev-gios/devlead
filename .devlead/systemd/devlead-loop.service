@@ -7,6 +7,21 @@ ConditionPathExists=%h/.devlead/plan.local.yml
 
 [Service]
 Type=oneshot
+# WorkingDirectory=%h alone (systemd's implicit default for a user unit with
+# none set) is $HOME — and LOCAL-PLAN resolves its target repo from cwd via
+# `git rev-parse --show-toplevel`. Without an explicit WorkingDirectory=,
+# that resolution silently fails every night and systemd still reports
+# success (oneshot exits 0), because sweep-loop.sh had no cwd guard either.
+# %h/.devlead always exists (this unit's own ConditionPathExists depends on
+# a file under it) so it is a safe, stable WorkingDirectory= — but it is
+# NOT the target repo itself. The actual target repo is user-controlled via
+# DEVLEAD_LOOP_REPO, read from the optional env file below (the "-" prefix
+# means a missing file is not a unit failure) and honoured by
+# sweep-loop.sh's own cwd resolution (see its --repo flag / DEVLEAD_LOOP_REPO
+# handling). Create %h/.devlead/loop.env with a line like:
+#   DEVLEAD_LOOP_REPO=/home/you/path/to/repo
+WorkingDirectory=%h/.devlead
+EnvironmentFile=-%h/.devlead/loop.env
 ExecStart=%h/.devlead/scripts/sweep-loop.sh --plan %h/.devlead/plan.local.yml
 StandardOutput=journal
 StandardError=journal

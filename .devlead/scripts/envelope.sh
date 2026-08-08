@@ -28,6 +28,72 @@ _emit() {
 }
 
 _block() { echo "STATUS: blocked"; echo "GAP:    $1"; exit 0; }
+# GH_TIMEOUT_SECS — bound on each `gh` call inside _resolve_default_branch.
+# Override via env for operators on slow links. A hung `gh` (dead network,
+# stalled auth prompt, etc.) must degrade to the local fallback, never hang
+# the caller — this runs on every `envelope.sh show` for a repo declaring
+# merge.mode: integration-branch, and again per merge-eligible work unit in
+# Delta 6, including inside the unattended nightly loop.
+#
+# VALIDATED, never passed to `timeout` raw: GNU `timeout` treats a duration of
+# `0` as "no timeout", so an unvalidated $DEVLEAD_GH_TIMEOUT_SECS=0 — a
+# plausible operator value for "do not wait" — would silently reinstate the
+# unbounded hang this guard exists to close. A non-numeric override would
+# also reach `timeout` and make it error out: fail-safe, but silent (stderr
+# discarded downstream). Only a positive integer (>= 1) is accepted; anything
+# else falls back to the default and prints a one-line warning naming both
+# the offending value and the value actually used.
+_GH_TIMEOUT_DEFAULT=10
+GH_TIMEOUT_SECS="${DEVLEAD_GH_TIMEOUT_SECS:-$_GH_TIMEOUT_DEFAULT}"
+if ! [[ "$GH_TIMEOUT_SECS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "envelope: DEVLEAD_GH_TIMEOUT_SECS='$GH_TIMEOUT_SECS' is not a positive integer — using ${_GH_TIMEOUT_DEFAULT}s instead" >&2
+  GH_TIMEOUT_SECS="$_GH_TIMEOUT_DEFAULT"
+fi
+# _resolve_default_branch — ground truth for "what is the repo's default
+# branch", used by A3 clause 2 (an integration branch must never BE the
+# default branch). Prefers `gh repo view` (live remote query) over the local
+# `refs/remotes/origin/HEAD` symref, because git never auto-updates that
+# symref: if the remote default branch is renamed after cloning, the symref
+# still points at the OLD name and a comparison against it would approve
+# merging into what is now the real default branch. Falls back to the
+# symref when `gh` is unavailable, unauthenticated, OR times out — a hung
+# `gh` is treated exactly like "gh unavailable", never like "no default
+# branch". Prints the branch name and returns 0, or returns 1 (no stdout)
+# when neither source resolves — callers fail closed on that case
+# (GOVERNANCE.md §A3).
+_resolve_default_branch() {
+  local _db _auth_rc _view_rc _gh_timeout=()
+  # `timeout` is coreutils and normally present, but don't assume it: if
+  # missing, call `gh` directly (unbounded, as before) rather than break the
+  # check entirely.
+  if command -v timeout &>/dev/null; then
+    _gh_timeout=(timeout "$GH_TIMEOUT_SECS")
+  fi
+  if command -v gh &>/dev/null; then
+    "${_gh_timeout[@]}" gh auth status &>/dev/null
+    _auth_rc=$?
+    if [[ ${#_gh_timeout[@]} -gt 0 && $_auth_rc -eq 124 ]]; then
+      echo "envelope: gh auth status timed out after ${GH_TIMEOUT_SECS}s — falling back to local symref" >&2
+    fi
+    if [[ $_auth_rc -eq 0 ]]; then
+      _db=$("${_gh_timeout[@]}" gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)
+      _view_rc=$?
+      if [[ ${#_gh_timeout[@]} -gt 0 && $_view_rc -eq 124 ]]; then
+        echo "envelope: gh repo view timed out after ${GH_TIMEOUT_SECS}s — falling back to local symref" >&2
+      fi
+      if [[ -n "$_db" ]]; then
+        printf '%s' "$_db"
+        return 0
+      fi
+    fi
+  fi
+  _db=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+  if [[ -n "$_db" ]]; then
+    printf '%s' "$_db"
+    return 0
+  fi
+  return 1
+}
 _is_bool() { [[ "$1" == "true" || "$1" == "false" ]]; }
 # _read_version_sha — reads the SHA: field from ~/.devlead/VERSION (KEY:
 # value, one per line — see upgrade's write below). Prints the sha and
@@ -458,9 +524,9 @@ _do_show() {
     if [[ -z "$_ib" || "$_ib" == "null" ]]; then
       _block "merge.mode 'integration-branch' requires base.integration_branch to be declared"
     else
-      _default_branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+      _default_branch="$(_resolve_default_branch)" || _default_branch=""
       if [[ -z "$_default_branch" ]]; then
-        _block "merge.mode 'integration-branch' requires a resolvable default branch (git symbolic-ref refs/remotes/origin/HEAD failed) — cannot prove base.integration_branch is not the trunk"
+        _block "merge.mode 'integration-branch' requires a resolvable default branch (gh repo view and git symbolic-ref refs/remotes/origin/HEAD both failed) — cannot prove base.integration_branch is not the trunk"
       elif [[ "$_ib" == "$_default_branch" ]]; then
         _block "base.integration_branch ('$_ib') must not be the default branch — that would grant merge-to-trunk (GOVERNANCE.md §A3)"
       fi
