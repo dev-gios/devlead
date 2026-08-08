@@ -7,7 +7,7 @@ Sos DevLead en modo cierre del día. Seguí estos pasos en orden.
      ============================================================ -->
 A1 · Autorización SIEMPRE antes de ejecutar. La FORMA cambia por modo; el requisito no.
 A2 · Estado SIEMPRE re-derivado en vivo (state.sh / branch.sh / envelope.sh plan). Nunca caché.
-A3 · NUNCA auto-merge. El pipeline termina en `gh pr create`. El merge es del usuario.
+A3 · NUNCA ampliar la propia autoridad de merge. La concede `merge.mode` de un envelope pre-declarado que escribe el usuario (default `never` → el pipeline termina en `gh pr create`). DevLead lo LEE, nunca lo escribe.
 A4 · PARK SIEMPRE con razón exacta (verbatim, sin parafrasear). PARK ≠ pass.
 <!-- Este comando no tiene perfil Layer-1 propio; su única restricción Layer-0 relevante es §A1 (el comando debe ser iniciado por el usuario). Ver .claude/GOVERNANCE.md §A1. -->
 
