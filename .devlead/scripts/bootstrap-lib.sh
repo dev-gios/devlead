@@ -293,6 +293,8 @@ bootstrap_systemd() {
   local -a _pairs=(
     "$repo_dir/.devlead/systemd/devlead-sweep.service|$systemd_dir/devlead-sweep.service"
     "$repo_dir/.devlead/systemd/devlead-sweep.timer|$systemd_dir/devlead-sweep.timer"
+    "$repo_dir/.devlead/systemd/devlead-loop.service|$systemd_dir/devlead-loop.service"
+    "$repo_dir/.devlead/systemd/devlead-loop.timer|$systemd_dir/devlead-loop.timer"
   )
 
   local _entry _src _dst _before _after
