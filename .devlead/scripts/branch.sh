@@ -41,11 +41,15 @@ TYPE="$3"
 DEP_NUM="${4:-}"
 INTEGRATION_BRANCH="${5:-dev}"
 
-# Validate type — default to feat if unknown
+# Validate type — default to feat if unknown.
+# Space-padded containment via `case`, NOT `[[ =~ ]]`: an unquoted right-hand
+# side would treat $TYPE as a regex (so `f.at` or `feat|fix` would match), and
+# a quoted one trips SC2076. `case` matches literally and is unambiguous.
 _valid_types="feat fix chore docs refactor perf test"
-if [[ ! " $_valid_types " =~ " ${TYPE} " ]]; then
-  TYPE="feat"
-fi
+case " $_valid_types " in
+  *" $TYPE "*) ;;
+  *) TYPE="feat" ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Guard: must be a git repo
