@@ -236,7 +236,7 @@ Si la llamada `gh issue view {N}` falla (issue no encontrada, gh no disponible, 
 **Nota `--fleet` ignorado (si aplica):** si la invocación también incluía el token `--fleet` junto a los `#N` declarados, agregá esta línea informativa al preview (antes de "Comenzando run..."): `Nota: --fleet fue ignorado — MODO SCOPED (#N explícitos) tiene precedencia (ver "### Detección de modo").` Esto evita que el usuario asuma que `--fleet` tuvo efecto cuando en realidad MODO SCOPED ganó.
 
 **Si MODO = local-plan**, leé y bloqueá el plan file UNA vez en memoria (A2 mitigation,
-REQ-3.4). Para el preview: iterá `.tasks` con `yq` para obtener id/title/type/spec/design
+REQ-3.4). Para el preview: iterá `.tasks` con `yq` para obtener id/title/type/spec/design/depends-on
 de cada tarea y calculá K (tasks sin spec resolvable) sobre M (total tasks). Verificá
 auth pre-flight token (E1.3 chain, write-scope notice). Presentá:
 
@@ -250,6 +250,7 @@ Cola (en orden declarado):
   1. [id: {id}] {title} ({type}) → rama: {type}/plan-{id}-{slug}
      Spec: {path} ✓ | none
      Design: {path} ✓ | none
+     Depends on: {depends-on} → PR encadenado contra esa rama     ← omitir si no declara
   2. ...
 
 Tareas: N
@@ -429,14 +430,32 @@ Capturá stdout. Procesá la salida:
   - `plan-task-missing-title`: algún task en `.tasks[]` tiene `title` vacío/ausente → STATUS + exit limpio con índice del task
   - `plan-task-missing-id`: algún task en `.tasks[]` tiene `id` vacío/ausente → STATUS + exit limpio con índice del task (id es requerido para clave de tracking, nombre de rama y naming de temp-files)
   - `plan-task-invalid-id`: algún task en `.tasks[]` tiene `id` que contiene whitespace, `/`, o cualquier carácter unsafe en un git branch ref (p.ej. `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\`, espacio, TAB) → STATUS + exit limpio con índice del task. El chequeo mínimo: `[[ "$task_id" =~ [[:space:]/] ]]` cubre los casos más comunes; para cobertura completa, rechazá también los caracteres que `git check-ref-format` rechaza. Razón: `task.id` se usa verbatim en el nombre de rama como `plan-{task.id}-{slug}` — un id con caracteres inválidos producirá un nombre de rama rechazado por git.
-  Los cinco producen un STATUS de nivel repo + clean exit sin E1/E2/E3. La cola no puede
+  - `plan-task-invalid-dep`: algún task declara `depends-on:` que no resuelve a un task
+    ANTERIOR del mismo plan → STATUS + exit limpio con índice del task. Se rechazan cuatro
+    casos: id desconocido (no existe en `.tasks[]`), auto-referencia (`depends-on` == su
+    propio `id`), referencia hacia adelante (apunta a un task que aparece DESPUÉS en el
+    orden declarado), y valor no escalar (una lista). **`depends-on` es un id único, no una
+    lista:** una rama tiene exactamente una base, así que múltiples padres no son
+    expresables en git.
+
+    Restringirlo a tasks anteriores hace que el orden declarado sea un orden topológico
+    válido por construcción, así que los ciclos son imposibles sin necesidad de detectarlos.
+
+  Los seis producen un STATUS de nivel repo + clean exit sin E1/E2/E3. La cola no puede
   quedar vacía cuando E1.5 ejecuta.
 - **E1.2 NO aplica para LOCAL-PLAN** — no se requiere enrollment ni `envelope.yml`; saltá E1.2 y andá directo a E1.3. E1.3 (auth chain) SÍ aplica porque `gh pr create` necesita token de escritura.
 - **Nota sobre presupuesto (REQ-4.4 superseded por Design Decision 8):** `envelope.sh show`
   MAX_ISSUES / STOP_AT / SKIP_DEPENDENTS NO se leen bajo LOCAL-PLAN. PRESUPUESTO = M
-  (longitud del plan). STOP_AT = null. SKIP_DEPENDENTS = false. E2.1 y E2.2 son no-ops
-  para este modo: STOP_AT==null → E2.1 short-circuit; SKIP_DEPENDENTS==false → E2.2
-  never fires.
+  (longitud del plan). STOP_AT = null. **SKIP_DEPENDENTS = true.** E2.1 es no-op para este
+  modo (STOP_AT==null → short-circuit), pero E2.2 SÍ corre: el grafo de dependencias del
+  plan es local y confiable — lo declara el usuario en `depends-on:` y E0 ya lo validó —,
+  así que un predecesor aparcado DEBE aparcar a sus dependientes. Sin esto, la tarea
+  dependiente ramificaría desde `{integration_branch}` sin la salida de su predecesor y
+  produciría un PR que no compila contra lo que dice depender.
+
+  En E2.2, la fuente del dep para LOCAL-PLAN es el campo `depends-on:` del plan bloqueado
+  en E0 — NO el `DEPENDS-ON:` que el resolver emite en Paso 8.1 (ese es para issues). La
+  razón de PARK es `dep-blocked: predecesor {depends-on} aparcado (repo-scoped)`.
 - **Clave de tracking compuesta** es `(repo-path, task-id)` no `(repo-path, issue-num)`
   para LOCAL-PLAN (Delta 3 adaptado).
 - Procedé directo a E1.5 con la cola = lista de tasks del plan (en orden declarado).
@@ -489,9 +508,9 @@ REPO: /abs/path
 
 **Regla crítica**: BLOQUEADAS es per-repo. NO se comparte entre repos. Issue `#35` en repo-A y `#35` en repo-B son trackeos completamente independientes. Al iniciar un nuevo repo, BLOQUEADAS arranca vacío.
 
-**(LOCAL-PLAN: PRESUPUESTO = M (longitud del plan), STOP_AT = null, SKIP_DEPENDENTS = false.
-E2.1 y E2.2 son no-ops para este modo: STOP_AT==null → E2.1 short-circuit;
-SKIP_DEPENDENTS==false → E2.2 never fires. La clave de tracking es `(repo-path, task-id)`
+**(LOCAL-PLAN: PRESUPUESTO = M (longitud del plan), STOP_AT = null, SKIP_DEPENDENTS = true.
+E2.1 es no-op (STOP_AT==null → short-circuit); E2.2 SÍ corre, tomando el dep del campo
+`depends-on:` del plan bloqueado en E0. La clave de tracking es `(repo-path, task-id)`
 no `(repo-path, issue-num)` para este modo.)**
 
 ---
@@ -516,10 +535,21 @@ Si `STOP_AT == null`: no aplica ningún check de tiempo.
 ### E2.2 — Pre-issue: dep-block check (si SKIP_DEPENDENTS = true)
 
 Si `SKIP_DEPENDENTS: true`:
-- Verificá si la issue tiene un `DEPENDS-ON: A` conocido (el resolver lo emite en B2.b Paso 8.1).
-- Si `A` ∈ BLOQUEADAS DE ESTE REPO → PARK esta issue con razón `dep-blocked: predecesor #A aparcado (repo-scoped)`, agregala a BLOQUEADAS, continuá con la siguiente issue.
+- Determiná el dep de esta unidad de trabajo. **La fuente depende del modo:**
+  - **MODO LOCAL-PLAN** → el campo `depends-on:` de la tarea, leído del plan bloqueado en
+    E0. NO corras el resolver para esto: el plan ya lo declara y E0 ya lo validó.
+  - **Cualquier otro modo** → el `DEPENDS-ON: A` que el resolver emite en B2.b Paso 8.1.
+- Si el dep ∈ BLOQUEADAS DE ESTE REPO → PARK esta unidad con razón
+  `dep-blocked: predecesor {dep} aparcado (repo-scoped)`, agregala a BLOQUEADAS, continuá
+  con la siguiente. (Para issues el `{dep}` se renderiza como `#A`; para tareas de plan,
+  como el `task.id` desnudo.)
 
 Si `SKIP_DEPENDENTS: false`: saltá este check. Dejá que B2.c lo maneje si branch.sh detecta el predecesor faltante.
+
+**Por qué el PARK transitivo es obligatorio y no una optimización:** si el predecesor se
+aparcó, su rama no tiene el trabajo del que esta tarea depende. Dejarla correr igual la
+haría ramificar desde `{integration_branch}` y abrir un PR que dice depender de algo que
+su base no contiene. Aparcar es lo ESTRECHO (§narrow-not-widen): DevLead hace menos, no más.
 
 ### E2.3 — Pipeline B2 con deltas
 
@@ -604,7 +634,17 @@ Para cada tarea del plan, los pasos B2.b Paso 8.1 y Paso 8.2 de `arranquemos.md`
   *Esta adaptación cita arranquemos.md Step 8.1: sustituye la invocación `ref-resolver.sh {issue_num}` por la forma `--task-spec` para LOCAL-PLAN.*
 
 - **Paso 8.2 — branch.sh con prefijo `plan-{task.id}`:**
-  En lugar de pasar `{task.id}` crudo como primer argumento de `branch.sh`, pasá `plan-{task.id}` (con el prefijo `plan-`). Pasá el campo `type:` de la tarea del plan DIRECTAMENTE como `{type}` (el schema del plan ya usa vocabulario de rama: `feat`/`fix`/`docs`/`chore`/`refactor`/`perf`/`test`). NO apliques el mapeo de labels de GitHub — ese mapeo es para issues, no para el plan. `branch.sh` valida `{type}` contra su set permitido y cae a `feat` si es inválido o ausente. El cuarto argumento (dep_num) siempre va vacío (`""`) — LOCAL-PLAN no apila. La invocación resulta en:
+  En lugar de pasar `{task.id}` crudo como primer argumento de `branch.sh`, pasá `plan-{task.id}` (con el prefijo `plan-`). Pasá el campo `type:` de la tarea del plan DIRECTAMENTE como `{type}` (el schema del plan ya usa vocabulario de rama: `feat`/`fix`/`docs`/`chore`/`refactor`/`perf`/`test`). NO apliques el mapeo de labels de GitHub — ese mapeo es para issues, no para el plan. `branch.sh` valida `{type}` contra su set permitido y cae a `feat` si es inválido o ausente.
+
+  El cuarto argumento (dep) es `plan-{task.depends-on}` cuando la tarea declara
+  `depends-on:`, y vacío (`""`) cuando no. `branch.sh` resuelve un dep no numérico como
+  prefijo de slug verbatim (`*/plan-{id}-*`), así que la rama del predecesor pasa a ser
+  la base y emite `STACKED:`. Un dep numérico sigue significando issue (`issue-{N}-*`),
+  sin cambios. La invocación resulta en:
+  ```
+  bash ~/.devlead/scripts/branch.sh plan-{task.id} "{task.title}" {type} "plan-{task.depends-on}" "{integration_branch}"
+  ```
+  o, sin `depends-on:`:
   ```
   bash ~/.devlead/scripts/branch.sh plan-{task.id} "{task.title}" {type} "" "{integration_branch}"
   ```
@@ -646,8 +686,19 @@ Design: {DESIGN-relative-path}
 Usá el campo `SOURCE:` del resolver para la línea `Spec:` y el campo `DESIGN:` del resolver para la línea `Design:` (ref-resolver emite `SOURCE:` solo para spec; `DESIGN:` lleva el path de diseño).
 Omití líneas Spec:/Design: si ausentes. NO emitas ningún `closes #N` (no hay issue número).
 Si la tarea no tenía spec (corrió Step 8.3-SDD), insertá la misma sección de intención que el path no-spec de arranquemos (Step 8.5, header `## Intención (spec generado por DevLead)`).
-`--base {integration_branch}` sin cambios. LOCAL-PLAN no apila (no depends-on), siempre
-root-PR shape.
+
+**Base del PR:** regla idéntica a la de issues, sin excepción para LOCAL-PLAN. Si Paso 8.2
+emitió `STACKED: {rama-predecesora}` → `--base {rama-predecesora}` (arranquemos.md:476).
+Si no → `--base {integration_branch}` (arranquemos.md:496). Una tarea con `depends-on:`
+produce un PR encadenado contra el PR de su predecesor; una tarea sin él produce un PR raíz.
+
+Cuando la tarea declara `depends-on:`, agregá al body, debajo de `Source:`:
+```
+Depends on: {depends-on} — este PR apunta al PR de esa tarea, no a {integration_branch}
+```
+
+<!-- Apilar NO es mergear: §A3 sigue intacto. Cada tarea de la cadena termina en
+     `gh pr create` y se detiene; el usuario mergea la cadena en orden. -->
 
 ### E2.4 — Actualizar tracking per-repo
 
