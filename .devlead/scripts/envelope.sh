@@ -106,6 +106,25 @@ on_failure:
   policy: park-and-continue
   skip_dependents: true
 merge:
+  # How far DevLead may merge on its own. See GOVERNANCE.md §A3.
+  #
+  #   never               DEFAULT. DevLead never invokes git merge / gh pr merge.
+  #                       The pipeline ends at `gh pr create` and every PR waits
+  #                       for you.
+  #
+  #   integration-branch  DevLead may merge green work-unit PRs into
+  #                       base.integration_branch, and ONLY into that branch. It
+  #                       then opens one long-lived PR from there to the default
+  #                       branch: your single review point for the whole run.
+  #                       Requires base.integration_branch to be declared above,
+  #                       and it must NOT be the repo's default branch — the
+  #                       envelope is blocked if it is.
+  #
+  #   default-branch      RESERVED, not implemented, rejected. Enabling it is its
+  #                       own governance decision, not an envelope edit.
+  #
+  # A red gate never merges (§A4), and a failed merge parks with gh's exact
+  # reason — never retried, never forced, never --admin.
   mode: never
 report:
   to: journal-per-repo
