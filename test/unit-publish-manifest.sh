@@ -73,6 +73,20 @@ for f in "$REPO_ROOT"/.claude/hooks/*.sh; do
 done
 report "every .claude/hooks/*.sh is published" "$missing"
 
+# --- Every systemd unit ----------------------------------------------------
+# bootstrap_systemd keeps its OWN hardcoded table, separate from the one
+# bootstrap_symlinks uses. A unit added to only one of them is just as invisible.
+missing=""
+for f in "$REPO_ROOT"/.devlead/systemd/*; do
+  [[ -f "$f" ]] || continue
+  name="$(basename "$f")"
+  case "$manifest" in
+    *"/.devlead/systemd/$name|"*) ;;
+    *) missing+="$name"$'\n' ;;
+  esac
+done
+report "every .devlead/systemd/* unit is published" "$missing"
+
 # --- The reverse direction: the manifest names nothing that has vanished ----
 missing=""
 while IFS= read -r src; do

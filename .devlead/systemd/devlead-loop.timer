@@ -1,0 +1,14 @@
+[Unit]
+Description=DevLead autonomous loop timer
+
+[Timer]
+OnCalendar=*-*-* 22:00:00
+# Deliberately NOT Persistent, unlike devlead-sweep.timer. That one is
+# plan-only and read-only, so catching up a missed run costs nothing. This one
+# creates branches, commits and PRs: a missed night firing the moment you open
+# the laptop, while you are working, is the opposite of what you asked for.
+Persistent=false
+Unit=devlead-loop.service
+
+[Install]
+WantedBy=timers.target
