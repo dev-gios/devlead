@@ -228,6 +228,7 @@ bootstrap_symlinks() {
     "$repo_dir/.devlead/scripts/envelope-auth.sh|$devlead_dir/scripts/envelope-auth.sh|x"
     "$repo_dir/.devlead/scripts/sweep.sh|$devlead_dir/scripts/sweep.sh|x"
     "$repo_dir/.devlead/scripts/run-state.sh|$devlead_dir/scripts/run-state.sh|x"
+    "$repo_dir/.devlead/scripts/sweep-loop.sh|$devlead_dir/scripts/sweep-loop.sh|x"
     "$repo_dir/.devlead/bin/devlead|$local_bin/devlead|x"
     "$repo_dir/.claude/hooks/post-edit.sh|$devlead_dir/hooks/post-edit.sh|x"
     "$repo_dir/.claude/hooks/gate-check.sh|$devlead_dir/hooks/gate-check.sh|x"
@@ -292,6 +293,8 @@ bootstrap_systemd() {
   local -a _pairs=(
     "$repo_dir/.devlead/systemd/devlead-sweep.service|$systemd_dir/devlead-sweep.service"
     "$repo_dir/.devlead/systemd/devlead-sweep.timer|$systemd_dir/devlead-sweep.timer"
+    "$repo_dir/.devlead/systemd/devlead-loop.service|$systemd_dir/devlead-loop.service"
+    "$repo_dir/.devlead/systemd/devlead-loop.timer|$systemd_dir/devlead-loop.timer"
   )
 
   local _entry _src _dst _before _after
