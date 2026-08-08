@@ -10,11 +10,12 @@
 #   sweep-loop.sh --plan <file> [--repo <path>] [--max-iterations N]
 #   sweep-loop.sh [--repo <path>] [--max-iterations N] [-- <extra sweep-execute args>]
 #
-# The cwd-work-tree guard below is decided from the EFFECTIVE invocation, not
-# from which side of `--` a flag landed on: an exact --plan token — whether
-# it is sweep-loop's own --plan or one forwarded after `--` — always makes
-# the run cwd-dependent, and --fleet only skips the guard when it is an exact
-# token AND no --plan appears anywhere.
+# The cwd-work-tree guard below defaults every invocation to cwd-dependent
+# and skips ONLY when cwd-independence is positively proven: an exact --fleet
+# token present AND no --plan anywhere AND no #N issue token anywhere (own
+# flags or forwarded after `--`). See the guard's own comment block for why
+# this must be derived from sweep-execute.md's mode-selector precedence
+# rather than an enumerated flag list.
 #
 # Environment:
 #   DEVLEAD_LOOP_DRYRUN=1   print the exact `claude -p` command per iteration
@@ -140,22 +141,41 @@ fi
 # (documented planless `--fleet` usage line above) — requiring a git work
 # tree at the invocation cwd for that form is a false positive.
 #
-# The decision MUST be derived from the EFFECTIVE invocation `/sweep-execute`
-# will see, not from how sweep-loop happened to parse its own flags (round-2
-# bypass: `--plan` passed after `--` never sets sweep-loop's own $PLAN_FILE,
-# but sweep-execute.md documents that `--plan` takes precedence over
-# `--fleet` regardless of where either token was passed through). So both
-# --fleet and --plan are looked up as exact tokens across BOTH sweep-loop's
-# own $PLAN_FILE and the extra-args ARRAY (never a flattened/joined string —
-# a quoted value that merely CONTAINS the text "--fleet" must not count,
-# which is why $EXTRA_ARGS_ARR is kept as an array instead of "$*").
+# THIS IS THE THIRD ATTEMPT AT THIS GUARD. Rounds 2 and 3 each patched the
+# specific case a reviewer named (--plan forwarded after `--`, a flattened
+# substring scan) and each missed the next one, because the guard enumerated
+# cases instead of encoding the rule. `sweep-execute.md`'s "### Detección de
+# modo (scoped vs plan-driven)" section defines the mode selection this guard
+# must mirror, and it has THREE selectors, checked in this documented
+# precedence order:
+#   1. any `#N` token present        → MODO SCOPED       — cwd-dependent,
+#      wins over --fleet
+#   2. else `--plan <file>` present  → MODO LOCAL-PLAN    — cwd-dependent,
+#      wins over --fleet
+#   3. else `--fleet` present        → SCOPE = fleet      — NOT cwd-dependent
+#      (enumerates ~/.devlead/autonomous-repos)
+#   4. else                          → SCOPE = cwd         — cwd-dependent
 #
-# A run is NOT cwd-dependent ONLY when a real --fleet token is present AND no
-# --plan appears anywhere (sweep-loop's own flag or the extra args). Every
-# other combination is cwd-dependent and gets the guard. If
-# --repo/$DEVLEAD_LOOP_REPO was given explicitly (REPO_DIR set, handled by
-# the cd block above), the operator asked for that directory — validate it
-# regardless of fleet/plan.
+# So instead of enumerating flags, the default is INVERTED: every invocation
+# is treated as cwd-dependent, and the guard is skipped ONLY when
+# cwd-independence is POSITIVELY PROVEN — the single proof being selector 3
+# with both selector 1 and selector 2 absent. Concretely: an exact --fleet
+# token is present AND no --plan appears anywhere (sweep-loop's own $PLAN_FILE
+# or the extra-args array) AND no #N issue token appears anywhere in the
+# extra-args array. Every other combination stays cwd-dependent and gets the
+# guard — the fail-safe direction. If --repo/$DEVLEAD_LOOP_REPO was given
+# explicitly (REPO_DIR set, handled by the cd block above), the operator
+# asked for that directory — validate it regardless of the proof above.
+#
+# All three selectors are looked up as exact tokens across BOTH sweep-loop's
+# own flags and the extra-args ARRAY (never a flattened/joined string — a
+# quoted value that merely CONTAINS the text "--fleet" or "#1" must not
+# count, which is why $EXTRA_ARGS_ARR is kept as an array instead of "$*").
+#
+# COUPLING WARNING: this rule is derived from sweep-execute.md's mode
+# selectors, not independently invented. ANY new mode selector added to that
+# "Detección de modo" section MUST be reflected here, or this guard will
+# silently under-fire again — exactly like rounds 2 and 3.
 _array_has_token() {
   # Exact match against array elements only, plus the --name=value form.
   # No substring matching against a joined string.
@@ -166,17 +186,34 @@ _array_has_token() {
   done
   return 1
 }
+_array_has_issue_token() {
+  # Selector 1 (MODO SCOPED): an exact `#N` token, N one or more digits.
+  # Same token shape as batch.md B0 "### Parsear la cola". No substring
+  # matching against a joined string — a value like "#notanumber" must not
+  # count, and neither must "--fleet" merely containing a "#" elsewhere.
+  local _tok
+  for _tok in "$@"; do
+    [[ "$_tok" =~ ^#[0-9]+$ ]] && return 0
+  done
+  return 1
+}
 _extra_has_fleet=false
 _extra_has_plan=false
+_extra_has_issue=false
 if [[ ${#EXTRA_ARGS_ARR[@]} -gt 0 ]]; then
   _array_has_token "--fleet" "${EXTRA_ARGS_ARR[@]}" && _extra_has_fleet=true
   _array_has_token "--plan" "${EXTRA_ARGS_ARR[@]}" && _extra_has_plan=true
+  _array_has_issue_token "${EXTRA_ARGS_ARR[@]}" && _extra_has_issue=true
 fi
 
-_cwd_dependent=true
-if [[ -z "$PLAN_FILE" && "$_extra_has_plan" == "false" && "$_extra_has_fleet" == "true" ]]; then
-  _cwd_dependent=false
+# Positive proof of cwd-independence (selector 3 alone, selectors 1 and 2
+# both absent). Everything else defaults to cwd-dependent.
+_cwd_independent=false
+if [[ -z "$PLAN_FILE" && "$_extra_has_plan" == "false" && "$_extra_has_issue" == "false" && "$_extra_has_fleet" == "true" ]]; then
+  _cwd_independent=true
 fi
+_cwd_dependent=true
+[[ "$_cwd_independent" == "true" ]] && _cwd_dependent=false
 if [[ -n "$REPO_DIR" ]]; then
   _cwd_dependent=true
 fi

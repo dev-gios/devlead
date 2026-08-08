@@ -753,7 +753,10 @@ igual que siempre.
    symref LOCAL que git nunca actualiza solo: si el remoto renombra su rama por defecto
    después del clone, el symref queda apuntando al nombre viejo y una comparación contra
    él sola puede aprobar mergear a lo que hoy es el tronco real. Por eso la resolución
-   PREFIERE la verdad del remoto y usa el symref solo como fallback:
+   PREFIERE la verdad del remoto y usa el symref solo como fallback — MISMA lógica que
+   `_resolve_default_branch` en `~/.devlead/scripts/envelope.sh` (usala como referencia
+   de implementación; no la reescribas en prosa acá, para que las dos no puedan divergir
+   de nuevo):
    ```
    # 1. Preferido: verdad viva del remoto (gh disponible y autenticado),
    #    acotado por timeout (default 10s, override vía DEVLEAD_GH_TIMEOUT_SECS)
@@ -763,12 +766,22 @@ igual que siempre.
    #    ausente, nunca como "no hay rama por defecto"
    git symbolic-ref --quiet --short refs/remotes/origin/HEAD | sed 's|^origin/||'
    ```
-   Un timeout que dispara deja una nota en stderr (visible en el journal) para que
-   una red degradada no cambie de fuente en silencio.
+   **`$GH_TIMEOUT_SECS` se valida ANTES de pasarlo a `timeout`, nunca se usa el override
+   crudo** — mismo chequeo que `envelope.sh` aplica antes de este mismo `_resolve_default_branch`:
+   solo un entero positivo (`>= 1`) es aceptado; `0`, negativo, o no-numérico caen al
+   default de 10s con un warning de una línea a stderr que nombra el valor ofrecido y el
+   valor efectivamente usado. Sin esta validación, `DEVLEAD_GH_TIMEOUT_SECS=0` reinstala
+   el cuelgue sin límite que este guard cierra — `timeout` con duración `0` de GNU
+   coreutils significa "sin timeout" — el mismo bug en el segundo lugar donde vive esta
+   misma lógica.
+   Un timeout que dispara se trata EXACTAMENTE igual que "gh no disponible" y cae al
+   symref local; deja una nota en stderr (visible en el journal) para que una red
+   degradada no cambie de fuente en silencio.
    Si el destino coincide con lo que resuelve (1), o (1) no resuelve y coincide con (2), o
    NINGUNA de las dos fuentes resuelve y no podés PROBAR que difieren →
    **PARK** con razón `merge-abortado: no se pudo probar que {destino} no es la rama por
-   defecto`. `envelope.sh show` ya bloquea esta configuración con el mismo orden de
+   defecto`. Ese bloque fail-closed aplica SOLO cuando ninguna de las dos fuentes resuelve
+   — no antes. `envelope.sh show` ya bloquea esta configuración con el mismo orden de
    resolución (§A3 cláusula 2); este chequeo es defensa en profundidad porque el costo de
    equivocarse es escribir en el tronco.
 

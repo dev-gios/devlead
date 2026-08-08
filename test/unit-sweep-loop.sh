@@ -226,6 +226,74 @@ check "top-level --plan with -- --fleet still fires the guard (exit 1)" "$rc" "1
 contains "the diagnostic names the non-git cwd (top-level --plan)" "$out" "not inside a git work tree"
 rm -rf "$R3_DIR_E"
 
+
+# ===========================================================================
+# Round-4 regression: the guard must be derived from sweep-execute.md's THREE
+# mode selectors (#N > --plan > --fleet), not from an enumerated --fleet/
+# --plan flag pair. Bypass reproduced pre-fix: from a non-git cwd,
+# `sweep-loop.sh -- --fleet '#1'` skipped the guard and exited 0, even though
+# the dispatched command is MODO SCOPED (a #N token wins over --fleet) and
+# DOES resolve from cwd. Each scenario sets its OWN throwaway non-git /tmp
+# cwd — never inherits the repo checkout's cwd, which is exactly what hid
+# the round-2/round-3 regressions originally.
+# ===========================================================================
+
+# --- --fleet plus a #N token still fires the guard (the reproduced bypass) -
+R4_DIR_A="$(mktemp -d /tmp/devlead-sweeploop-r4a.XXXXXX)"
+out="$(cd "$R4_DIR_A" && DEVLEAD_LOOP_DRYRUN=1 \
+  bash "$LOOP" --max-iterations 1 -- --fleet '#1' 2>&1)"
+rc=$?
+check "-- --fleet '#1' still fires the guard (exit 1)" "$rc" "1"
+contains "the diagnostic names the non-git cwd (--fleet '#1')" "$out" "not inside a git work tree"
+rm -rf "$R4_DIR_A"
+
+# --- Order must not matter: #N before --fleet also fires the guard --------
+R4_DIR_B="$(mktemp -d /tmp/devlead-sweeploop-r4b.XXXXXX)"
+out="$(cd "$R4_DIR_B" && DEVLEAD_LOOP_DRYRUN=1 \
+  bash "$LOOP" --max-iterations 1 -- '#1' --fleet 2>&1)"
+rc=$?
+check "-- '#1' --fleet still fires the guard (exit 1)" "$rc" "1"
+contains "the diagnostic names the non-git cwd ('#1' --fleet)" "$out" "not inside a git work tree"
+rm -rf "$R4_DIR_B"
+
+# --- Scoped with no --fleet at all still fires (sanity: was already true,
+#     kept here as an explicit regression anchor for MODO SCOPED) ----------
+R4_DIR_C="$(mktemp -d /tmp/devlead-sweeploop-r4c.XXXXXX)"
+out="$(cd "$R4_DIR_C" && DEVLEAD_LOOP_DRYRUN=1 \
+  bash "$LOOP" --max-iterations 1 -- '#12' '#34' 2>&1)"
+rc=$?
+check "-- '#12' '#34' (scoped, no fleet) fires the guard (exit 1)" "$rc" "1"
+contains "the diagnostic names the non-git cwd ('#12' '#34')" "$out" "not inside a git work tree"
+rm -rf "$R4_DIR_C"
+
+# --- A value that merely LOOKS like an issue token but is not `#<digits>`
+#     must not count — --fleet still wins and the guard is skipped ---------
+R4_DIR_D="$(mktemp -d /tmp/devlead-sweeploop-r4d.XXXXXX)"
+out="$(cd "$R4_DIR_D" && DEVLEAD_LOOP_DRYRUN=1 \
+  bash "$LOOP" --max-iterations 1 -- --fleet '#notanumber' 2>&1)"
+rc=$?
+check "-- --fleet '#notanumber' skips the guard (exit 0)" "$rc" "0"
+contains "'#notanumber' run reaches the dry-run announcement" "$out" "would run"
+rm -rf "$R4_DIR_D"
+
+# --- Bare --fleet still skips the guard (must keep working) ----------------
+R4_DIR_E="$(mktemp -d /tmp/devlead-sweeploop-r4e.XXXXXX)"
+out="$(cd "$R4_DIR_E" && DEVLEAD_LOOP_DRYRUN=1 \
+  bash "$LOOP" --max-iterations 1 -- --fleet 2>&1)"
+rc=$?
+check "bare -- --fleet (round-4 anchor) still exits 0" "$rc" "0"
+contains "bare -- --fleet (round-4 anchor) still reaches the dry-run announcement" "$out" "would run"
+rm -rf "$R4_DIR_E"
+
+# --- --fleet plus --plan still fires (existing behaviour preserved) -------
+R4_DIR_F="$(mktemp -d /tmp/devlead-sweeploop-r4f.XXXXXX)"
+out="$(cd "$R4_DIR_F" && DEVLEAD_LOOP_DRYRUN=1 \
+  bash "$LOOP" --max-iterations 1 -- --fleet --plan f.yml 2>&1)"
+rc=$?
+check "-- --fleet --plan f.yml (round-4 anchor) still fires the guard (exit 1)" "$rc" "1"
+contains "the diagnostic names the non-git cwd (round-4 --fleet --plan)" "$out" "not inside a git work tree"
+rm -rf "$R4_DIR_F"
+
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
 rm -rf "$SANDBOX"
