@@ -22,7 +22,10 @@ Mecanismo: `devlead-active.sh` mantiene la lista `~/.devlead/active-repos`. `/ar
 
 ## Invariantes — Fase 0 (aplicados ahora)
 
-**Inv 1 — Nunca auto-iniciar trabajo.**
+<!-- Espejo no-normativo de GOVERNANCE.md §Layer-0. Fuente normativa: .claude/GOVERNANCE.md.
+     Si este texto diverge de GOVERNANCE.md, GOVERNANCE.md gana. -->
+
+**Inv 1 — Nunca auto-iniciar trabajo.** (Ver GOVERNANCE.md §A1 + §manual-profile.)
 DevLead NUNCA empieza una tarea, crea una rama, ni lanza un subagente sin tu confirmación explícita.
 Recomendar ≠ ejecutar. La recomendación es una sugerencia; vos mandás.
 
@@ -30,8 +33,9 @@ Recomendar ≠ ejecutar. La recomendación es una sugerencia; vos mandás.
 El *qué* (ramas, PRs, CI, issues) lo lee `.devlead/scripts/state.sh` en cada invocación.
 El journal guarda solo el *porqué* (blockers, decisiones, próximo paso mental).
 DevLead NUNCA usa estado de la sesión anterior como fuente de verdad para el estado técnico actual.
+(Ver GOVERNANCE.md §A2.)
 
-**Inv 6 — La recomendación es sugerencia, no autoridad.**
+**Inv 6 — La recomendación es sugerencia, no autoridad.** (Ver GOVERNANCE.md §inv6-governance.)
 DevLead presenta opciones rankeadas con su razonamiento. El día que DevLead arranque solo sin que se lo digas, se rompió el contrato.
 
 ---
@@ -42,64 +46,47 @@ DevLead presenta opciones rankeadas con su razonamiento. El día que DevLead arr
      Each entry names its concrete enforcing mechanism — activation is real
      only when a mechanism exists, not when it's declared in prose. -->
 
-**Inv 3 — Nunca auto-merge a `dev`.**
+**Inv 3 — Nunca auto-merge a `dev`.** <!-- espejo no-normativo de GOVERNANCE.md §A3 -->
 El merge siempre lo hacés vos. DevLead crea el PR (Paso 10 de `/arranquemos`) y se detiene.
 Mecanismo: Paso 10 llama `gh pr create` únicamente — ningún paso del pipeline invoca `git merge` ni `gh pr merge`.
+(Ver GOVERNANCE.md §A3.)
 
-**Inv 4 — Un gate que falla detiene esa issue.**
+**Inv 4 — Un gate que falla detiene esa issue.** <!-- espejo no-normativo de GOVERNANCE.md §A4 -->
 El agente nunca se auto-aprueba ni auto-avanza past un gate en rojo.
 Mecanismo: `gate-check.sh` invocado EXPLÍCITAMENTE en Step 8.4 de arranquemos.md (antes de `gh pr create`) y referenciado en batch B2.b — esa llamada explícita corre el gate completo (git-clean + tests + shellcheck) y es la aplicación REAL de Inv 4. El registro de `gate-check.sh` como Stop hook discrimina por `hook_event_name` y queda NO-OP en turnos normales, así que NO es la superficie de enforcement por turno. `post-edit.sh` PostToolUse + lógica de stage-gating en Paso 8 completan el mecanismo: cualquier stage que retorne bloqueado/error HALT el pipeline (single-task) o PARK la issue (batch) y escala al usuario.
+(Ver GOVERNANCE.md §A4 y §Perfiles — campo "Gate failure".)
 
-**Inv 5 — Escalada por divergencia obligatoria.**
-Si la realidad no coincide con el plan (issue mucho más grande, doc choca con el código, gate falla 3 veces), DevLead para y avisa aunque hayas dicho "arrancá".
+**Inv 5 — Escalada por divergencia obligatoria.** Si la realidad no coincide con el plan (issue mucho más grande, doc choca con el código), DevLead para y avisa en modo manual; en modo autónomo → PARK con razón exacta. (Ver GOVERNANCE.md §Perfiles — campo "Divergencia".)
 Mecanismo: lógica de dispatch en Paso 8 (halt + escalar en cualquier stage fallida) + visual-diff gate en Paso 9 (cap en 3 iteraciones, luego escalar, nunca loop infinito).
 
-**Inv 7 — El diseño es intención, no verdad.**
-Un spec doc o design bundle es el *qué* acordado — no se trata como verdad absoluta inmutable. Si hay choque entre el doc y el código real, es un evento de divergencia (Inv 5), no un bloqueante silencioso ni un auto-pass.
+**Inv 7 — El diseño es intención, no verdad.** (Ver GOVERNANCE.md §narrow-not-widen.)
 Mecanismo: `ref-resolver.sh` trata el spec como input de intención al pipeline SDD; el visual-diff gate (Paso 9) aplica gates de QA sobre el resultado aunque el mockup diga "así debe verse".
 
 ---
 
 ## Invariantes — Fase 2 (aplicados ahora)
 
-<!-- ADR-style: cada invariante nombra su mecanismo concreto de enforcement.
-     Sin mecanismo = solo declaración; el enforcement real está en batch.md. -->
+<!-- Detalle normativo de los invariantes de Fase 2: ver .claude/GOVERNANCE.md §batch-profile.
+     Los absolutos A3 y A4 se mantienen inline como espejos no-normativos de GOVERNANCE.md §Layer-0. -->
 
-**Inv 1 forma batch — El trigger es la autorización única.**
-`/batch` o "haz #12 #15..." es la autorización para TODAS las issues declaradas. No se pide confirmación por issue durante el loop. El Paso 7 de arranquemos.md NO corre en contexto batch.
-<!-- Mecanismo: batch.md Paso B0 — confirmación UNA vez, luego loop sin Paso 7. -->
+**A3 (espejo) — Cada issue resulta en un PR, nunca en un merge.** <!-- espejo no-normativo de GOVERNANCE.md §A3 -->
+`batch.md` llega hasta `gh pr create` por issue y se detiene. Ningún paso del batch invoca `git merge` ni `gh pr merge`.
+(Ver GOVERNANCE.md §A3.)
 
-**Inv 3 heredado (absoluto) — Cada issue resulta en un PR, nunca en un merge.**
-batch.md llega hasta `gh pr create` por issue y se detiene. Ningún paso del batch invoca `git merge` ni `gh pr merge`.
-<!-- Mecanismo: batch.md B2.d → Paso 8.5 (`gh pr create`) es el fin del pipeline por issue. -->
+**A4 (espejo) — Gate rojo en batch = PARK + continuar. Nunca auto-aprueba.** <!-- espejo no-normativo de GOVERNANCE.md §A4 -->
+Gate rojo → PARK (registrá razón exacta verbatim, seguí con la próxima). PARK ≠ pass.
+(Ver GOVERNANCE.md §A4.)
 
-**Inv 4 traducido — Gate rojo en batch = PARK + continuar. Nunca auto-aprueba.**
-En modo single-task, un gate en rojo es HALT+escalar. En batch, la misma señal es PARK (registrá razón exacta, seguí con la próxima). PARK ≠ pass: la razón del gate queda registrada y visible en el reporte B3.
-<!-- Mecanismo: batch.md B2.c — tabla de traducción HALT→PARK con razones exactas. -->
+Para el detalle completo del comportamiento en Fase 2 (catástrofe de entorno por modo, alcance del sobre, zona prohibida, paralelismo, estado del batch), ver `.claude/GOVERNANCE.md §batch-profile`.
 
-**Inv 5 zona prohibida — Pre-check escala la issue; post-impl diff la aparca sin PR.**
-Si el pre-check (labels/spec) detecta una zona prohibida → la issue se ESCALA (nunca se procesa). Si la implementación terminó tocando una zona no predicha → PARK sin abrir PR (capa 2, B2.d sobre diff real).
-<!-- Mecanismo: batch.md B2.a (forbidden-check.sh sobre paths derivados) + B2.d (forbidden-check.sh sobre git diff --name-only origin/dev...HEAD). -->
-
-**Inv Fase 2 — El sobre se lee UNA vez (B0).**
-Los parámetros del batch (cola, presupuesto, zonas, política) se leen y confirman en B0. Son inmutables durante el loop. Issues mencionadas mid-batch no se agregan a la cola.
-<!-- Mecanismo: batch.md B0 — confirmación explícita antes del loop; cola fija tras B0. -->
-
-**Inv Fase 2 — Solo catástrofe de entorno para el batch entero.**
-El fallo de UNA issue (gate rojo, zona prohibida, spec faltante) nunca para el batch — es PARK de esa issue. Solo `NOT_A_GIT_REPO` o gh auth perdido paran el batch completo.
-<!-- Mecanismo: batch.md B2.c — tabla ADR-3; señales catastróficas son las únicas que producen STOP batch. -->
+Nota: en batch, catástrofe de entorno (`NOT_A_GIT_REPO` o `gh auth` perdido) detiene el BATCH ENTERO. En sweep-execute, la misma señal MID-REPO detiene solo el REPO ACTUAL y el run continúa con el siguiente repo. Ver GOVERNANCE.md §batch-profile y §sweep-scoped-profile / §sweep-plan-driven-profile.
 
 ---
 
 ## Qué DevLead NO hace en Fase 2
 
-- **No auto-mergea.** Inv 3 absoluto heredado: `gh pr create` es el fin del pipeline por issue. El batch nunca mergea.
-- **No reintenta gates fallidos.** PARK es final para esa issue en ese batch. No hay retry silencioso.
-- **No procesa issues en zona prohibida.** Pre-check → escala (no se toca). Post-impl → aparca sin PR.
-- **No persiste estado del batch a disco.** El tracking es en-memoria en la conversación. Sin `batch-state.json`. El estado real vive en GitHub; `state.sh` es la fuente de verdad del *qué*.
-- **No infiere dependencias entre issues.** El orden declarado en la invocación ES el contrato de dependencias para v1.
-- **No paraleliza issues.** Cola secuencial — una issue a la vez, en orden.
-- **No extiende la cola mid-batch.** El sobre es fijo tras la confirmación B0.
+Ver `.claude/GOVERNANCE.md §batch-profile` y `§Layer-0` para las restricciones normativas.
+En resumen: no auto-mergea (§A3), no auto-aprueba gates fallidos (§A4), no amplía el sobre mid-batch, no paraleliza issues. El detalle procedural (cola secuencial, no-retry silencioso, sin estado en disco, orden declarado = contrato de deps) vive en batch.md; la autoridad de estos límites deriva de GOVERNANCE.md §batch-profile.
 
 ---
 

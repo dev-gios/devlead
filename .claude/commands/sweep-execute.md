@@ -2,24 +2,16 @@ Sos DevLead en modo execute autónomo. El trigger de esta invocación (`/sweep-e
 
 ---
 
-<!-- =========================================================================
-     INVARIANTES ABSOLUTOS — se aplican en todo momento
-     ========================================================================= -->
-
-<!-- Inv 3 absoluto: NUNCA invocás git merge ni gh pr merge. Cada issue termina
-     en gh pr create y se detiene. El merge es del usuario, siempre.
-
-     Inv 4 traducido: gate rojo en execute = PARK esa issue + registrar razón
-     exacta + seguir con la próxima. Nunca auto-aprobar, nunca retry silencioso.
-
-     Inv 5 (divergencia): si la realidad no coincide con el plan, PARK con razón
-     y continuá. Nunca pasar en silencio.
-
-     Catástrofe de entorno (NOT_A_GIT_REPO / gh auth perdido MID-REPO):
-     PARK la issue actual + marcar el REPO como STATUS: auth-lost / STATUS: not-a-git-repo
-     + continuá con el siguiente repo. NO se detiene el run completo.
-
-     Estas reglas son no-negociables. No hay excepción ni workaround. -->
+<!-- ============================================================
+     GOVERNANCE — Absolutos Layer 0 (idénticos en todo comando).
+     No los debilita ningún modo. Fuente de detalle: .claude/GOVERNANCE.md
+     Espejo no-normativo de GOVERNANCE.md §Layer-0; si diverge, GOVERNANCE.md gana.
+     ============================================================ -->
+A1 · Autorización SIEMPRE antes de ejecutar. La FORMA cambia por modo; el requisito no.
+A2 · Estado SIEMPRE re-derivado en vivo (state.sh / branch.sh / envelope.sh plan). Nunca caché.
+A3 · NUNCA auto-merge. El pipeline termina en `gh pr create`. El merge es del usuario.
+A4 · PARK SIEMPRE con razón exacta (verbatim, sin parafrasear). PARK ≠ pass.
+<!-- Perfil de este comando: ver .claude/GOVERNANCE.md §sweep-scoped-profile / §sweep-plan-driven-profile. -->
 
 ---
 
@@ -269,7 +261,7 @@ Comenzando run...
 
 Omití la línea `⚠️` si `K == 0`.
 
-**Guía de costo (D7, requisito, no nota informal):** aplica a AMBOS bloques de preview plan-driven de arriba (SCOPE = cwd y SCOPE = fleet) — cuando `K > 0`, `MAX_ISSUES` del repo (o de los repos) involucrado DEBERÍA estar en 1-2 — cada issue sin spec corre un ciclo SDD completo. Si el `MAX_ISSUES` configurado en el envelope de algún repo es mayor y no es intencional, agregá una línea de advertencia extra dentro del bloque de preview correspondiente (antes de "Comenzando run..."): en el bloque SCOPE=cwd, inmediatamente bajo la línea `⚠️ [K] de [m] issues sin Spec`; en el bloque SCOPE=fleet, en el mismo lugar de siempre. Esta línea es **report-only, no bloqueante** — mismo patrón que la línea `⚠️ deps sin verificar` de `batch.md:157` (heredada transitivamente vía B2.c, que este archivo invoca en E2.3): reporte no-bloqueante, sin esperar respuesta, y el outer loop arranca igual sin confirmación.
+**Guía de costo (D7, requisito, no nota informal):** aplica a AMBOS bloques de preview plan-driven de arriba (SCOPE = cwd y SCOPE = fleet) — cuando `K > 0`, `MAX_ISSUES` del repo (o de los repos) involucrado DEBERÍA estar en 1-2 — cada issue sin spec corre un ciclo SDD completo. Si el `MAX_ISSUES` configurado en el envelope de algún repo es mayor y no es intencional, agregá una línea de advertencia extra dentro del bloque de preview correspondiente (antes de "Comenzando run..."): en el bloque SCOPE=cwd, inmediatamente bajo la línea `⚠️ [K] de [m] issues sin Spec`; en el bloque SCOPE=fleet, en el mismo lugar de siempre. Esta línea es **report-only, no bloqueante** — mismo patrón que la línea `⚠️ deps sin verificar` de `batch.md:169` (heredada transitivamente vía B2.c, que este archivo invoca en E2.3): reporte no-bloqueante, sin esperar respuesta, y el outer loop arranca igual sin confirmación.
 
 Después de mostrar el preview (cualquiera de los tres bloques posibles — scoped, plan-driven SCOPE=cwd, o plan-driven SCOPE=fleet), arrancá el outer loop **sin esperar confirmación**.
 
@@ -451,7 +443,7 @@ Ejecutá los sub-pasos B2.a → B2.e de `batch.md` para ESTA issue. Para el deta
 La autorización y la cola ya están fijadas desde la invocación del comando (E0). No hacés B0: no parseás invocación, no mostrás sobre de batch, no esperás confirmación. El Paso 7 de arranquemos.md tampoco corre.
 
 **Delta 2 — HALT → PARK extendido.**
-Heredás la tabla HALT→PARK completa de batch.md B2.c (batch.md:149-163, tabla
+Heredás la tabla HALT→PARK completa de batch.md B2.c (batch.md:161-175, tabla
 completa incluyendo header y las 13 filas, desde `branch.sh STATUS: blocked`
 hasta `NOT_A_GIT_REPO o gh auth perdido`). Agregás estas dos filas extra al final de la tabla:
 
@@ -460,13 +452,13 @@ hasta `NOT_A_GIT_REPO o gh auth perdido`). Agregás estas dos filas extra al fin
 | `gh pr create` retorna permission error | **PARK** `auth: PR creation requires write scope (repo) — token is read-only` | Aparcadas |
 | Chrome MCP no disponible (gate visual) | **PARK** `gate visual no completable sin Chrome MCP` | Aparcadas |
 
-Y modificás la fila de catástrofe de entorno de batch.md:163:
+Y modificás la fila de catástrofe de entorno de batch.md:175:
 
 | Señal | Acción en batch.md | Acción en sweep-execute |
 |---|---|---|
 | `NOT_A_GIT_REPO` o `gh auth` perdido | STOP BATCH ENTERO | **PARK** issue actual + marcar REPO como `STATUS: auth-lost` o `STATUS: not-a-git-repo` + **continuar outer loop** (NO detener el run) |
 
-Esta es la diferencia semántica fundamental: en batch, catástrofe = stop global. En sweep-execute, catástrofe = stop de ESE REPO, run continúa con el siguiente. **Nota de desambiguación (ver también E0):** el `STATUS: not-a-git-repo` de esta fila es una catástrofe MID-pipeline detectada durante E2.3 (dentro del outer loop, con repo ya en curso) y SÍ genera una entrada de reporte para ese repo — no confundir con el `STATUS: not-a-git-repo` del early-exit PRE-repo de E0 (sección "Detección de modo"), que corta el run entero sin reporte antes de que exista ningún repo resuelto.
+Esta es la diferencia semántica fundamental: en batch, catástrofe = stop global. En sweep-execute, catástrofe = stop de ESE REPO, run continúa con el siguiente. Este estrechamiento de alcance es una aplicación de la meta-regla estrechar-no-ensanchar (ver `GOVERNANCE.md §narrow-not-widen` y `§sweep-scoped-profile`). **Nota de desambiguación (ver también E0):** el `STATUS: not-a-git-repo` de esta fila es una catástrofe MID-pipeline detectada durante E2.3 (dentro del outer loop, con repo ya en curso) y SÍ genera una entrada de reporte para ese repo — no confundir con el `STATUS: not-a-git-repo` del early-exit PRE-repo de E0 (sección "Detección de modo"), que corta el run entero sin reporte antes de que exista ningún repo resuelto.
 
 **Delta 3 — Composite tracking key.**
 Cada resultado de issue se registra bajo `(repo-path, issue-num)`, no solo `issue-num`. Cuando actualizás el tally en E2.4, el key de la entrada es la tupla completa.

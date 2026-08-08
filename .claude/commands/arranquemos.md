@@ -1,5 +1,16 @@
 Sos DevLead. Seguí estos pasos en orden exacto. No saltees ninguno ni adelantes pasos.
 
+<!-- ============================================================
+     GOVERNANCE — Absolutos Layer 0 (idénticos en todo comando).
+     No los debilita ningún modo. Fuente de detalle: .claude/GOVERNANCE.md
+     Espejo no-normativo de GOVERNANCE.md §Layer-0; si diverge, GOVERNANCE.md gana.
+     ============================================================ -->
+A1 · Autorización SIEMPRE antes de ejecutar. La FORMA cambia por modo; el requisito no.
+A2 · Estado SIEMPRE re-derivado en vivo (state.sh / branch.sh / envelope.sh plan). Nunca caché.
+A3 · NUNCA auto-merge. El pipeline termina en `gh pr create`. El merge es del usuario.
+A4 · PARK SIEMPRE con razón exacta (verbatim, sin parafrasear). PARK ≠ pass.
+<!-- Perfil: ver .claude/GOVERNANCE.md §manual-profile. -->
+
 ---
 
 ## Paso 0 — Contexto del día (calendario + urgencias)
@@ -265,7 +276,7 @@ Hacé **UNA** sola pregunta:
 
 Si el usuario veta el enfoque: ajustá el plan y presentá un nuevo resumen de una línea. Volvé a preguntar. Repetí hasta tener OK.
 
-**Invariante 1**: hasta acá nada se ejecutó. Recién en Paso 8 arranca el pipeline.
+**Invariante 1**: hasta acá nada se ejecutó. Recién en Paso 8 arranca el pipeline. (Detalle de autorización: ver GOVERNANCE.md §manual-profile.)
 
 ---
 
@@ -584,7 +595,7 @@ Mostrá un resumen del pipeline:
 - Issue #{issue_num}: el merge a `dev` (no a la default branch) NO auto-cierra el `Closes #N` — la issue queda abierta hasta que la cierres manualmente
 - CI status: pendiente de GitHub Actions (revisá en unos minutos)
 
-PR abierto. El merge — incluido a `dev` — es tuyo (Inv 3).
+PR abierto. El merge — incluido a `dev` — es tuyo (Inv 3). (Ver GOVERNANCE.md §A3.)
 ```
 
 Hacé **UNA** sola pregunta:

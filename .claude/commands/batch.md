@@ -1,11 +1,23 @@
 Sos DevLead en modo batch. El trigger de esta invocación ES la autorización explícita — no confirmás por tarea. Seguí estos pasos en orden exacto.
 
+<!-- ============================================================
+     GOVERNANCE — Absolutos Layer 0 (idénticos en todo comando).
+     No los debilita ningún modo. Fuente de detalle: .claude/GOVERNANCE.md
+     Espejo no-normativo de GOVERNANCE.md §Layer-0; si diverge, GOVERNANCE.md gana.
+     ============================================================ -->
+A1 · Autorización SIEMPRE antes de ejecutar. La FORMA cambia por modo; el requisito no.
+A2 · Estado SIEMPRE re-derivado en vivo (state.sh / branch.sh / envelope.sh plan). Nunca caché.
+A3 · NUNCA auto-merge. El pipeline termina en `gh pr create`. El merge es del usuario.
+A4 · PARK SIEMPRE con razón exacta (verbatim, sin parafrasear). PARK ≠ pass.
+<!-- Perfil: ver .claude/GOVERNANCE.md §batch-profile. -->
+
 ---
 
 ## Paso B0 — Leer el sobre UNA vez
 
-<!-- Inv Fase 2: el sobre se lee y confirma UNA vez. Es inmutable durante el loop.
-     El trigger "/batch" o "haz #N #M..." ya es la autorización (Inv 1 forma batch).
+<!-- Perfil y autorización: ver .claude/GOVERNANCE.md §batch-profile.
+     El sobre se lee y confirma UNA vez. Es inmutable durante el loop.
+     El trigger "/batch" o "haz #N #M..." es la autorización para el batch completo (A1).
      No se repite la confirmación por issue — Paso 7 de arranquemos.md NO corre en batch. -->
 
 ### Parsear la cola
@@ -135,7 +147,7 @@ Cada sub-paso es un gate. Si alguno retorna blocked/error → interceptá la se�
 
 Paso 8.5 (abrir el PR) NO se ejecuta acá — se ejecuta en B2.d después del post-check.
 
-Ningún paso de merge ni cierre de issue se ejecuta NUNCA en batch ni en sweep — el pipeline termina en `gh pr create` (B2.d). Si al leer `arranquemos.md` encontrás un paso de merge o `gh issue close`, IGNORALO: el merge es del usuario, siempre (Inv 3).
+Ningún paso de merge ni cierre de issue se ejecuta NUNCA en batch ni en sweep — el pipeline termina en `gh pr create` (B2.d). Si al leer `arranquemos.md` encontrás un paso de merge o `gh issue close`, IGNORALO: el merge es del usuario, siempre (Inv 3). (Ver GOVERNANCE.md §A3.)
 
 ---
 
@@ -162,7 +174,7 @@ Cuando cualquier sub-paso de B2.b retorna blocked o error, aplicá esta tabla:
 | Chrome MCP no disponible (gate visual) | **PARK** "gate visual no completable sin Chrome MCP" | 🅿️ Aparcadas |
 | `NOT_A_GIT_REPO` o `gh auth` perdido | **STOP BATCH ENTERO** — emitir reporte parcial con lo hecho hasta acá | (ver B3 catástrofe) |
 
-Regla de PARK: siempre registrá la razón EXACTA del gate (sin parafrasear). Es lo que el dev necesita para entender qué pasó.
+Regla de PARK: siempre registrá la razón EXACTA del gate (sin parafrasear). Es lo que el dev necesita para entender qué pasó. (Ver GOVERNANCE.md §A4.)
 
 Regla de STOP: solo las dos señales catastróficas de entorno paran el batch. Cualquier otra falla es PARK de ESA issue, nunca del batch.
 
