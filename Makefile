@@ -8,5 +8,6 @@
 # directory and intercept `gh` and `systemctl` with fakes on $PATH.
 test:
 	bash test/unit-branch-deps.sh
+	bash test/unit-envelope-merge-mode.sh
 	bash test/smoke-outcomes.sh
 	bash test/smoke-pinned-release.sh
