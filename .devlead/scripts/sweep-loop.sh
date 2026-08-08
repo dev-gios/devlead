@@ -89,20 +89,32 @@
 # whether their own checkout looks right. Before the FIRST invocation this
 # loop runs doctor.sh, which reports whether the artifacts published to this
 # machine (gate-check.sh, envelope.sh's A3 guard, the governance mirrors in
-# the command files, this very script) match the repo's REVIEWED TRUNK. A
-# non-zero doctor.sh means the loop refuses to run — see the guard block
-# below for the exact remedy printed. Skipped ENTIRELY under
-# DEVLEAD_LOOP_DRYRUN=1, deliberately: nothing is invoked in dry-run, so
-# there is nothing at risk running against whatever happens to be installed,
-# and dry-run is also how the guard's own wiring gets tested without a real
-# git sandbox.
+# the command files, this very script) are INTEGRITY-ok — do they match some
+# coherent commit at all — and separately, as PROVENANCE, whether that
+# commit IS the reviewed trunk (see doctor.sh's own header comment for the
+# full split). doctor.sh's exit code alone answers only the integrity
+# question: it exits 0 for BOTH "matches the trunk" and "matches a branch
+# tip during active development" — both are coherent installs. This loop's
+# question is narrower than doctor.sh's: an UNATTENDED run must use
+# REVIEWED artifacts specifically, so it does not key off doctor.sh's exit
+# code alone. Instead it reads doctor.sh's own STATUS/NOTE lines and
+# proceeds only when the installed set matches the trunk with no provenance
+# NOTE attached. Anything else — STATUS: drifted, STATUS: unknown, or
+# STATUS: ok with a provenance NOTE (installed from some other branch) — is
+# treated the same way: the loop refuses to run, naming exactly which of the
+# three it saw. See the guard block below for the exact remedy printed.
+# Skipped ENTIRELY under DEVLEAD_LOOP_DRYRUN=1, deliberately: nothing is
+# invoked in dry-run, so there is nothing at risk running against whatever
+# happens to be installed, and dry-run is also how the guard's own wiring
+# gets tested without a real git sandbox.
 #
 # Exit codes:
 #   0  plan exhausted, cap reached, or dry run — all normal outcomes
 #   1  usage error, a plan file that cannot be read, --repo does not exist,
-#      the resolved cwd is not inside a git work tree (pre-check), doctor.sh
-#      reports drifted/unknown artifacts (drift guard, unless
-#      DEVLEAD_ALLOW_DRIFT=1), or a dispatched invocation reported
+#      the resolved cwd is not inside a git work tree (pre-check), the
+#      installed artifacts do not verify as the reviewed trunk — doctor.sh
+#      reported drifted, unknown, or ok-but-from-a-branch (drift guard,
+#      unless DEVLEAD_ALLOW_DRIFT=1) — or a dispatched invocation reported
 #      `STATUS: not-a-git-repo` (reactive check) — in these cases the loop
 #      stops immediately, it does not keep iterating
 #
@@ -304,27 +316,56 @@ fi
 # --- Drift guard: refuse to run unattended against stale/unreviewed artifacts
 # See the header comment above for the full rationale. Skipped entirely under
 # DEVLEAD_LOOP_DRYRUN=1 — dry-run invokes nothing, so nothing is at risk.
+#
+# doctor.sh's exit code answers INTEGRITY only (does the install match SOME
+# commit at all) — it is 0 for both "matches the trunk" and "matches a
+# branch tip". This loop's bar is PROVENANCE: the matched commit must BE the
+# trunk. So the exit code alone is not read here; doctor.sh's own STATUS and
+# NOTE lines are parsed to tell the three refusal cases apart from the one
+# case that is allowed to proceed unattended.
 DOCTOR_BIN="${DEVLEAD_DOCTOR_BIN:-$_SCRIPT_DIR/doctor.sh}"
 if [[ "$DRYRUN" != "1" ]]; then
   _DOCTOR_OUT="$(bash "$DOCTOR_BIN" 2>&1)"
-  _DOCTOR_RC=$?
-  if [[ "$_DOCTOR_RC" -ne 0 ]]; then
+  _DOCTOR_STATUS="$(printf '%s\n' "$_DOCTOR_OUT" | grep -m1 '^STATUS: ' | sed 's/^STATUS: //')"
+  _DOCTOR_HAS_NOTE=false
+  printf '%s\n' "$_DOCTOR_OUT" | grep -q '^NOTE:' && _DOCTOR_HAS_NOTE=true
+
+  # The only case allowed to proceed unattended: doctor.sh matched the
+  # installed set to the trunk itself, with no provenance NOTE attached.
+  _TRUNK_VERIFIED=false
+  if [[ "$_DOCTOR_STATUS" == "ok" && "$_DOCTOR_HAS_NOTE" == "false" ]]; then
+    _TRUNK_VERIFIED=true
+  fi
+
+  if [[ "$_TRUNK_VERIFIED" == "false" ]]; then
     if [[ "${DEVLEAD_ALLOW_DRIFT:-0}" == "1" ]]; then
       {
         echo "############################################################"
         echo "# sweep-loop: DEVLEAD_ALLOW_DRIFT=1 — PROCEEDING ANYWAY.  #"
         echo "# The published DevLead artifacts on this machine do NOT  #"
-        echo "# verify against the repo's reviewed trunk (see doctor.sh #"
-        echo "# output below for exactly what differs). This run uses   #"
-        echo "# UNREVIEWED OR STALE artifacts, including whatever code  #"
-        echo "# enforces DevLead's own limits. Do not leave this set    #"
-        echo "# for unattended/nightly runs.                            #"
+        echo "# verify as the repo's reviewed trunk (see doctor.sh      #"
+        echo "# output below for exactly why). This run uses UNREVIEWED #"
+        echo "# OR STALE artifacts, including whatever code enforces    #"
+        echo "# DevLead's own limits. Do not leave this set for         #"
+        echo "# unattended/nightly runs.                                #"
         echo "############################################################"
         echo "$_DOCTOR_OUT"
       } >&2
     else
+      _reason="doctor.sh did not report a recognizable STATUS — refusing to run unattended"
+      case "$_DOCTOR_STATUS" in
+        drifted)
+          _reason="doctor.sh reports STATUS: drifted (integrity) — the installed artifacts do not match any known commit — refusing to run unattended"
+          ;;
+        unknown)
+          _reason="doctor.sh reports STATUS: unknown — the reviewed trunk could not be resolved — refusing to run unattended"
+          ;;
+        ok)
+          _reason="doctor.sh reports STATUS: ok but from a branch, not the trunk (provenance) — installed artifacts are coherent but not reviewed — refusing to run unattended"
+          ;;
+      esac
       {
-        echo "sweep-loop: doctor.sh reports the published artifacts do not verify against the reviewed trunk — refusing to run unattended"
+        echo "sweep-loop: $_reason"
         echo "$_DOCTOR_OUT"
         echo "sweep-loop: remedy: git checkout <trunk> && git pull && bash install.sh"
         echo "sweep-loop: escape hatch for supervised development: DEVLEAD_ALLOW_DRIFT=1"

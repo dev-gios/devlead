@@ -15,19 +15,50 @@
 #
 # Usage: doctor.sh
 #
+# TWO QUESTIONS, DELIBERATELY SEPARATED — this used to conflate them and
+# report `drifted` for BOTH, which meant a workflow that deliberately
+# installs from a development branch saw `drifted` on every single run.
+# A warning that always fires stops being read.
+#
+#   INTEGRITY  — did the install actually work? Do the installed files match
+#                SOME coherent commit reachable in the repo, or are they a
+#                half-applied mixture? This is what STATUS itself answers.
+#   PROVENANCE — is what got installed reviewed — IS the matched commit the
+#                trunk? This is REPORTED via NOTE, never failed: an install
+#                from a branch during active development is a completely
+#                normal thing for doctor.sh to see. Only the unattended
+#                caller (sweep-loop.sh) needs to additionally require the
+#                trunk specifically — doctor.sh's job is to tell it honestly,
+#                not to make that call itself.
+#
 # Output (KEY: value, consistent with the rest of .devlead/scripts/*.sh):
-#   STATUS: ok | drifted | unknown
-#   TRUNK:  <branch> @ <short-sha>          — omitted if unresolvable
-#   SOURCE: <repo path>                     — omitted if unresolvable
-#   DRIFT:  <n> of <m> artifacts differ from the trunk
-#   DIFF:   <installed path> (<reason>)     — one line per differing artifact
-#   NOTE:   <stale-vs-branch classification> — only when cheaply determinable
-#   GAP:    <reason>                        — only on STATUS: unknown
+#   STATUS:   ok | drifted | unknown
+#   MATCHES:  <branch> @ <short-sha> | <short-sha>  — only on STATUS: ok;
+#             names what the installed set matched. A branch name is used
+#             when the matched commit is a branch tip (the trunk itself, or
+#             any other branch); otherwise the bare short SHA.
+#   TRUNK:    <branch> @ <short-sha>        — omitted if unresolvable
+#   SOURCE:   <repo path>                   — omitted if unresolvable
+#   DRIFT:    <n> of <m> artifacts differ from the trunk — trivially 0 when
+#             MATCHES names the trunk; present (nonzero) only on
+#             STATUS: drifted
+#   DIFF:     <installed path> (<reason>)   — one line per differing
+#             artifact, only on STATUS: drifted
+#   NOTE:     provenance note (matched commit is not the trunk, STATUS stays
+#             ok) or stale-vs-branch classification (STATUS: drifted) — only
+#             when cheaply determinable
+#   GAP:      <reason>                      — only on STATUS: unknown
 #
 # Exit codes:
-#   0  STATUS: ok
-#   1  STATUS: drifted or STATUS: unknown — anything the caller (sweep-loop.sh)
-#      must treat as "do not run unattended against this"
+#   0  STATUS: ok — regardless of whether a provenance NOTE is present; an
+#      ok-but-from-a-branch install is still an INTEGRITY pass
+#   1  STATUS: drifted or STATUS: unknown — the installed set matched NO
+#      commit found within the bounded search, or SOURCE_REPO/the trunk
+#      could not be resolved at all — anything the caller (sweep-loop.sh)
+#      must treat as "do not run unattended against this" on integrity
+#      grounds. sweep-loop.sh additionally requires MATCHES to name the
+#      trunk with no NOTE (provenance), which is a stricter bar than
+#      doctor.sh's own exit code — see sweep-loop.sh's drift guard.
 set -uo pipefail
 
 # _unknown reason — the honest-failure exit. Never guess a SOURCE/TRUNK we
@@ -220,6 +251,7 @@ DRIFT_COUNT=${#DIFF_LINES[@]}
 
 if [[ "$DRIFT_COUNT" -eq 0 ]]; then
   echo "STATUS: ok"
+  echo "MATCHES: $TRUNK @ $TRUNK_SHA"
   echo "TRUNK:  $TRUNK_LABEL"
   echo "SOURCE: $SOURCE_LABEL"
   echo "DRIFT:  0 of $_total artifacts differ from the trunk — installed set matches origin/$TRUNK"
@@ -227,18 +259,118 @@ if [[ "$DRIFT_COUNT" -eq 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Cheap stale-vs-branch classification, bounded to the last N trunk
-#    commits per differing artifact (git plumbing only — no blob content is
-#    ever materialized during the search, just ls-tree's blob SHA column).
-#    "Stale" means every differing artifact's installed content matches SOME
-#    earlier commit reachable from the trunk — a straightforward re-publish
-#    fixes it. "Branch" means at least one does not match anything in that
-#    bounded window — it likely came from an unreviewed/unmerged branch.
-#    Missing artifacts are excluded (nothing to hash). Omitted entirely
-#    (prints nothing) when there is nothing left to classify.
+# 5. INTEGRITY search — the installed set does not match the trunk
+#    content-for-content (DRIFT_COUNT above), which used to be doctor's only
+#    verdict: STATUS: drifted, full stop. That conflated INTEGRITY with
+#    PROVENANCE (see the header comment). Before calling this drifted, ask
+#    the integrity question properly: does the installed set match, byte for
+#    byte, SOME commit reachable in the repo — a branch tip, or an older
+#    point in the trunk's own history? If so the install is coherent
+#    (STATUS: ok); only provenance — whether that commit IS the trunk — is
+#    still open, and provenance is reported via NOTE below, never failed.
+#
+#    Bounded exactly like the finer classification in step 6: every remote
+#    branch tip (cheap — there are never many) plus the last
+#    _CANDIDATE_LIMIT commits reachable from the trunk. A commit that
+#    matches is proof of integrity; failing to find one within the bound is
+#    NOT proof the installed set "matches nothing anywhere" — only that
+#    nothing within what was searched matched. Say so honestly below (step
+#    6's DRIFT line and NOTE both scope their claim to the bound searched).
+# ---------------------------------------------------------------------------
+_CANDIDATE_LIMIT=50
+
+INSTALLED_BLOBS=()
+for ((_i = 0; _i < _total; _i++)); do
+  _d="${MANIFEST_DST[$_i]}"
+  if [[ -f "$_d" ]]; then
+    INSTALLED_BLOBS+=("$(git hash-object "$_d" 2>/dev/null)")
+  else
+    INSTALLED_BLOBS+=("")
+  fi
+done
+
+# _candidate_matches_all — true only if EVERY manifest artifact's installed
+# content matches that same commit's content, for the same source path. A
+# missing installed file (empty INSTALLED_BLOBS entry) can never match —
+# comparing two empty strings would be a false positive, not "matches".
+_candidate_matches_all() {
+  local _commit="$1"
+  local _k _s _commit_blob
+  for ((_k = 0; _k < _total; _k++)); do
+    [[ -n "${INSTALLED_BLOBS[$_k]}" ]] || return 1
+    _s="${MANIFEST_SRC_REL[$_k]}"
+    _commit_blob="$(git -C "$REPO_DIR" ls-tree "$_commit" -- "$_s" 2>/dev/null | awk '{print $3}')"
+    [[ -n "$_commit_blob" && "$_commit_blob" == "${INSTALLED_BLOBS[$_k]}" ]] || return 1
+  done
+  return 0
+}
+
+MATCHED_SHA=""
+MATCHED_LABEL=""
+
+# Branch tips first, so a real branch install is NAMED rather than reduced
+# to a bare SHA. origin/HEAD is a symref, not a branch — skipped. origin/
+# <trunk> was already tried above (that's the DRIFT_COUNT==0 case above) and
+# did not match, so it is skipped here too.
+while IFS=' ' read -r _bref _bsha; do
+  [[ -n "$_bref" && -n "$_bsha" ]] || continue
+  [[ "$_bref" == "origin/HEAD" || "$_bref" == "origin/$TRUNK" ]] && continue
+  if _candidate_matches_all "$_bsha"; then
+    MATCHED_SHA="$_bsha"
+    MATCHED_LABEL="${_bref#origin/} @ $(git -C "$REPO_DIR" rev-parse --short "$_bsha")"
+    break
+  fi
+done < <(git -C "$REPO_DIR" for-each-ref --format='%(refname:short) %(objectname)' refs/remotes/origin 2>/dev/null)
+
+# Then a bounded window of the trunk's OWN history — catches a simple
+# re-publish lag (installed content matches an earlier point on the trunk,
+# nothing else changed since).
+if [[ -z "$MATCHED_SHA" ]]; then
+  _trunk_tip_sha="$(git -C "$REPO_DIR" rev-parse "origin/$TRUNK" 2>/dev/null)"
+  while IFS= read -r _c; do
+    [[ -n "$_c" && "$_c" != "$_trunk_tip_sha" ]] || continue
+    if _candidate_matches_all "$_c"; then
+      MATCHED_SHA="$_c"
+      MATCHED_LABEL="$(git -C "$REPO_DIR" rev-parse --short "$_c")"
+      break
+    fi
+  done < <(git -C "$REPO_DIR" rev-list -n "$_CANDIDATE_LIMIT" "origin/$TRUNK" 2>/dev/null)
+fi
+
+if [[ -n "$MATCHED_SHA" ]]; then
+  echo "STATUS: ok"
+  echo "MATCHES: $MATCHED_LABEL"
+  echo "TRUNK:  $TRUNK_LABEL"
+  echo "SOURCE: $SOURCE_LABEL"
+  # PROVENANCE: an ancestor of the trunk (an older, once-reviewed trunk
+  # commit) is stale, not unreviewed — no NOTE. Anything else (another
+  # branch's tip, or any commit that never was on the trunk) IS a
+  # provenance gap: report it, do not fail it.
+  if ! git -C "$REPO_DIR" merge-base --is-ancestor "$MATCHED_SHA" "origin/$TRUNK" 2>/dev/null; then
+    echo "NOTE:   installed from a branch, not the trunk — expected during development;"
+    echo "        an unattended run still requires the trunk"
+  fi
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# 6. STATUS: drifted — the installed set matched NO commit within the bound
+#    searched above. This is the genuine integrity failure: a partial
+#    install, a hand-edited file, or artifacts mixed from different origins.
+#    Keep naming the differing files (against the trunk specifically, since
+#    that is the reviewed reference point), plus a cheap per-file
+#    stale-vs-branch classification (git plumbing only — no blob content is
+#    ever materialized beyond what step 5 already hashed). This is a
+#    DIFFERENT, finer signal than step 5's whole-set search: it can tell you
+#    every differing file individually looks like it once existed (each
+#    matches SOME earlier trunk commit) even when no SINGLE commit explains
+#    all of them at once (step 5 already ruled that out) — which is itself a
+#    symptom of a mixed or partial install, not a contradiction. Missing
+#    artifacts are excluded (nothing to hash). Omitted entirely (prints
+#    nothing) when there is nothing left to classify.
 # ---------------------------------------------------------------------------
 _classify_stale_or_branch() {
-  local _limit=50
+  local _limit=$_CANDIDATE_LIMIT
   local _checked_any=false _all_stale=true
   local _j _s _d _blob _hist _c _hist_blob _found
   for ((_j = 0; _j < ${#_stale_src_rels[@]}; _j++)); do
@@ -265,16 +397,16 @@ _classify_stale_or_branch() {
   done
   [[ "$_checked_any" == "false" ]] && return 0
   if [[ "$_all_stale" == "true" ]]; then
-    printf '%s' "installed artifacts match an earlier commit on $TRUNK (within the last $_limit) — this looks STALE, not unreviewed: re-run 'devlead upgrade' (or bash install.sh)"
+    printf '%s' "each differing artifact individually matches an earlier commit on $TRUNK (within the last $_limit searched), but no SINGLE commit explains all of them at once — not simple staleness either: check for a partial or mixed-origin install"
   else
-    printf '%s' "installed artifacts do NOT match any of the last $_limit commits on $TRUNK — this does not look like simple staleness; check whether it came from an unmerged/unreviewed branch"
+    printf '%s' "installed artifacts do NOT match any of the last $_limit commits on $TRUNK searched — this does not look like simple staleness; check whether it came from an unmerged/unreviewed branch"
   fi
 }
 
 echo "STATUS: drifted"
 echo "TRUNK:  $TRUNK_LABEL"
 echo "SOURCE: $SOURCE_LABEL"
-echo "DRIFT:  $DRIFT_COUNT of $_total artifacts differ from the trunk"
+echo "DRIFT:  $DRIFT_COUNT of $_total artifacts differ from the trunk (matched no commit within the last $_CANDIDATE_LIMIT searched)"
 for _line in "${DIFF_LINES[@]}"; do
   echo "DIFF:   $_line"
 done
