@@ -397,6 +397,7 @@ Capturá stdout. Procesá la salida:
 - Extraé `STOP_AT:` de la salida. `_emit` en envelope.sh envuelve en comillas dobles cualquier valor que contenga `:`, por lo tanto un valor de hora llega como `"HH:MM"` (con comillas literales), mientras que `null` llega sin comillas. **Strippeá las comillas dobles circundantes antes de almacenar el valor** (p.ej. `"14:30"` → `14:30`). Si el valor resultante es `null` o está ausente → sin cutoff.
 - Extraé `SKIP_DEPENDENTS:` de la salida (boolean). Si ausente → asumir `false`.
 - Extraé `MAX_ISSUES:` de la salida para el presupuesto per-repo.
+- Extraé `MERGE_MODE:` y `INTEGRATION_BRANCH:` de la salida. `MERGE_MODE` gobierna Delta 6; si está ausente, asumí `never` (el default seguro — la ausencia NUNCA se lee como permiso). `INTEGRATION_BRANCH` es el destino del merge bajo `integration-branch`, y ya es el valor que Paso 8.2 le pasa a `branch.sh` como 5to argumento.
 
 **Paso 2 — Obtener cola de issues:**
 
@@ -607,6 +608,56 @@ Omití líneas Spec:/Design: si ausentes. NO emitas ningún `closes #N` (no hay 
 Si la tarea no tenía spec (corrió Step 8.3-SDD), insertá la misma sección de intención que el path no-spec de arranquemos (Step 8.5, header `## Intención (spec generado por DevLead)`).
 `--base {integration_branch}` sin cambios. LOCAL-PLAN no apila (no depends-on), siempre
 root-PR shape.
+
+**Delta 6 — Merge al integration branch (solo si `MERGE_MODE: integration-branch`).**
+
+Aplica a TODOS los modos de este comando, no solo LOCAL-PLAN. Corre DESPUÉS de que la
+unidad de trabajo alcanzó `gh pr create` y su desenlace quedó registrado. Con
+`MERGE_MODE: never` (default) este delta no existe: el pipeline termina en `gh pr create`,
+igual que siempre.
+
+**Precondiciones — las tres se verifican en el momento del merge, no se asumen de E1.4:**
+
+1. `MERGE_MODE` de `envelope.sh show` es exactamente `integration-branch`.
+2. El gate de Paso 8.4 salió VERDE para esta unidad. Un gate rojo ya aparcó la tarea y
+   nunca llega acá. **Nunca mergeás algo que no pasó el gate** (§A4).
+3. La rama destino NO es la rama por defecto del repo:
+   ```
+   git symbolic-ref --quiet --short refs/remotes/origin/HEAD | sed 's|^origin/||'
+   ```
+   Si el destino coincide, o si el comando falla y no podés PROBAR que difieren →
+   **PARK** con razón `merge-abortado: no se pudo probar que {destino} no es la rama por
+   defecto`. `envelope.sh show` ya bloquea esta configuración (§A3 cláusula 2); este
+   chequeo es defensa en profundidad porque el costo de equivocarse es escribir en el
+   tronco.
+
+**El merge:**
+```
+gh pr merge {PR_URL} --merge
+```
+Cualquier fallo — conflicto, checks en rojo, permisos — es **PARK con la razón exacta
+verbatim de `gh`**. NUNCA reintentás, NUNCA forzás, NUNCA mergeás con `--admin`.
+
+**Después de un merge exitoso**, borrá la rama de la unidad de trabajo (local y remota).
+Eso mantiene coherente la resolución de predecesores de `branch.sh`: con la rama
+eliminada, el lookup de `depends-on` cae a su rama "ya mergeado" y la tarea siguiente
+ramifica del integration branch, que ya contiene el trabajo.
+
+**Interacción con `depends-on`:** bajo `integration-branch` las tareas NO apilan. Para
+cuando una tarea dependiente ramifica, el trabajo de su predecesor ya está en el
+integration branch. El apilado (`STACKED:` → `--base {rama-predecesora}`) es el mecanismo
+de `merge.mode: never`, donde es la única forma de que una tarea vea a la anterior. Los dos
+mecanismos resuelven la misma dependencia por caminos distintos; nunca corren juntos.
+
+**Al final del repo (una vez, no por tarea):** asegurate de que exista un PR del
+integration branch a la rama por defecto. Si ya hay uno abierto, NO abras otro — es un PR
+de larga vida que acumula la cadena. Si no existe y el integration branch está adelantado,
+crealo:
+```
+gh pr create --base {rama-por-defecto} --head {integration_branch}
+```
+**Ese PR es el único punto de revisión humana del run, y §A3 lo deja intacto: DevLead lo
+CREA y jamás lo mergea.**
 
 ### E2.4 — Actualizar tracking per-repo
 
