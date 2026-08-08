@@ -106,6 +106,25 @@ on_failure:
   policy: park-and-continue
   skip_dependents: true
 merge:
+  # How far DevLead may merge on its own. See GOVERNANCE.md §A3.
+  #
+  #   never               DEFAULT. DevLead never invokes git merge / gh pr merge.
+  #                       The pipeline ends at `gh pr create` and every PR waits
+  #                       for you.
+  #
+  #   integration-branch  DevLead may merge green work-unit PRs into
+  #                       base.integration_branch, and ONLY into that branch. It
+  #                       then opens one long-lived PR from there to the default
+  #                       branch: your single review point for the whole run.
+  #                       Requires base.integration_branch to be declared above,
+  #                       and it must NOT be the repo's default branch — the
+  #                       envelope is blocked if it is.
+  #
+  #   default-branch      RESERVED, not implemented, rejected. Enabling it is its
+  #                       own governance decision, not an envelope edit.
+  #
+  # A red gate never merges (§A4), and a failed merge parks with gh's exact
+  # reason — never retried, never forced, never --admin.
   mode: never
 report:
   to: journal-per-repo
@@ -418,9 +437,35 @@ _do_show() {
   [[ "$sd_type" == "!!bool" ]] || _block "on_failure.skip_dependents must be a YAML boolean"
   _is_bool "$sd" || _block "on_failure.skip_dependents must be boolean (got '$sd')"
 
+  # merge.mode — see GOVERNANCE.md §A3. `default-branch` is RESERVED and stays
+  # rejected: enabling it is its own governance decision, not an envelope edit.
   mm=$(yq e '.merge.mode' "$ENV_FILE" 2>/dev/null)
-  [[ "$mm" == "never" ]] \
-    || _block "merge.mode must be 'never' in v1 — auto-merge forbidden (got '$mm')"
+  case "$mm" in
+    never|integration-branch) ;;
+    default-branch)
+      _block "merge.mode 'default-branch' is RESERVED and not implemented — see GOVERNANCE.md §A3" ;;
+    *)
+      _block "merge.mode must be 'never' or 'integration-branch' (got '$mm')" ;;
+  esac
+
+  # A3 clause 2, enforced in code rather than prose: an integration branch that
+  # IS the default branch would grant merge-to-trunk under a name that reads as
+  # safe. The default branch is resolved from the REMOTE, never from anything
+  # DevLead can write.
+  if [[ "$mm" == "integration-branch" ]]; then
+    local _ib _default_branch
+    _ib=$(yq e '.base.integration_branch' "$ENV_FILE" 2>/dev/null)
+    if [[ -z "$_ib" || "$_ib" == "null" ]]; then
+      _block "merge.mode 'integration-branch' requires base.integration_branch to be declared"
+    else
+      _default_branch=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+      if [[ -z "$_default_branch" ]]; then
+        _block "merge.mode 'integration-branch' requires a resolvable default branch (git symbolic-ref refs/remotes/origin/HEAD failed) — cannot prove base.integration_branch is not the trunk"
+      elif [[ "$_ib" == "$_default_branch" ]]; then
+        _block "base.integration_branch ('$_ib') must not be the default branch — that would grant merge-to-trunk (GOVERNANCE.md §A3)"
+      fi
+    fi
+  fi
 
   rt=$(yq e '.report.to' "$ENV_FILE" 2>/dev/null)
   [[ "$rt" == "journal-per-repo" ]] \

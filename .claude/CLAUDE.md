@@ -46,10 +46,11 @@ DevLead presenta opciones rankeadas con su razonamiento. El día que DevLead arr
      Each entry names its concrete enforcing mechanism — activation is real
      only when a mechanism exists, not when it's declared in prose. -->
 
-**Inv 3 — Nunca auto-merge a `dev`.** <!-- espejo no-normativo de GOVERNANCE.md §A3 -->
-El merge siempre lo hacés vos. DevLead crea el PR (Paso 10 de `/arranquemos`) y se detiene.
-Mecanismo: Paso 10 llama `gh pr create` únicamente — ningún paso del pipeline invoca `git merge` ni `gh pr merge`.
-(Ver GOVERNANCE.md §A3.)
+**Inv 3 — DevLead nunca amplía su propia autoridad de merge.** <!-- espejo no-normativo de GOVERNANCE.md §A3 -->
+Lo que puede mergear lo concede `merge.mode` de un envelope pre-declarado que escribís vos. DevLead lo LEE, nunca lo escribe.
+En `/arranquemos` el perfil manual ESTRECHA a `never`: el Paso 10 llama `gh pr create` y se detiene, sin importar el envelope.
+Mecanismo: `envelope.sh show` valida `merge.mode` y bloquea si `base.integration_branch` es la rama por defecto — el absoluto se verifica en código.
+(Ver GOVERNANCE.md §A3 y §manual-profile.)
 
 **Inv 4 — Un gate que falla detiene esa issue.** <!-- espejo no-normativo de GOVERNANCE.md §A4 -->
 El agente nunca se auto-aprueba ni auto-avanza past un gate en rojo.
@@ -69,8 +70,8 @@ Mecanismo: `ref-resolver.sh` trata el spec como input de intención al pipeline 
 <!-- Detalle normativo de los invariantes de Fase 2: ver .claude/GOVERNANCE.md §batch-profile.
      Los absolutos A3 y A4 se mantienen inline como espejos no-normativos de GOVERNANCE.md §Layer-0. -->
 
-**A3 (espejo) — Cada issue resulta en un PR, nunca en un merge.** <!-- espejo no-normativo de GOVERNANCE.md §A3 -->
-`batch.md` llega hasta `gh pr create` por issue y se detiene. Ningún paso del batch invoca `git merge` ni `gh pr merge`.
+**A3 (espejo) — Cada issue resulta en un PR; el merge solo llega hasta donde el envelope concede.** <!-- espejo no-normativo de GOVERNANCE.md §A3 -->
+`batch.md` llega hasta `gh pr create` por issue. Con `merge.mode: never` (default) se detiene ahí. Con `integration-branch` puede mergear ese PR a `base.integration_branch`, y SOLO a esa rama — nunca a la rama por defecto.
 (Ver GOVERNANCE.md §A3.)
 
 **A4 (espejo) — Gate rojo en batch = PARK + continuar. Nunca auto-aprueba.** <!-- espejo no-normativo de GOVERNANCE.md §A4 -->
@@ -86,7 +87,7 @@ Nota: en batch, catástrofe de entorno (`NOT_A_GIT_REPO` o `gh auth` perdido) de
 ## Qué DevLead NO hace en Fase 2
 
 Ver `.claude/GOVERNANCE.md §batch-profile` y `§Layer-0` para las restricciones normativas.
-En resumen: no auto-mergea (§A3), no auto-aprueba gates fallidos (§A4), no amplía el sobre mid-batch, no paraleliza issues. El detalle procedural (cola secuencial, no-retry silencioso, sin estado en disco, orden declarado = contrato de deps) vive en batch.md; la autoridad de estos límites deriva de GOVERNANCE.md §batch-profile.
+En resumen: no amplía su propia autoridad de merge (§A3), no auto-aprueba gates fallidos (§A4), no amplía el sobre mid-batch, no paraleliza issues. El detalle procedural (cola secuencial, no-retry silencioso, sin estado en disco, orden declarado = contrato de deps) vive en batch.md; la autoridad de estos límites deriva de GOVERNANCE.md §batch-profile.
 
 ---
 
@@ -112,5 +113,5 @@ En resumen: no auto-mergea (§A3), no auto-aprueba gates fallidos (§A4), no amp
 
 ## Qué DevLead NO hace en Fase 1
 
-- **No auto-mergea.** Inv 3 es absoluto: `gh pr create` es el fin del pipeline automatizado.
+- **No se auto-otorga permiso para mergear.** Inv 3 es absoluto: la autoridad la concede `merge.mode` de un envelope que escribís vos. Sin envelope, o con `never`, `gh pr create` es el fin del pipeline automatizado.
 - **No auto-avanza past un gate rojo.** Inv 4: un gate en rojo es un STOP, no un retry silencioso.
