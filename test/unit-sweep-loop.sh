@@ -35,6 +35,15 @@ contains() {
   fi
 }
 
+not_contains() {
+  if [[ "$2" != *"$3"* ]]; then
+    echo "PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "FAIL  $1"; echo "        unexpected substring: [$3]"; echo "        actual: [$2]"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
 PLAN="$SANDBOX/plan.yml"
 cat > "$PLAN" <<'YML'
 version: 1
@@ -293,6 +302,62 @@ rc=$?
 check "-- --fleet --plan f.yml (round-4 anchor) still fires the guard (exit 1)" "$rc" "1"
 contains "the diagnostic names the non-git cwd (round-4 --fleet --plan)" "$out" "not inside a git work tree"
 rm -rf "$R4_DIR_F"
+
+# ===========================================================================
+# Reactive check: the pre-check guard above is a fast path, not the
+# guarantee. sweep-loop must react to a `STATUS: not-a-git-repo` line in the
+# dispatched invocation's own output and stop immediately — no matter what
+# the pre-check predicted. A fake `claude` on DEVLEAD_CLAUDE_BIN stands in so
+# nothing real is ever invoked. Each scenario gets its OWN throwaway TMPDIR so
+# leftover-scratch-file assertions never see another test's files.
+# ===========================================================================
+
+FAKE_CLAUDE_NOTAGITREPO="$SANDBOX/fake-claude-notagitrepo"
+cat > "$FAKE_CLAUDE_NOTAGITREPO" <<'FAKE'
+#!/usr/bin/env bash
+echo "STATUS: not-a-git-repo"
+echo "No se pudo resolver el repo actual (git rev-parse --show-toplevel falló)."
+exit 0
+FAKE
+chmod +x "$FAKE_CLAUDE_NOTAGITREPO"
+
+FAKE_CLAUDE_NORMAL="$SANDBOX/fake-claude-normal"
+cat > "$FAKE_CLAUDE_NORMAL" <<'FAKE'
+#!/usr/bin/env bash
+echo "sweep-execute: did some normal work here"
+exit 0
+FAKE
+chmod +x "$FAKE_CLAUDE_NORMAL"
+
+# --- A STATUS: not-a-git-repo line stops the loop after the FIRST iteration,
+#     even with a generous cap, prints a diagnostic, and exits non-zero -----
+REACT_TMP_A="$SANDBOX/react-tmp-a"
+mkdir -p "$REACT_TMP_A"
+out="$(TMPDIR="$REACT_TMP_A" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOTAGITREPO" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 5 2>&1)"
+rc=$?
+check "STATUS: not-a-git-repo from claude's own output exits non-zero" "$rc" "1"
+contains "the diagnostic names the reactive STATUS line" "$out" "STATUS: not-a-git-repo"
+contains "the diagnostic names the cwd that was used" "$out" "cwd used was"
+contains "the diagnostic suggests --repo or DEVLEAD_LOOP_REPO" "$out" "DEVLEAD_LOOP_REPO"
+check "exactly one iteration was invoked" "$(printf '%s' "$out" | grep -c -- '— invoking')" "1"
+not_contains "a second iteration never starts, even with --max-iterations 5" "$out" "iteration 2/5"
+check "no scratch file remains after the reactive exit" \
+  "$(find "$REACT_TMP_A" -name 'sweep-loop-out.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+# --- Normal output iterates to the cap and exits 0 as before, and the
+#     dispatched invocation's own output is still streamed to the caller ----
+REACT_TMP_B="$SANDBOX/react-tmp-b"
+mkdir -p "$REACT_TMP_B"
+out="$(TMPDIR="$REACT_TMP_B" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NORMAL" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 2 2>&1)"
+rc=$?
+check "normal output iterates to the cap and exits 0" "$rc" "0"
+contains "the fake claude's own output is streamed to the caller" "$out" "did some normal work here"
+check "both iterations were invoked" "$(printf '%s' "$out" | grep -c -- '— invoking')" "2"
+contains "the cap-reached message still appears" "$out" "iteration cap"
+check "no scratch file remains after the normal-cap path" \
+  "$(find "$REACT_TMP_B" -name 'sweep-loop-out.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
