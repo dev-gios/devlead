@@ -12,10 +12,33 @@
 #
 # The cwd-work-tree guard below defaults every invocation to cwd-dependent
 # and skips ONLY when cwd-independence is positively proven: an exact --fleet
-# token present AND no --plan anywhere AND no #N issue token anywhere (own
-# flags or forwarded after `--`). See the guard's own comment block for why
-# this must be derived from sweep-execute.md's mode-selector precedence
-# rather than an enumerated flag list.
+# token present AND no --plan anywhere AND no #N issue token forwarded after
+# `--`. See the guard's own comment block for why this must be derived from
+# sweep-execute.md's mode-selector precedence rather than an enumerated flag
+# list.
+#
+# KNOWN LIMITATION — the guard cannot be made exact here, and a fifth attempt
+# would not help. It inspects the argv ARRAY; sweep-execute only ever sees the
+# FLATTENED prompt string, and its mode detection is natural language read by
+# an LLM. batch.md's queue grammar, which sweep-execute imports verbatim for
+# MODO SCOPED, accepts "cualquier variante en español con números de issue
+# precedidos de `#`" — an open grammar no shell regex can mirror. So these
+# slip past and skip the guard even though the dispatched run is SCOPED and
+# does resolve its repo from cwd:
+#
+#   sweep-loop.sh -- --fleet '#12,'                        (comma-suffixed)
+#   sweep-loop.sh -- --fleet --note "closes #42 tonight"   (#N inside a value)
+#
+# Neither shape is used by any shipped systemd unit; both require hand-passing
+# free text alongside --fleet from a non-repo directory. The failure is a
+# silent no-op, not a wrong-repo write.
+#
+# The real fix inverts the direction: sweep-execute already has a
+# `not-a-git-repo` early exit, but it exits clean and silent, which is what
+# makes it invisible here. Give that exit a distinguishable signal and have
+# this loop react to what HAPPENED instead of predicting what will happen.
+# Prediction belongs where the knowledge is, and the knowledge is in
+# sweep-execute, not in the loop that invokes it.
 #
 # Environment:
 #   DEVLEAD_LOOP_DRYRUN=1   print the exact `claude -p` command per iteration
