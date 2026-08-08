@@ -16,9 +16,14 @@ _repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
 ENV_FILE="$(_repo_root)/.devlead/envelope.yml"
 
 # LOCKED schema whitelists (D5)
-_TOP="version enabled select order budget base forbidden_zones on_failure merge report"
+_TOP_REQUIRED="version enabled select order budget base forbidden_zones on_failure merge report"
+# discover is the only OPTIONAL top-level key: absent means discovery is
+# disabled (enabled: false), so pre-existing envelopes stay valid unchanged.
+_TOP_OPTIONAL="discover"
+_TOP="$_TOP_REQUIRED $_TOP_OPTIONAL"
 # nested: select{bucket exclude_labels require_readiness} order{by} budget{max_issues stop_at}
 #         base{strategy integration_branch} on_failure{policy skip_dependents} merge{mode} report{to}
+#         discover{enabled label modules} — OPTIONAL block, absent means enabled: false (D5)
 
 _emit() {
   # Quote values bearing ':' or newline so KEY:value stays parseable
@@ -396,11 +401,18 @@ _do_show() {
   ver=$(yq e '.version' "$ENV_FILE" 2>/dev/null)
   [[ "$ver" == "1" ]] || _block "unsupported version '$ver' (expected 1)"
 
-  # Exact top-level key set: no unknown + no missing
-  local top want
-  top=$(yq e 'keys | .[]' "$ENV_FILE" 2>/dev/null | sort | tr '\n' ' ' | xargs)
-  want=$(echo "$_TOP" | tr ' ' '\n' | sort | tr '\n' ' ' | xargs)
-  [[ "$top" == "$want" ]] || _block "top-level keys drifted from schema: got [$top]"
+  # Top-level key set: no unknown keys (closed schema) + no missing REQUIRED
+  # keys. `discover` is the sole OPTIONAL key (_TOP_OPTIONAL) — its absence
+  # is not a schema drift, everything else in _TOP_REQUIRED still is.
+  local top k
+  top=$(yq e 'keys | .[]' "$ENV_FILE" 2>/dev/null)
+  while IFS= read -r k; do
+    [[ -z "$k" ]] && continue
+    _in "$k" $_TOP || _block "unknown top-level key '$k'"
+  done <<< "$top"
+  for k in $_TOP_REQUIRED; do
+    _in "$k" $top || _block "missing required top-level key '$k'"
+  done
 
   # Nested key validation
   _assert_keys '.select'     'select'     bucket exclude_labels require_readiness
@@ -410,6 +422,11 @@ _do_show() {
   _assert_keys '.on_failure' 'on_failure' policy skip_dependents
   _assert_keys '.merge'      'merge'      mode
   _assert_keys '.report'     'report'     to
+  # .discover is OPTIONAL (absent → block absent entirely, no error): the
+  # 'yq keys' call on a missing path fails and is silenced by the 2>/dev/null
+  # inside _assert_keys, so its read loop simply consumes nothing — same
+  # idiom relied on by order.priority_labels below, no special-casing needed.
+  _assert_keys '.discover'   'discover'   enabled label modules
 
   local fz
   fz=$(yq e '.forbidden_zones' "$ENV_FILE" 2>/dev/null)
@@ -537,6 +554,86 @@ _do_show() {
   [[ "$rt" == "journal-per-repo" ]] \
     || _block "report.to must be 'journal-per-repo' (got '$rt')"
 
+  # discover (OPTIONAL): absent → discovery disabled, envelope stays valid
+  # (backward compatible — every envelope written before this block existed
+  # keeps working unchanged). DISCOVERY, when it lands, only FILES issues; it
+  # never executes from them — the issue is the artifact that crosses the
+  # boundary into the existing envelope-governed pipeline.
+  local disc_enabled="false" disc_label=""
+  local disc_type
+  disc_type=$(yq e '.discover | type' "$ENV_FILE" 2>/dev/null)
+  if [[ "$disc_type" != "!!null" ]]; then
+    [[ "$disc_type" == "!!map" ]] \
+      || _block "discover must be a YAML map when present (got type '$disc_type')"
+
+    local de_type
+    de_type=$(yq e '.discover.enabled | type' "$ENV_FILE" 2>/dev/null)
+    [[ "$de_type" == "!!bool" ]] \
+      || _block "discover.enabled must be a YAML boolean (got type '$de_type')"
+    disc_enabled=$(yq e '.discover.enabled' "$ENV_FILE" 2>/dev/null)
+    _is_bool "$disc_enabled" || _block "discover.enabled must be boolean (got '$disc_enabled')"
+
+    if [[ "$disc_enabled" == "true" ]]; then
+      local dl_type
+      dl_type=$(yq e '.discover.label | type' "$ENV_FILE" 2>/dev/null)
+      [[ "$dl_type" == "!!str" ]] \
+        || _block "discover.label must be a non-empty string when discover.enabled is true (got type '$dl_type')"
+      disc_label=$(yq e '.discover.label' "$ENV_FILE" 2>/dev/null)
+      local disc_label_trim
+      disc_label_trim=$(printf '%s' "$disc_label" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      [[ -n "$disc_label_trim" ]] \
+        || _block "discover.label must be non-empty when discover.enabled is true"
+
+      local dm_type
+      dm_type=$(yq e '.discover.modules | type' "$ENV_FILE" 2>/dev/null)
+      [[ "$dm_type" == "!!seq" ]] \
+        || _block "discover.modules must be a YAML list when discover.enabled is true (got type '$dm_type')"
+      local dm_len
+      dm_len=$(yq e '.discover.modules | length' "$ENV_FILE" 2>/dev/null)
+      [[ "$dm_len" =~ ^[1-9][0-9]*$ ]] \
+        || _block "discover.modules must be a non-empty list when discover.enabled is true"
+
+      local dm_idx dm_path dm_spec
+      for (( dm_idx=0; dm_idx<dm_len; dm_idx++ )); do
+        dm_path=$(yq e ".discover.modules[$dm_idx].path" "$ENV_FILE" 2>/dev/null)
+        dm_spec=$(yq e ".discover.modules[$dm_idx].spec" "$ENV_FILE" 2>/dev/null)
+        [[ -n "$dm_path" && "$dm_path" != "null" ]] \
+          || _block "discover.modules[$dm_idx] is missing or has an empty 'path'"
+        [[ -n "$dm_spec" && "$dm_spec" != "null" ]] \
+          || _block "discover.modules[$dm_idx] is missing or has an empty 'spec'"
+        # ADR-3 convention (same rule ref-resolver.sh enforces for task
+        # specs): every module reference must be repo-relative, never
+        # absolute — an absolute path silently escapes the repo boundary.
+        [[ "$dm_path" == /* ]] \
+          && _block "discover.modules[$dm_idx].path must be repo-relative, not absolute (got '$dm_path')"
+        [[ "$dm_spec" == /* ]] \
+          && _block "discover.modules[$dm_idx].spec must be repo-relative, not absolute (got '$dm_spec')"
+      done
+
+      # Coupling rule (the whole point of this block): discovery FILES issues
+      # against a spec but never executes from them — the issue is the
+      # artifact that crosses the boundary. Those filed issues carry
+      # discover.label. If that label is not also excluded by
+      # select.exclude_labels, plan-driven mode would pick up discovery's own
+      # freshly-filed issues on its very next run and start working them
+      # unreviewed. The label is what holds the two-night cycle open: night
+      # one files, you look, night two works whatever survived review.
+      # Without the exclusion, DevLead would file work for itself and
+      # immediately do it — collapsing the cycle and removing the only human
+      # checkpoint in it.
+      local excl_csv
+      excl_csv=$(yq e '.select.exclude_labels | join(",")' "$ENV_FILE" 2>/dev/null)
+      local -a excl_arr=()
+      IFS=',' read -ra excl_arr <<< "$excl_csv"
+      local _excl_hit=false _el
+      for _el in "${excl_arr[@]}"; do
+        [[ "$_el" == "$disc_label" ]] && { _excl_hit=true; break; }
+      done
+      [[ "$_excl_hit" == "true" ]] \
+        || _block "discover.label '$disc_label' must appear in select.exclude_labels — otherwise plan-driven mode would pick up and execute discovery's own filed issues on its very next run, unreviewed"
+    fi
+  fi
+
   # All checks passed — emit structured output
   echo "STATUS: ok"
   _emit "VERSION:"           "$ver"
@@ -561,6 +658,15 @@ _do_show() {
   _emit "SKIP_DEPENDENTS:"   "$sd"
   _emit "MERGE_MODE:"        "$mm"
   _emit "REPORT_TO:"         "$rt"
+  _emit "DISCOVER_ENABLED:"  "$disc_enabled"
+  if [[ "$disc_enabled" == "true" ]]; then
+    # Omitted entirely when disabled — same convention already used above for
+    # order.priority_labels (an absent optional value is left out, not
+    # emitted empty).
+    _emit "DISCOVER_LABEL:"        "$disc_label"
+    _emit "DISCOVER_MODULE_PATHS:" "$(yq e '[.discover.modules[].path] | join(",")' "$ENV_FILE" 2>/dev/null)"
+    _emit "DISCOVER_MODULE_SPECS:" "$(yq e '[.discover.modules[].spec] | join(",")' "$ENV_FILE" 2>/dev/null)"
+  fi
   exit 0
 }
 
