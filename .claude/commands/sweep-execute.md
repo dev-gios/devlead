@@ -755,11 +755,16 @@ igual que siempre.
    él sola puede aprobar mergear a lo que hoy es el tronco real. Por eso la resolución
    PREFIERE la verdad del remoto y usa el symref solo como fallback:
    ```
-   # 1. Preferido: verdad viva del remoto (gh disponible y autenticado)
-   gh repo view --json defaultBranchRef -q .defaultBranchRef.name
-   # 2. Fallback: symref local, solo si gh no está disponible o no autenticado
+   # 1. Preferido: verdad viva del remoto (gh disponible y autenticado),
+   #    acotado por timeout (default 10s, override vía DEVLEAD_GH_TIMEOUT_SECS)
+   timeout "$GH_TIMEOUT_SECS" gh repo view --json defaultBranchRef -q .defaultBranchRef.name
+   # 2. Fallback: symref local, si gh no está disponible, no autenticado,
+   #    O si se venció el timeout — un gh colgado se trata igual que un gh
+   #    ausente, nunca como "no hay rama por defecto"
    git symbolic-ref --quiet --short refs/remotes/origin/HEAD | sed 's|^origin/||'
    ```
+   Un timeout que dispara deja una nota en stderr (visible en el journal) para que
+   una red degradada no cambie de fuente en silencio.
    Si el destino coincide con lo que resuelve (1), o (1) no resuelve y coincide con (2), o
    NINGUNA de las dos fuentes resuelve y no podés PROBAR que difieren →
    **PARK** con razón `merge-abortado: no se pudo probar que {destino} no es la rama por

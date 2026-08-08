@@ -43,6 +43,18 @@ lacks() {
   fi
 }
 
+check() {
+  if [[ "$2" == "$3" ]]; then
+    echo "PASS  $1"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "FAIL  $1"
+    echo "        expected: [$3]"
+    echo "        actual:   [$2]"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
 # --- Sandbox repo with a resolvable default branch -------------------------
 git init -q --bare "$SANDBOX/origin.git"
 git clone -q "$SANDBOX/origin.git" "$SANDBOX/work" 2>/dev/null
@@ -151,6 +163,41 @@ out="$(PATH="$FAKEBIN_GH:$PATH" bash "$ENVELOPE_SH" show 2>&1)"
 contains "stale symref: guard still blocks using gh ground truth" "$out" "STATUS: blocked"
 contains "stale symref: block names the trunk risk" "$out" "must not be the default branch"
 rm -rf "$FAKEBIN_GH"
+
+# --- Round-2 regression: a hung `gh` must not hang envelope.sh -------------
+# Both `gh auth status` and `gh repo view` were unbounded. A `gh` stub that
+# sleeps well beyond the timeout, combined with a deliberately STALE local
+# symref (the fixture's real default branch is "main"; declare
+# integration_branch as something ELSE entirely — "feature/nightly" — so a
+# correct fallback resolution APPROVES it, while a hang or a wrong fallback
+# answer would not), must (a) return within a bounded time instead of
+# hanging, and (b) still reach the correct decision via the symref fallback.
+# Bound the test itself with an external `timeout` so a regression fails the
+# suite instead of hanging CI forever.
+git remote set-head origin main 2>/dev/null  # re-assert the local symref
+FAKEBIN_GH_HANG="$(mktemp -d /tmp/devlead-envmerge-fakebin-hang.XXXXXX)"
+cat > "$FAKEBIN_GH_HANG/gh" <<'EOF'
+#!/usr/bin/env bash
+# Simulates a hung `gh` (dead network, stalled auth prompt): sleeps well
+# beyond envelope.sh's DEVLEAD_GH_TIMEOUT_SECS.
+sleep 300
+EOF
+chmod +x "$FAKEBIN_GH_HANG/gh"
+
+write_envelope "  integration_branch: feature/nightly" "integration-branch"
+_hang_start=$(date +%s)
+out="$(timeout 30 env PATH="$FAKEBIN_GH_HANG:$PATH" DEVLEAD_GH_TIMEOUT_SECS=2 \
+  bash "$ENVELOPE_SH" show 2>&1)"
+_hang_rc=$?
+_hang_elapsed=$(( $(date +%s) - _hang_start ))
+check "a hung gh does not hang envelope.sh (external timeout never fires)" \
+  "$([[ $_hang_rc -ne 124 ]] && echo ok || echo TIMED_OUT)" "ok"
+check "a hung gh returns within a bounded time (well under the 30s outer bound)" \
+  "$([[ $_hang_elapsed -lt 15 ]] && echo ok || echo TOO_SLOW)" "ok"
+lacks "a hung gh still resolves the correct non-default branch via symref fallback" \
+  "$out" "STATUS: blocked"
+contains "a hung gh emits a stderr note naming the timeout" "$out" "timed out after"
+rm -rf "$FAKEBIN_GH_HANG"
 
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="

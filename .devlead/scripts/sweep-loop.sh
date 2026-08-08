@@ -123,7 +123,27 @@ fi
 # default cwd for a user unit with no WorkingDirectory= — and the loop would
 # silently no-op every night while systemd still reports success (oneshot
 # exits 0). Fail loudly instead so the failure is visible.
-if ! git rev-parse --is-inside-work-tree &>/dev/null; then
+#
+# BUT this guard only applies when the run is cwd-dependent. `--fleet` mode
+# enumerates ~/.devlead/autonomous-repos and is explicitly NOT cwd-dependent
+# (documented planless `--fleet` usage line above) — requiring a git work
+# tree at the invocation cwd for that form is a false positive. `--plan`
+# takes precedence over `--fleet` in sweep-execute (LOCAL-PLAN wins even if
+# `--fleet` is also passed through), so the plan check comes first: the run
+# is cwd-dependent when --plan is given, OR when the extra args do NOT
+# contain --fleet. If --repo/$DEVLEAD_LOOP_REPO was given explicitly (REPO_DIR
+# set, handled by the cd block above), the operator asked for that directory
+# — validate it regardless of fleet.
+_cwd_dependent=true
+if [[ -z "$PLAN_FILE" ]]; then
+  case " $EXTRA_ARGS " in
+    *" --fleet "*) _cwd_dependent=false ;;
+  esac
+fi
+if [[ -n "$REPO_DIR" ]]; then
+  _cwd_dependent=true
+fi
+if [[ "$_cwd_dependent" == "true" ]] && ! git rev-parse --is-inside-work-tree &>/dev/null; then
   echo "sweep-loop: cwd is not inside a git work tree: $PWD" >&2
   echo "sweep-loop: pass --repo <path>, set \$DEVLEAD_LOOP_REPO, or run from inside a repo" >&2
   exit 1

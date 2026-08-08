@@ -143,6 +143,34 @@ out="$(cd "$NON_GIT_DIR" && DEVLEAD_LOOP_REPO="$OTHER_NON_GIT" DEVLEAD_LOOP_DRYR
 rc=$?
 check "--repo overrides a DEVLEAD_LOOP_REPO pointed elsewhere" "$rc" "0"
 
+# ===========================================================================
+# Round-2 regression: the git-work-tree guard broke the documented planless
+# `--fleet` form. `--fleet` enumerates ~/.devlead/autonomous-repos and is
+# explicitly NOT cwd-dependent — it must keep working from a non-git cwd.
+# This test sets its OWN throwaway non-git /tmp cwd (never inherits the repo
+# checkout's cwd), which is exactly what masked the regression originally.
+# ===========================================================================
+FLEET_NON_GIT_DIR="$(mktemp -d /tmp/devlead-sweeploop-fleet.XXXXXX)"
+
+# --- Planless --fleet succeeds from a NON-git directory ---------------------
+out="$(cd "$FLEET_NON_GIT_DIR" && DEVLEAD_LOOP_DRYRUN=1 \
+  bash "$LOOP" --max-iterations 1 -- --fleet 2>&1)"
+rc=$?
+check "planless --fleet from a non-git cwd exits 0" "$rc" "0"
+contains "planless --fleet reaches the dry-run announcement" "$out" "would run"
+contains "planless --fleet carries --fleet through to the prompt" "$out" '--fleet'
+
+# --- The plan form still fails loudly from a non-git directory, even with
+#     --fleet also passed through (--plan takes precedence over --fleet in
+#     sweep-execute, so the guard still applies) -----------------------------
+out="$(cd "$FLEET_NON_GIT_DIR" && DEVLEAD_LOOP_DRYRUN=1 \
+  bash "$LOOP" --plan "$PLAN" --max-iterations 1 -- --fleet 2>&1)"
+rc=$?
+check "--plan from a non-git cwd still exits 1 even with --fleet" "$rc" "1"
+contains "the diagnostic still names the non-git cwd" "$out" "not inside a git work tree"
+
+rm -rf "$FLEET_NON_GIT_DIR"
+
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
 rm -rf "$SANDBOX"

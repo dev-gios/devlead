@@ -28,6 +28,13 @@ _emit() {
 }
 
 _block() { echo "STATUS: blocked"; echo "GAP:    $1"; exit 0; }
+# GH_TIMEOUT_SECS — bound on each `gh` call inside _resolve_default_branch.
+# Override via env for operators on slow links. A hung `gh` (dead network,
+# stalled auth prompt, etc.) must degrade to the local fallback, never hang
+# the caller — this runs on every `envelope.sh show` for a repo declaring
+# merge.mode: integration-branch, and again per merge-eligible work unit in
+# Delta 6, including inside the unattended nightly loop.
+GH_TIMEOUT_SECS="${DEVLEAD_GH_TIMEOUT_SECS:-10}"
 # _resolve_default_branch — ground truth for "what is the repo's default
 # branch", used by A3 clause 2 (an integration branch must never BE the
 # default branch). Prefers `gh repo view` (live remote query) over the local
@@ -35,16 +42,35 @@ _block() { echo "STATUS: blocked"; echo "GAP:    $1"; exit 0; }
 # symref: if the remote default branch is renamed after cloning, the symref
 # still points at the OLD name and a comparison against it would approve
 # merging into what is now the real default branch. Falls back to the
-# symref only when `gh` is unavailable or unauthenticated. Prints the
-# branch name and returns 0, or returns 1 (no stdout) when neither source
-# resolves — callers fail closed on that case (GOVERNANCE.md §A3).
+# symref when `gh` is unavailable, unauthenticated, OR times out — a hung
+# `gh` is treated exactly like "gh unavailable", never like "no default
+# branch". Prints the branch name and returns 0, or returns 1 (no stdout)
+# when neither source resolves — callers fail closed on that case
+# (GOVERNANCE.md §A3).
 _resolve_default_branch() {
-  local _db
-  if command -v gh &>/dev/null && gh auth status &>/dev/null; then
-    _db=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)
-    if [[ -n "$_db" ]]; then
-      printf '%s' "$_db"
-      return 0
+  local _db _auth_rc _view_rc _gh_timeout=()
+  # `timeout` is coreutils and normally present, but don't assume it: if
+  # missing, call `gh` directly (unbounded, as before) rather than break the
+  # check entirely.
+  if command -v timeout &>/dev/null; then
+    _gh_timeout=(timeout "$GH_TIMEOUT_SECS")
+  fi
+  if command -v gh &>/dev/null; then
+    "${_gh_timeout[@]}" gh auth status &>/dev/null
+    _auth_rc=$?
+    if [[ ${#_gh_timeout[@]} -gt 0 && $_auth_rc -eq 124 ]]; then
+      echo "envelope: gh auth status timed out after ${GH_TIMEOUT_SECS}s — falling back to local symref" >&2
+    fi
+    if [[ $_auth_rc -eq 0 ]]; then
+      _db=$("${_gh_timeout[@]}" gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)
+      _view_rc=$?
+      if [[ ${#_gh_timeout[@]} -gt 0 && $_view_rc -eq 124 ]]; then
+        echo "envelope: gh repo view timed out after ${GH_TIMEOUT_SECS}s — falling back to local symref" >&2
+      fi
+      if [[ -n "$_db" ]]; then
+        printf '%s' "$_db"
+        return 0
+      fi
     fi
   fi
   _db=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
