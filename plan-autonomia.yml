@@ -1,0 +1,38 @@
+version: 1
+
+# Plan: plomería de autonomía (piezas A y B).
+# Objetivo cerrado: que un run de LOCAL-PLAN pueda cortarse y retomar,
+# y que algo externo re-invoque a DevLead sin intervención humana.
+# FUERA DE ALCANCE en este plan: etapa de descubrimiento (pieza C) y
+# extensión de envelope policy (pieza D). No se tocan.
+
+tasks:
+  - id: run-state
+    title: "Script run-state.sh — progreso de run persistido en disco"
+    type: feat
+    # ACEPTACIÓN: `bash .devlead/scripts/run-state.sh mark <run-id> <task-id> done`
+    # seguido de `run-state.sh is-done <run-id> <task-id>` sale 0; para un task-id
+    # nunca marcado sale 1. `run-state.sh reason <run-id> <task-id>` devuelve la
+    # razón verbatim de un PARK. shellcheck limpio.
+
+  - id: sweep-loop
+    title: "Script sweep-loop.sh — re-invocación headless de sweep-execute"
+    type: feat
+    # ACEPTACIÓN: con DEVLEAD_LOOP_DRYRUN=1 imprime el comando `claude -p` exacto
+    # que ejecutaría, respeta un tope de iteraciones, y sale 0 sin invocar claude.
+    # Corta el loop cuando run-state indica que no quedan tareas pendientes.
+    # shellcheck limpio.
+
+  - id: loop-systemd
+    title: "Unit systemd para el loop headless + doc de activación"
+    type: chore
+    # ACEPTACIÓN: `systemd-analyze verify` pasa sobre el unit nuevo.
+    # La unit existente devlead-sweep.service (plan-only) NO se modifica.
+
+  - id: wire-resume
+    title: "Cablear run-state en el pipeline LOCAL-PLAN de sweep-execute.md"
+    type: docs
+    # ACEPTACIÓN: la sección Delta 5 (adaptador LOCAL-PLAN) referencia
+    # run-state.sh en dos puntos: el skip de tareas ya completadas antes de
+    # branch.sh, y el mark tras `gh pr create` / tras un PARK.
+    # Verificable: `rg -c "run-state.sh" .claude/commands/sweep-execute.md` >= 2.

@@ -107,7 +107,21 @@ STACKED_BRANCH=""
 BASE_REF=""
 BASE_GAP=""
 if [[ -n "$DEP_NUM" ]]; then
-  _dep_branch=$(git branch -a --list "*/issue-${DEP_NUM}-*" 2>/dev/null | head -n1)
+  # The predecessor's branch slug depends on what produced it. A GitHub issue
+  # yields `issue-{N}-…`; a LOCAL-PLAN task yields `plan-{task-id}-…`. A purely
+  # numeric dep is an issue number and keeps the historical `issue-` prefix;
+  # anything else is already a full slug prefix and is used verbatim. Without
+  # this, a plan task could never resolve its predecessor and LOCAL-PLAN could
+  # not stack at all.
+  if [[ "$DEP_NUM" =~ ^[0-9]+$ ]]; then
+    _dep_slug="issue-${DEP_NUM}"
+    _dep_label="#${DEP_NUM}"
+  else
+    _dep_slug="${DEP_NUM}"
+    _dep_label="${DEP_NUM}"
+  fi
+
+  _dep_branch=$(git branch -a --list "*/${_dep_slug}-*" 2>/dev/null | head -n1)
   _dep_branch=$(printf '%s' "$_dep_branch" | sed 's/^[[:space:]]*[*]\?[[:space:]]*//')
   # _dep_ref: strip only "remotes/" — keeps "origin/" prefix for valid checkout start-point
   _dep_ref="${_dep_branch#remotes/}"
@@ -115,11 +129,11 @@ if [[ -n "$DEP_NUM" ]]; then
   _dep_name="${_dep_branch#remotes/origin/}"
   if [[ -n "$_dep_branch" ]]; then
     BASE_REF="$_dep_ref"; STACKED_BRANCH="$_dep_name"
-  elif command -v gh &>/dev/null && gh auth status &>/dev/null && gh pr list --state merged --limit 200 --json headRefName -q '.[].headRefName' 2>/dev/null | grep -q "issue-${DEP_NUM}-"; then
-    : # merged: dev already has A → fall through to tag block
+  elif command -v gh &>/dev/null && gh auth status &>/dev/null && gh pr list --state merged --limit 200 --json headRefName -q '.[].headRefName' 2>/dev/null | grep -q "${_dep_slug}-"; then
+    : # merged: the integration branch already has the predecessor → fall through to tag block
   else
     echo "BRANCH: $BRANCH_NAME"; echo "BASE:   "; echo "STATUS: blocked"
-    echo "GAP:    predecesor #${DEP_NUM} no encontrado y no mergeado"; exit 0
+    echo "GAP:    predecesor ${_dep_label} no encontrado y no mergeado"; exit 0
   fi
 fi
 
