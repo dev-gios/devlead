@@ -278,9 +278,17 @@ A diferencia de Nivel 2 (read-only), `/sweep-execute` llama `gh pr create`. Tu P
 
 **Envelope habilitado:** `enabled: true` en `.devlead/envelope.yml` del repo.
 
+### Modo LOCAL-PLAN (`--plan <file>`)
+
+Además de los modos ya documentados (issues explícitas y plan-driven), `/sweep-execute` soporta un tercer modo: **LOCAL-PLAN**. Se activa con `/sweep-execute --plan <file>` donde `<file>` es un plan YAML local (`.devlead/plan.local.yml`) previamente aprobado por el usuario.
+
+A diferencia del modo plan-driven (que deriva la cola de GitHub issues vía `envelope.sh plan`), LOCAL-PLAN lee la cola directamente del archivo de plan — sin llamar a `gh issue list`, sin política de envelope. La autorización viene del gate `generate→show→approve`: DevLead genera el plan desde input del usuario, lo muestra completo, y espera aprobación explícita antes de ejecutar.
+
+El contrato normativo completo está en `.claude/GOVERNANCE.md §sweep-local-plan-profile`. Este párrafo es histórico/narrativo.
+
 ### Invariantes aplicadas
 
-Detalle normativo: ver `.claude/GOVERNANCE.md §sweep-scoped-profile / §sweep-plan-driven-profile`.
+Detalle normativo: ver `.claude/GOVERNANCE.md §sweep-scoped-profile / §sweep-plan-driven-profile / §sweep-local-plan-profile`.
 
 Resumen narrativo: `/sweep-execute` aplica A3 (nunca auto-merge), A4 (PARK con razón exacta), y catástrofe de entorno scoped al REPO ACTUAL (no al run completo — diferencia clave vs. `/batch` donde catástrofe = stop global). Ver GOVERNANCE.md §sweep-scoped-profile para el detalle completo.
 

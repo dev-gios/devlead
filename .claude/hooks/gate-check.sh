@@ -63,6 +63,29 @@ _failures=()
 _add_failure() { _failures+=("$1"); }
 
 # ---------------------------------------------------------------------------
+# Resolve the integration branch this work unit is measured against.
+# Echoes the branch name, or nothing when none can be resolved.
+#
+# Gates 2 and 3 scope their work by "what changed". Scoping that to the
+# worktree alone makes both gates dead in the pipeline: Step 8.3 commits the
+# work unit, Step 8.4 runs this gate, so nothing is uncommitted by then. The
+# work unit is the BRANCH, not the dirty worktree.
+# ---------------------------------------------------------------------------
+_resolve_base_branch() {
+  local _cand
+  for _cand in \
+    "$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')" \
+    main master; do
+    [[ -n "$_cand" ]] || continue
+    if git rev-parse --verify --quiet "$_cand" >/dev/null 2>&1; then
+      printf '%s' "$_cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # Gate 1: uncommitted changes (unstaged + staged)
 # ---------------------------------------------------------------------------
 _check_git_clean() {
@@ -118,24 +141,49 @@ _check_tests() {
     return
   fi
 
-  # --- Clean-tree guard: if nothing is staged or modified, the developer   ---
-  # --- made no changes this session — no point gating on pre-existing       ---
-  # --- failures that belong to the baseline, not to this work unit.         ---
+  # --- No-work guard: skip only when this branch introduces NOTHING — not   ---
+  # --- merely when the worktree is clean.                                    ---
+  # ---                                                                       ---
+  # --- A worktree-only check is unusable in the pipeline: Step 8.3 commits   ---
+  # --- the work unit, then Step 8.4 runs this gate, so the tree is ALWAYS    ---
+  # --- clean by then. Combined with Gate 1 (which FAILS on a dirty tree),    ---
+  # --- the two conditions are mutually exclusive and the test gate could     ---
+  # --- never fire. The work unit is the branch, so measure against the       ---
+  # --- integration branch and include committed-but-unmerged changes.        ---
   if git rev-parse --is-inside-work-tree &>/dev/null; then
-    local _dirty_count
-    _dirty_count="$(
-      { git diff --name-only 2>/dev/null; git diff --cached --name-only 2>/dev/null; } \
-        | sort -u | grep -c .
-    )" || _dirty_count=0
-    if [[ "$_dirty_count" -eq 0 ]]; then
-      echo "gate-check: working tree clean — skipping test gate (no changes to validate)" >&2
-      return
+    local _base
+    _base="$(_resolve_base_branch)" || _base=""
+
+    if [[ -z "$_base" ]]; then
+      # Cannot prove what this branch changed → run the suite. Speed never
+      # comes at the cost of silently under-testing (same rule as the
+      # scoped-pytest fallback below).
+      echo "gate-check: no integration branch resolved — running full suite (cannot prove scope)" >&2
+    else
+      local _changed_count
+      _changed_count="$(
+        {
+          git diff --name-only 2>/dev/null
+          git diff --cached --name-only 2>/dev/null
+          git diff --name-only "${_base}...HEAD" 2>/dev/null
+        } | sort -u | grep -c .
+      )" || _changed_count=0
+      if [[ "$_changed_count" -eq 0 ]]; then
+        echo "gate-check: no changes vs ${_base} — skipping test gate (nothing to validate)" >&2
+        return
+      fi
     fi
   fi
 
   # --- Result cache: identical tree state → identical result. Long suites ---
   # --- (this repo: ~4 min) must run at most ONCE per tree state.          ---
-  local _cache_dir="$HOME/.devlead/cache/gate-tests"
+  # ---                                                                    ---
+  # --- Deliberately OUTSIDE ~/.devlead: this repo's smoke suites assert    ---
+  # --- that ~/.devlead is byte-identical before and after they run. Cache  ---
+  # --- and log writes under that tree make the suite fail against itself   ---
+  # --- whenever it is driven by this gate. Gate bookkeeping is harness     ---
+  # --- state, not DevLead operational state, so it belongs in ~/.cache.    ---
+  local _cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/devlead/gate-tests"
   mkdir -p "$_cache_dir"
   # Prune stale entries so the cache never grows unbounded
   find "$_cache_dir" -type f -mtime +7 -delete 2>/dev/null
@@ -270,10 +318,20 @@ _check_shellcheck() {
     return
   fi
 
-  # Get .sh files that changed relative to HEAD (staged + unstaged)
+  # Get .sh files this work unit touches: uncommitted changes PLUS everything
+  # the branch changed vs the integration branch. Scoping to HEAD alone made
+  # this gate inspect nothing once Step 8.3 committed the work (see
+  # _resolve_base_branch).
+  local _base
+  _base="$(_resolve_base_branch)" || _base=""
+
   local _sh_files
   _sh_files="$(
-    { git diff --name-only HEAD 2>/dev/null; git diff --cached --name-only HEAD 2>/dev/null; } \
+    {
+      git diff --name-only HEAD 2>/dev/null
+      git diff --cached --name-only HEAD 2>/dev/null
+      [[ -n "$_base" ]] && git diff --name-only "${_base}...HEAD" 2>/dev/null
+    } \
       | sort -u \
       | grep '\.sh$' \
       | xargs -r printf '%s\n' \

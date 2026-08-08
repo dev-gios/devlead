@@ -1,4 +1,4 @@
-Sos DevLead en modo execute autónomo. El trigger de esta invocación (`/sweep-execute`) ES la autorización permanente — para el repo resuelto (por `#N` explícitos, con sus issues declaradas; o por cwd en plan-driven, con sus issues INCLUDED), o para TODOS los repos enrollados y sus issues INCLUDED si se invoca con `--fleet`. No confirmás por repo ni por issue. Seguí estos pasos en orden exacto.
+Sos DevLead en modo execute autónomo. El trigger de esta invocación (`/sweep-execute`) ES la autorización permanente — para el repo resuelto (por `#N` explícitos, con sus issues declaradas; o por cwd en plan-driven, con sus issues INCLUDED; o para el repo del cwd en local-plan, con las tareas del plan previamente aprobado vía generate→show→approve), o para TODOS los repos enrollados y sus issues INCLUDED si se invoca con `--fleet`. No confirmás por repo ni por issue. Seguí estos pasos en orden exacto.
 
 ---
 
@@ -11,7 +11,7 @@ A1 · Autorización SIEMPRE antes de ejecutar. La FORMA cambia por modo; el requ
 A2 · Estado SIEMPRE re-derivado en vivo (state.sh / branch.sh / envelope.sh plan). Nunca caché.
 A3 · NUNCA auto-merge. El pipeline termina en `gh pr create`. El merge es del usuario.
 A4 · PARK SIEMPRE con razón exacta (verbatim, sin parafrasear). PARK ≠ pass.
-<!-- Perfil de este comando: ver .claude/GOVERNANCE.md §sweep-scoped-profile / §sweep-plan-driven-profile. -->
+<!-- Perfil de este comando: ver .claude/GOVERNANCE.md §sweep-scoped-profile / §sweep-plan-driven-profile / §sweep-local-plan-profile. -->
 
 ---
 
@@ -77,6 +77,29 @@ Antes de leer la lista de repos, determiná el MODO de esta invocación:
   Con MODO SCOPED resuelto, saltá directamente a "### Resolver la cola completa
   (pre-flight)" usando la lista de un solo repo — NO leas `~/.devlead/autonomous-repos`.
 
+- **Si la invocación NO trae tokens `#N` Y contiene `--plan <file>`** → **MODO LOCAL-PLAN**
+  (nuevo). Escaneo posición-agnóstico del flag `--plan` (mismo principio que el escaneo de
+  `--fleet` en la sub-rama PLAN-DRIVEN de esta misma sección). Capturá el path del archivo como arg siguiente al token `--plan`. Si el
+  path es relativo, resolvelo contra el cwd de la sesión.
+
+  Si `--fleet` también está presente junto a `--plan`: `--fleet` queda ignorado, LOCAL-PLAN
+  gana. Agregá una nota al preview:
+  `Nota: --fleet fue ignorado — MODO LOCAL-PLAN (--plan <file>) tiene precedencia.`
+
+  Resolvé el repo objetivo desde el cwd:
+  ```
+  git rev-parse --show-toplevel
+  ```
+  - Éxito → ese path es el ÚNICO repo del run.
+  - Falla → emití este bloque y salí limpio sin reporte:
+    ```
+    STATUS: not-a-git-repo
+    No se pudo resolver el repo actual (git rev-parse --show-toplevel falló).
+    El modo LOCAL-PLAN (--plan <file>) requiere ejecutarse dentro de un repo git.
+    ```
+  Con MODO LOCAL-PLAN resuelto, saltá a "### Resolver la cola completa (pre-flight)"
+  sin leer `~/.devlead/autonomous-repos`.
+
 - **Si la invocación NO trae ningún token `#N`** → **MODO PLAN-DRIVEN**. Determiná
   el sub-flag `SCOPE` según la presencia del token `--fleet` en la invocación
   (escaneo posición-agnóstico, mismo principio que el escaneo de `#N` de
@@ -135,12 +158,12 @@ Salí limpio sin reporte.
 
 Para poder mostrar el preview, hacé un pre-scan liviano de cada repo. Las
 primeras cuatro bullets (cd / envelope check / auth check / envelope show) son
-PREVIEW-ONLY y corren igual en AMBOS modos — scoped y plan-driven — con fines
+PREVIEW-ONLY y corren igual en los tres modos — scoped, plan-driven y local-plan — con fines
 de health-check del repo:
 - `cd` al path — si falla, anotá `cannot-cd` para ese repo.
-- Corré `bash ~/.devlead/scripts/envelope.sh check` — si no está ENROLLED+ENABLED, anotá `skipped`.
+- Corré `bash ~/.devlead/scripts/envelope.sh check` — si no está ENROLLED+ENABLED, anotá `skipped`. **En MODO LOCAL-PLAN este bullet se SALTEA** — no se requiere enrollment ni `envelope.yml`; LOCAL-PLAN opera sobre cualquier repo git sin enrollment.
 - Verificá auth con la lógica de 4 pasos de `sweep.sh:19-57` (leelo con Read tool — NO ejecutes `_ensure_auth` como comando, es una función interna de sweep.sh). Si ningún paso resuelve un token, anotá `auth-unavailable`. **Nota: este chequeo es PREVIEW-ONLY.** El token no se almacena como `_auth_token` acá; la resolución formal y el storage de `_auth_token` ocurren en E1.3 (por repo, durante el outer loop).
-- Corré `bash ~/.devlead/scripts/envelope.sh show` y extraé `MAX_ISSUES:` de la salida — es el único subcomando que emite ese campo (`envelope.sh check` no lo emite). Recolectá este valor en AMBOS modos; solo el preview SCOPED lo renderiza como línea de advertencia (ver "Mostrar preview completo" más abajo) — plan-driven no muestra hoy esa línea. **Este valor es BEST-EFFORT, mismo patrón que el bullet de plan-derivation de abajo: puede diferir del `MAX_ISSUES` re-derivado en E1.4 Paso 1 si el envelope cambia entre E0 y el outer loop. La fuente AUTORITATIVA sigue siendo `envelope.sh show` de E1.4 Paso 1 (Inv 2 — el estado siempre se re-deriva en vivo); este valor de pre-flight existe solo para poder mostrar el preview.**
+- Corré `bash ~/.devlead/scripts/envelope.sh show` y extraé `MAX_ISSUES:` de la salida — es el único subcomando que emite ese campo (`envelope.sh check` no lo emite). Recolectá este valor en los modos scoped y plan-driven; solo el preview SCOPED lo renderiza como línea de advertencia (ver "Mostrar preview completo" más abajo) — plan-driven no muestra hoy esa línea. **En MODO LOCAL-PLAN este bullet se SALTEA** — el presupuesto es M (longitud del plan aprobado), no se requiere `envelope.yml` ni se leen MAX_ISSUES/STOP_AT. **Este valor es BEST-EFFORT, mismo patrón que el bullet de plan-derivation de abajo: puede diferir del `MAX_ISSUES` re-derivado en E1.4 Paso 1 si el envelope cambia entre E0 y el outer loop. La fuente AUTORITATIVA sigue siendo `envelope.sh show` de E1.4 Paso 1 (Inv 2 — el estado siempre se re-deriva en vivo); este valor de pre-flight existe solo para poder mostrar el preview.**
   - De ESA MISMA salida ya capturada de `envelope.sh show` (sin llamada extra), extraé también `EXCLUDE_LABELS:` y `REQUIRE_READINESS:` — `_do_show` los emite en las líneas 434-435 de `envelope.sh` (`EXCLUDE_LABELS:` es la lista de labels join-comma; `REQUIRE_READINESS:` es un booleano). Estos dos valores alimentan las advertencias de política por-issue del preview SCOPED (ver "Mostrar preview completo"); son BEST-EFFORT igual que `MAX_ISSUES` y se recolectan SOLO para el preview (la política autoritativa la aplica `envelope.sh plan` en modo plan-driven, no acá). **Parsing de `EXCLUDE_LABELS:`:** `_emit` (envelope.sh:23-28) envuelve en comillas dobles cualquier valor que contenga `:`. La lista join-comma normalmente NO tiene `:` (p.ej. `EXCLUDE_LABELS: blocked,wip,discuss`, sin comillas), PERO un label puede contener `:` (p.ej. `priority:high` es un label válido de GitHub) — en ese caso el valor entero llega entrecomillado. Strippeá las comillas dobles circundantes ANTES de splitear en coma, usando el mismo patrón de de-quote que `_do_plan` aplica a PRIORITY_LABELS (envelope.sh:485-490: `pl_raw="${pl_raw#\"}"; pl_raw="${pl_raw%\"}"`). Luego splitea en coma y trimmeá cada elemento (mismo `xargs` trim que `_do_plan` en envelope.sh:608/611). `REQUIRE_READINESS:` es un booleano plano (`true`/`false`), sin comillas, sin de-quote. **Este bullet corre SOLO en MODO scoped** — plan-driven no consume estos dos campos acá (su política la resuelve `envelope-auth.sh plan` en E1.4).
 
   **Nota (gap pre-existente de `envelope.sh`, fuera de este cambio):** `_do_plan` en sí mismo NO aplica este de-quote a `exclude_labels` — el de-quote solo se aplica a `priority_labels`, una variable distinta (envelope.sh:485-490); `exclude_labels` se extrae en la línea 480 sin ningún strip de comillas. Cuando `_emit` (envelope.sh:23-28) envuelve el valor ENTERO en comillas porque algún label de la lista contiene `:`, la corrupción resultante en `_do_plan` es POSICIONAL, no por-contenido: recae sobre el PRIMER y el ÚLTIMO elemento del array tras el split por coma (envelope.sh:569), por las comillas sobrantes que quedan pegadas a esos dos elementos — no sobre el label que contiene `:` en sí. Un label con `:` que cae en el MEDIO de la lista puede parsear limpio en `_do_plan`; un label SIN `:` puede corromperse si cae primero o último en la lista. El chequeo per-issue de este archivo SÍ de-quotea correctamente antes de comparar, por lo que puede ser más preciso que el filtro real de `_do_plan` en ese edge case posicional específico; la advertencia scoped y el resultado real de `envelope.sh plan` podrían divergir cuando el label afectado por la posición cae fuera de lo esperado.
@@ -212,6 +235,45 @@ Si la llamada `gh issue view {N}` falla (issue no encontrada, gh no disponible, 
 
 **Nota `--fleet` ignorado (si aplica):** si la invocación también incluía el token `--fleet` junto a los `#N` declarados, agregá esta línea informativa al preview (antes de "Comenzando run..."): `Nota: --fleet fue ignorado — MODO SCOPED (#N explícitos) tiene precedencia (ver "### Detección de modo").` Esto evita que el usuario asuma que `--fleet` tuvo efecto cuando en realidad MODO SCOPED ganó.
 
+**Si MODO = local-plan**, leé y bloqueá el plan file UNA vez en memoria (A2 mitigation,
+REQ-3.4). Para el preview: iterá `.tasks` con `yq` para obtener id/title/type/spec/design
+de cada tarea y calculá K (tasks sin spec resolvable) sobre M (total tasks). Verificá
+auth pre-flight token (E1.3 chain, write-scope notice). Presentá:
+
+```
+## sweep-execute — cola confirmada (modo: plan local)
+
+Modo: plan local (--plan <file>)
+Repo: /abs/ruta/repo-actual
+Plan: <file> (N tareas)
+Cola (en orden declarado):
+  1. [id: {id}] {title} ({type}) → rama: {type}/plan-{id}-{slug}
+     Spec: {path} ✓ | none
+     Design: {path} ✓ | none
+  2. ...
+
+Tareas: N
+⚠️ [K] de [N] tareas sin Spec: → van a correr un ciclo SDD completo (Step 8.3-SDD).
+Auth: [token resuelto | auth-unavailable | ⚠️ read-only token detectado — gh pr create puede fallar]
+Política: PARK Y SIGUE — gate rojo aparca esa tarea, el run continúa
+MERGE: NUNCA — cada tarea termina en gh pr create. El merge es tuyo.
+
+Comenzando run...
+```
+
+Omití la línea ⚠️ de spec si K == 0.
+NO emitir advertencias de política por-issue (no hay envelope policy, no hay issue body).
+NO correr ref-resolver.sh durante el preview para calcular K — el K/M se computa desde el
+campo `spec:` del plan + existencia del archivo. Esto reemplaza el ref-resolver probe de
+los otros modos (señal de costo de "### Resolver la cola completa (pre-flight)").
+Plan bloqueado una vez en E0 — mutations al archivo en disco después de E0 son ignoradas.
+
+**Convención de paths:** los campos `spec:` y `design:` de cada tarea del plan son **relativos al repo root** (misma convención que los specs de issue, ADR-3). Un path absoluto NO es válido — `ref-resolver.sh --task-spec` lo rechaza con `GAP: path debe ser repo-relativo` en vez de mutilar la ruta.
+
+**Herencia del pre-flight scan (LOCAL-PLAN):** si el pre-scan marcó `cannot-cd`,
+`skipped`, o `auth-unavailable` para el repo resuelto, mostrá esa anotación en vez del
+bloque happy-path de arriba — mismo patrón que los otros bloques de preview.
+
 **Si MODO = plan-driven y SCOPE = cwd** (sin `--fleet`), presentá exactamente este bloque antes de arrancar el outer loop:
 
 ```
@@ -263,7 +325,7 @@ Omití la línea `⚠️` si `K == 0`.
 
 **Guía de costo (D7, requisito, no nota informal):** aplica a AMBOS bloques de preview plan-driven de arriba (SCOPE = cwd y SCOPE = fleet) — cuando `K > 0`, `MAX_ISSUES` del repo (o de los repos) involucrado DEBERÍA estar en 1-2 — cada issue sin spec corre un ciclo SDD completo. Si el `MAX_ISSUES` configurado en el envelope de algún repo es mayor y no es intencional, agregá una línea de advertencia extra dentro del bloque de preview correspondiente (antes de "Comenzando run..."): en el bloque SCOPE=cwd, inmediatamente bajo la línea `⚠️ [K] de [m] issues sin Spec`; en el bloque SCOPE=fleet, en el mismo lugar de siempre. Esta línea es **report-only, no bloqueante** — mismo patrón que la línea `⚠️ deps sin verificar` de `batch.md:169` (heredada transitivamente vía B2.c, que este archivo invoca en E2.3): reporte no-bloqueante, sin esperar respuesta, y el outer loop arranca igual sin confirmación.
 
-Después de mostrar el preview (cualquiera de los tres bloques posibles — scoped, plan-driven SCOPE=cwd, o plan-driven SCOPE=fleet), arrancá el outer loop **sin esperar confirmación**.
+Después de mostrar el preview (cualquiera de los cuatro bloques posibles — scoped, local-plan, plan-driven SCOPE=cwd, o plan-driven SCOPE=fleet), arrancá el outer loop **sin esperar confirmación**. En LOCAL-PLAN, el archivo de plan pasado por `--plan` YA es la salida aprobada del gate generate→show→approve (GOVERNANCE.md §generate-show-approve), así que el outer loop arranca sin confirmación adicional.
 
 ---
 
@@ -356,6 +418,29 @@ Capturá stdout. Procesá la salida:
   E1.4 Paso 1) SÍ siguen aplicando sin cambios — scoped no los desactiva.
 - Procedé directo a E1.5 con la cola = lista `#N` declarada.
 
+**Si MODO = local-plan**:
+- La cola de este repo es el in-memory queue bloqueado en E0 (lista de tasks del plan
+  file). NO se invoca `envelope-auth.sh plan`. NINGUNO de los guards de plan aplican
+  (plan-blocked/paused/zero-issues/parse-miss/plan-error): son señales de `envelope.sh plan`,
+  que acá no corre.
+- **Guards específicos de LOCAL-PLAN** (verificados en E0 antes del outer loop):
+  - `plan-file-unreadable`: path de `--plan` no existe o `yq e '.' <file>` falla → STATUS + exit limpio
+  - `plan-file-empty`: YAML válido pero `.tasks` ausente, null, o length 0 → STATUS + exit limpio
+  - `plan-task-missing-title`: algún task en `.tasks[]` tiene `title` vacío/ausente → STATUS + exit limpio con índice del task
+  - `plan-task-missing-id`: algún task en `.tasks[]` tiene `id` vacío/ausente → STATUS + exit limpio con índice del task (id es requerido para clave de tracking, nombre de rama y naming de temp-files)
+  - `plan-task-invalid-id`: algún task en `.tasks[]` tiene `id` que contiene whitespace, `/`, o cualquier carácter unsafe en un git branch ref (p.ej. `..`, `~`, `^`, `:`, `?`, `*`, `[`, `\`, espacio, TAB) → STATUS + exit limpio con índice del task. El chequeo mínimo: `[[ "$task_id" =~ [[:space:]/] ]]` cubre los casos más comunes; para cobertura completa, rechazá también los caracteres que `git check-ref-format` rechaza. Razón: `task.id` se usa verbatim en el nombre de rama como `plan-{task.id}-{slug}` — un id con caracteres inválidos producirá un nombre de rama rechazado por git.
+  Los cinco producen un STATUS de nivel repo + clean exit sin E1/E2/E3. La cola no puede
+  quedar vacía cuando E1.5 ejecuta.
+- **E1.2 NO aplica para LOCAL-PLAN** — no se requiere enrollment ni `envelope.yml`; saltá E1.2 y andá directo a E1.3. E1.3 (auth chain) SÍ aplica porque `gh pr create` necesita token de escritura.
+- **Nota sobre presupuesto (REQ-4.4 superseded por Design Decision 8):** `envelope.sh show`
+  MAX_ISSUES / STOP_AT / SKIP_DEPENDENTS NO se leen bajo LOCAL-PLAN. PRESUPUESTO = M
+  (longitud del plan). STOP_AT = null. SKIP_DEPENDENTS = false. E2.1 y E2.2 son no-ops
+  para este modo: STOP_AT==null → E2.1 short-circuit; SKIP_DEPENDENTS==false → E2.2
+  never fires.
+- **Clave de tracking compuesta** es `(repo-path, task-id)` no `(repo-path, issue-num)`
+  para LOCAL-PLAN (Delta 3 adaptado).
+- Procedé directo a E1.5 con la cola = lista de tasks del plan (en orden declarado).
+
 **Si MODO = plan-driven** (invocación sin tokens `#N`):
 
 Ejecutá con el Bash tool:
@@ -403,6 +488,11 @@ REPO: /abs/path
 **Nota sobre PRESUPUESTO:** B0 de batch.md (donde batch inicializa `presupuesto`) no corre en sweep-execute (Delta 1). El campo `PRESUPUESTO` de este bloque reemplaza esa inicialización. B2.e de batch.md usa ese valor como guard — el outer loop de la COLA se agota primero en la mayoría de los casos, pero si `MAX_ISSUES` es menor que la longitud de INCLUDED, B2.e actúa como freno.
 
 **Regla crítica**: BLOQUEADAS es per-repo. NO se comparte entre repos. Issue `#35` en repo-A y `#35` en repo-B son trackeos completamente independientes. Al iniciar un nuevo repo, BLOQUEADAS arranca vacío.
+
+**(LOCAL-PLAN: PRESUPUESTO = M (longitud del plan), STOP_AT = null, SKIP_DEPENDENTS = false.
+E2.1 y E2.2 son no-ops para este modo: STOP_AT==null → E2.1 short-circuit;
+SKIP_DEPENDENTS==false → E2.2 never fires. La clave de tracking es `(repo-path, task-id)`
+no `(repo-path, issue-num)` para este modo.)**
 
 ---
 
@@ -473,6 +563,50 @@ El B2.e de batch.md tiene dos caminos de salida del inner loop. En `/sweep-execu
 En ambos casos: **E3 corre exactamente una vez, solo después de que TODOS los repos enrollados hayan pasado por el outer loop.** Nunca saltés la cola de repos restantes al encontrar cualquiera de los dos exits de B2.e.
 
 **PR-terminal**: el inner loop termina en B2.d `gh pr create`. NUNCA invocás `git merge` ni `gh pr merge`. Si ves esas palabras en tu cabeza: STOP. El merge es del usuario, siempre. Al leer `arranquemos.md` para el detalle del cuerpo, EXCLUÍ cualquier paso de merge o `gh issue close` que encuentres — no existen en execute.
+
+**Delta 5 — Adaptador de pipeline LOCAL-PLAN (solo activo en MODO LOCAL-PLAN).**
+Para cada tarea del plan, los pasos B2.b Paso 8.1 y Paso 8.2 de `arranquemos.md` se adaptan así (el resto del pipeline B2.b — Paso 8.3, Paso 8.4, Paso 9, B2.d — corre sin cambios):
+
+- **Paso 8.1 — ref-resolver adaptado:**
+  - Si la tarea tiene campo `spec:` (no vacío): NO invocás `ref-resolver.sh {issue_num}`. En su lugar, invocá:
+    ```
+    bash ~/.devlead/scripts/ref-resolver.sh --task-spec {task.spec} {task.id}
+    ```
+    Si la tarea ADEMÁS tiene campo `design:` (no vacío), agregá `--task-design {task.design}` al final:
+    ```
+    bash ~/.devlead/scripts/ref-resolver.sh --task-spec {task.spec} {task.id} --task-design {task.design}
+    ```
+    Capturá la salida e interpretá `SPEC:`, `SOURCE:`, `DESIGN:`, y `GAP:` exactamente igual que en el path normal de Paso 8.1.
+  - Si la tarea NO tiene campo `spec:` (ausente o vacío): no invocás ref-resolver. Procedé directo al camino no-spec (Paso 8.3-SDD con `SDD_MODE=autonomous`), igual que la fila `ref-resolver SPEC: none` de la tabla B2.c.
+
+  *Esta adaptación cita arranquemos.md Step 8.1: sustituye la invocación `ref-resolver.sh {issue_num}` por la forma `--task-spec` para LOCAL-PLAN.*
+
+- **Paso 8.2 — branch.sh con prefijo `plan-{task.id}`:**
+  En lugar de pasar `{task.id}` crudo como primer argumento de `branch.sh`, pasá `plan-{task.id}` (con el prefijo `plan-`). Pasá el campo `type:` de la tarea del plan DIRECTAMENTE como `{type}` (el schema del plan ya usa vocabulario de rama: `feat`/`fix`/`docs`/`chore`/`refactor`/`perf`/`test`). NO apliques el mapeo de labels de GitHub — ese mapeo es para issues, no para el plan. `branch.sh` valida `{type}` contra su set permitido y cae a `feat` si es inválido o ausente. El cuarto argumento (dep_num) siempre va vacío (`""`) — LOCAL-PLAN no apila. La invocación resulta en:
+  ```
+  bash ~/.devlead/scripts/branch.sh plan-{task.id} "{task.title}" {type} "" "{integration_branch}"
+  ```
+  La rama resultante tiene la forma `{type}/plan-{task.id}-{slug}` (consistente con el preview de E0). Esto habilita idempotencia por nombre exacto: como el plan queda bloqueado en E0, el mismo `task.id` + `task.title` recomputan el MISMO nombre de rama `{type}/plan-{task.id}-{slug}`; si esa rama exacta ya existe, `branch.sh` la retoma y emite `STATUS: reused` (se hace checkout y el pipeline continúa desde donde quedó, aprovechando el apply-progress en engram si existe). `branch.sh` NO busca por glob ni detecta PRs abiertos — si ya hubiera un PR abierto para esa rama exacta, Paso 8.5 intentaría abrir otro; esa detección queda fuera del alcance de v1.
+
+  *Esta adaptación cita arranquemos.md Step 8.2: sustituye el primer arg de `branch.sh` de `{issue_num}` a `plan-{task.id}` para LOCAL-PLAN.*
+
+**Para LOCAL-PLAN:** en el PR body (arranquemos.md Paso 8.5), SUSTITUÍ la primera línea
+`Closes #{issue_num}` por:
+```
+Plan task: {id} — {title}
+Source: {plan_file_path}
+```
+donde `{plan_file_path}` es el path real capturado del flag `--plan <file>` en E0 (NO el valor hardcodeado `.devlead/plan.local.yml` — el flag acepta cualquier path).
+Cuando ref-resolver emitió `SOURCE:` para spec y/o `DESIGN:` para design, agregálas:
+```
+Spec: {SOURCE-relative-path}
+Design: {DESIGN-relative-path}
+```
+Usá el campo `SOURCE:` del resolver para la línea `Spec:` y el campo `DESIGN:` del resolver para la línea `Design:` (ref-resolver emite `SOURCE:` solo para spec; `DESIGN:` lleva el path de diseño).
+Omití líneas Spec:/Design: si ausentes. NO emitas ningún `closes #N` (no hay issue número).
+Si la tarea no tenía spec (corrió Step 8.3-SDD), insertá la misma sección de intención que el path no-spec de arranquemos (Step 8.5, header `## Intención (spec generado por DevLead)`).
+`--base {integration_branch}` sin cambios. LOCAL-PLAN no apila (no depends-on), siempre
+root-PR shape.
 
 ### E2.4 — Actualizar tracking per-repo
 
@@ -585,6 +719,35 @@ Run de este repo interrumpido por pérdida de auth mid-pipeline. Issues subsigui
 
 El merge de los PRs es tuyo — DevLead se detiene acá.
 ```
+
+**Si MODO = local-plan**, el reporte tiene UNA sola sección (el repo del cwd resuelto en E0):
+
+```markdown
+# DevLead Execute — YYYY-MM-DD (modo: plan local)
+
+**Repo:** /abs/ruta/repo-actual | **Tareas declaradas:** M | **PRs creados:** P | **Aparcadas:** A | **Escaladas:** E | **No alcanzadas:** X
+
+---
+
+### /abs/ruta/repo-actual
+
+**STATUS: completado**
+
+| Tarea | Resultado |
+|-------|-----------|
+| {id} — {title} | pr-created (URL) |
+| {id} — {title} | parked-gate-check: {razón exacta} |
+
+---
+
+## Resumen
+
+El merge de los PRs es tuyo — DevLead se detiene acá.
+```
+
+El destino del archivo es el MISMO: `~/.devlead/reports/YYYY-MM-DD-execute.md`.
+Las columnas de la tabla por tarea usan `id`/`title` en lugar de `#N` — no hay números de issue en LOCAL-PLAN.
+El vocabulario de resultado (pr-created, parked-*, etc.) es idéntico al de los otros modos.
 
 ### Vocabulario de resultado por issue (positive-shape, un solo valor por issue)
 
