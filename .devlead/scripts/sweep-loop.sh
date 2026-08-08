@@ -10,6 +10,12 @@
 #   sweep-loop.sh --plan <file> [--repo <path>] [--max-iterations N]
 #   sweep-loop.sh [--repo <path>] [--max-iterations N] [-- <extra sweep-execute args>]
 #
+# The cwd-work-tree guard below is decided from the EFFECTIVE invocation, not
+# from which side of `--` a flag landed on: an exact --plan token — whether
+# it is sweep-loop's own --plan or one forwarded after `--` — always makes
+# the run cwd-dependent, and --fleet only skips the guard when it is an exact
+# token AND no --plan appears anywhere.
+#
 # Environment:
 #   DEVLEAD_LOOP_DRYRUN=1   print the exact `claude -p` command per iteration
 #                           and exit 0 without invoking anything
@@ -41,6 +47,7 @@ DRYRUN="${DEVLEAD_LOOP_DRYRUN:-0}"
 PLAN_FILE=""
 REPO_DIR="${DEVLEAD_LOOP_REPO:-}"
 EXTRA_ARGS=""
+EXTRA_ARGS_ARR=()
 
 _usage() {
   echo "usage: sweep-loop.sh --plan <file> [--repo <path>] [--max-iterations N]" >&2
@@ -78,6 +85,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --)
       shift
+      # Keep the array as the source of truth (word boundaries preserved) —
+      # the flattened string below exists ONLY for building the display/prompt
+      # text, never for flag detection (see the cwd guard below).
+      EXTRA_ARGS_ARR=("$@")
       EXTRA_ARGS="$*"
       break
       ;;
@@ -127,18 +138,44 @@ fi
 # BUT this guard only applies when the run is cwd-dependent. `--fleet` mode
 # enumerates ~/.devlead/autonomous-repos and is explicitly NOT cwd-dependent
 # (documented planless `--fleet` usage line above) — requiring a git work
-# tree at the invocation cwd for that form is a false positive. `--plan`
-# takes precedence over `--fleet` in sweep-execute (LOCAL-PLAN wins even if
-# `--fleet` is also passed through), so the plan check comes first: the run
-# is cwd-dependent when --plan is given, OR when the extra args do NOT
-# contain --fleet. If --repo/$DEVLEAD_LOOP_REPO was given explicitly (REPO_DIR
-# set, handled by the cd block above), the operator asked for that directory
-# — validate it regardless of fleet.
+# tree at the invocation cwd for that form is a false positive.
+#
+# The decision MUST be derived from the EFFECTIVE invocation `/sweep-execute`
+# will see, not from how sweep-loop happened to parse its own flags (round-2
+# bypass: `--plan` passed after `--` never sets sweep-loop's own $PLAN_FILE,
+# but sweep-execute.md documents that `--plan` takes precedence over
+# `--fleet` regardless of where either token was passed through). So both
+# --fleet and --plan are looked up as exact tokens across BOTH sweep-loop's
+# own $PLAN_FILE and the extra-args ARRAY (never a flattened/joined string —
+# a quoted value that merely CONTAINS the text "--fleet" must not count,
+# which is why $EXTRA_ARGS_ARR is kept as an array instead of "$*").
+#
+# A run is NOT cwd-dependent ONLY when a real --fleet token is present AND no
+# --plan appears anywhere (sweep-loop's own flag or the extra args). Every
+# other combination is cwd-dependent and gets the guard. If
+# --repo/$DEVLEAD_LOOP_REPO was given explicitly (REPO_DIR set, handled by
+# the cd block above), the operator asked for that directory — validate it
+# regardless of fleet/plan.
+_array_has_token() {
+  # Exact match against array elements only, plus the --name=value form.
+  # No substring matching against a joined string.
+  local _needle="$1"; shift
+  local _tok
+  for _tok in "$@"; do
+    [[ "$_tok" == "$_needle" || "$_tok" == "${_needle}="* ]] && return 0
+  done
+  return 1
+}
+_extra_has_fleet=false
+_extra_has_plan=false
+if [[ ${#EXTRA_ARGS_ARR[@]} -gt 0 ]]; then
+  _array_has_token "--fleet" "${EXTRA_ARGS_ARR[@]}" && _extra_has_fleet=true
+  _array_has_token "--plan" "${EXTRA_ARGS_ARR[@]}" && _extra_has_plan=true
+fi
+
 _cwd_dependent=true
-if [[ -z "$PLAN_FILE" ]]; then
-  case " $EXTRA_ARGS " in
-    *" --fleet "*) _cwd_dependent=false ;;
-  esac
+if [[ -z "$PLAN_FILE" && "$_extra_has_plan" == "false" && "$_extra_has_fleet" == "true" ]]; then
+  _cwd_dependent=false
 fi
 if [[ -n "$REPO_DIR" ]]; then
   _cwd_dependent=true

@@ -34,7 +34,21 @@ _block() { echo "STATUS: blocked"; echo "GAP:    $1"; exit 0; }
 # the caller — this runs on every `envelope.sh show` for a repo declaring
 # merge.mode: integration-branch, and again per merge-eligible work unit in
 # Delta 6, including inside the unattended nightly loop.
-GH_TIMEOUT_SECS="${DEVLEAD_GH_TIMEOUT_SECS:-10}"
+#
+# VALIDATED, never passed to `timeout` raw: GNU `timeout` treats a duration of
+# `0` as "no timeout", so an unvalidated $DEVLEAD_GH_TIMEOUT_SECS=0 — a
+# plausible operator value for "do not wait" — would silently reinstate the
+# unbounded hang this guard exists to close. A non-numeric override would
+# also reach `timeout` and make it error out: fail-safe, but silent (stderr
+# discarded downstream). Only a positive integer (>= 1) is accepted; anything
+# else falls back to the default and prints a one-line warning naming both
+# the offending value and the value actually used.
+_GH_TIMEOUT_DEFAULT=10
+GH_TIMEOUT_SECS="${DEVLEAD_GH_TIMEOUT_SECS:-$_GH_TIMEOUT_DEFAULT}"
+if ! [[ "$GH_TIMEOUT_SECS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "envelope: DEVLEAD_GH_TIMEOUT_SECS='$GH_TIMEOUT_SECS' is not a positive integer — using ${_GH_TIMEOUT_DEFAULT}s instead" >&2
+  GH_TIMEOUT_SECS="$_GH_TIMEOUT_DEFAULT"
+fi
 # _resolve_default_branch — ground truth for "what is the repo's default
 # branch", used by A3 clause 2 (an integration branch must never BE the
 # default branch). Prefers `gh repo view` (live remote query) over the local

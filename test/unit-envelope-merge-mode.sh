@@ -199,6 +199,55 @@ lacks "a hung gh still resolves the correct non-default branch via symref fallba
 contains "a hung gh emits a stderr note naming the timeout" "$out" "timed out after"
 rm -rf "$FAKEBIN_GH_HANG"
 
+# --- Round-3 regression: DEVLEAD_GH_TIMEOUT_SECS=0 must not silently
+# disable the timeout ---------------------------------------------------
+# GNU `timeout 0` means "no timeout" — an unvalidated override of 0 would
+# fully reinstate the unbounded hang the fix above closed. envelope.sh must
+# reject 0, fall back to the default, and warn. Bound the test itself with
+# an external `timeout` so a regression fails the suite instead of hanging.
+FAKEBIN_GH_HANG2="$(mktemp -d /tmp/devlead-envmerge-fakebin-hang2.XXXXXX)"
+cat > "$FAKEBIN_GH_HANG2/gh" <<'EOF'
+#!/usr/bin/env bash
+sleep 300
+EOF
+chmod +x "$FAKEBIN_GH_HANG2/gh"
+
+write_envelope "  integration_branch: feature/nightly" "integration-branch"
+_zero_start=$(date +%s)
+out="$(timeout 30 env PATH="$FAKEBIN_GH_HANG2:$PATH" DEVLEAD_GH_TIMEOUT_SECS=0 \
+  bash "$ENVELOPE_SH" show 2>&1)"
+_zero_rc=$?
+_zero_elapsed=$(( $(date +%s) - _zero_start ))
+check "DEVLEAD_GH_TIMEOUT_SECS=0 does not hang envelope.sh (external timeout never fires)" \
+  "$([[ $_zero_rc -ne 124 ]] && echo ok || echo TIMED_OUT)" "ok"
+check "DEVLEAD_GH_TIMEOUT_SECS=0 returns within a bounded time (well under the 30s outer bound)" \
+  "$([[ $_zero_elapsed -lt 25 ]] && echo ok || echo TOO_SLOW)" "ok"
+contains "DEVLEAD_GH_TIMEOUT_SECS=0 emits a warning naming the offending value" "$out" "DEVLEAD_GH_TIMEOUT_SECS='0'"
+contains "DEVLEAD_GH_TIMEOUT_SECS=0 warning names the fallback value used" "$out" "using 10s instead"
+rm -rf "$FAKEBIN_GH_HANG2"
+
+# --- A non-numeric override falls back to the default too ------------------
+FAKEBIN_GH_HANG3="$(mktemp -d /tmp/devlead-envmerge-fakebin-hang3.XXXXXX)"
+cat > "$FAKEBIN_GH_HANG3/gh" <<'EOF'
+#!/usr/bin/env bash
+sleep 300
+EOF
+chmod +x "$FAKEBIN_GH_HANG3/gh"
+
+write_envelope "  integration_branch: feature/nightly" "integration-branch"
+_nan_start=$(date +%s)
+out="$(timeout 30 env PATH="$FAKEBIN_GH_HANG3:$PATH" DEVLEAD_GH_TIMEOUT_SECS=abc \
+  bash "$ENVELOPE_SH" show 2>&1)"
+_nan_rc=$?
+_nan_elapsed=$(( $(date +%s) - _nan_start ))
+check "a non-numeric override does not hang envelope.sh (external timeout never fires)" \
+  "$([[ $_nan_rc -ne 124 ]] && echo ok || echo TIMED_OUT)" "ok"
+check "a non-numeric override returns within a bounded time" \
+  "$([[ $_nan_elapsed -lt 25 ]] && echo ok || echo TOO_SLOW)" "ok"
+contains "a non-numeric override emits a warning naming the offending value" "$out" "DEVLEAD_GH_TIMEOUT_SECS='abc'"
+contains "a non-numeric override warning names the fallback value used" "$out" "using 10s instead"
+rm -rf "$FAKEBIN_GH_HANG3"
+
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
 cd /tmp || exit 1
