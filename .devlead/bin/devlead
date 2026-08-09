@@ -37,6 +37,11 @@ commands:
   sweep    run the plan-only multi-repo sweep
   doctor   report whether the artifacts published to this machine match
            the repo's reviewed trunk (STATUS: ok|drifted|unknown)
+  config   interactive setup + envelope menu — machine setup (install
+           state, token, enrollment, timers) and this repo's envelope.
+           Refuses to run without an interactive terminal (GOVERNANCE.md
+           §A3) and is reachable ONLY from here — never from an autonomous
+           path.
   help     show this help
 
 All commands forward to ~/.devlead/scripts/ unchanged.
@@ -57,6 +62,10 @@ case "$_cmd" in
   doctor)
     shift
     exec bash "$SCRIPTS_DIR/doctor.sh" "$@"
+    ;;
+  config)
+    shift
+    exec bash "$SCRIPTS_DIR/config.sh" "$@"
     ;;
   # To route a NEW command to a DIFFERENT script later, add its name here:
   #   state)
