@@ -86,6 +86,7 @@ all_publish_targets() {
 .devlead/scripts/run-state.sh
 .devlead/scripts/sweep-loop.sh
 .devlead/scripts/doctor.sh
+.devlead/scripts/config.sh
 .local/bin/devlead
 .devlead/hooks/post-edit.sh
 .devlead/hooks/gate-check.sh
@@ -114,6 +115,7 @@ all_source_paths() {
 .devlead/scripts/run-state.sh
 .devlead/scripts/sweep-loop.sh
 .devlead/scripts/doctor.sh
+.devlead/scripts/config.sh
 .devlead/bin/devlead
 .claude/hooks/post-edit.sh
 .claude/hooks/gate-check.sh
@@ -155,8 +157,8 @@ s1_fresh_publish() {
     if [[ ! -f "$dst" ]]; then all_real=false; note "S1 $dst missing entirely"; fi
     if [[ -f "$dst" ]] && ! cmp -s "$src" "$dst"; then all_match=false; note "S1 $dst content mismatch vs $src"; fi
   done
-  $all_real  && pass "S1 REQ-01: all 18 targets are real files (test -L false)" || fail "S1 REQ-01: at least one target is a symlink or missing"
-  $all_match && pass "S1 REQ-01: all 18 targets content-match source" || fail "S1 REQ-01: content mismatch on at least one target"
+  $all_real  && pass "S1 REQ-01: all ${#rel_list[@]} targets are real files (test -L false)" || fail "S1 REQ-01: at least one target is a symlink or missing"
+  $all_match && pass "S1 REQ-01: all ${#rel_list[@]} targets content-match source" || fail "S1 REQ-01: content mismatch on at least one target"
 
   local vf="$home/.devlead/VERSION"
   if [[ -f "$vf" ]] && grep -q "^SHA: $expect_sha$" "$vf" && grep -qE '^STAMPED: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' "$vf"; then
