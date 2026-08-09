@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # envelope.sh — DevLead persisted per-repo envelope: parser + enrollment + dry-run planner.
-# Subcommands: check | init | show | plan | upgrade. KEY:value stdout. Always exits 0 on operational outcomes.
+# Subcommands: check | init | show | plan | upgrade | schema. KEY:value stdout. Always exits 0 on operational outcomes.
 # Envelope file: <git-root>/.devlead/envelope.yml (committed, auditable). READ-ONLY except `init` scaffold.
 set -uo pipefail
 
@@ -989,6 +989,163 @@ _do_plan() {
 }
 
 # ---------------------------------------------------------------------------
+# schema — machine-readable descriptor of every envelope field. Describes the
+# SCHEMA, not an instance: does NOT read or require $ENV_FILE to exist.
+#
+# This exists so a future interactive config menu (and anything else that
+# needs to render/explain the envelope's fields) has ONE source to render
+# from. This repo already carries three independently hand-maintained
+# publish lists (bootstrap_symlinks, bootstrap_systemd,
+# smoke-pinned-release.sh) that drifted from each other — see
+# test/unit-publish-manifest.sh. A menu with its own hardcoded field list
+# would be a fourth. test/unit-envelope-schema.sh cross-checks this
+# descriptor against _TOP_REQUIRED/_TOP_OPTIONAL, every _assert_keys call,
+# and every field this file's `show` subcommand actually reads/emits, in
+# BOTH directions, so the two can never drift silently.
+#
+# Record format (stable — parse this, do not rely on prose above it):
+# one block per field, blocks separated by exactly one blank line. Each
+# block is a fixed, ordered set of `KEY: value` lines (via _emit, so
+# quoting stays consistent with `show`'s output):
+#
+#   FIELD:       dotted path (e.g. budget.max_issues). A list-of-objects
+#                child uses an empty-index segment (e.g. discover.modules[].path).
+#   TYPE:        bool | int | string | list | list-of-objects | map
+#   DEFAULT:     the value `init` scaffolds, the resolved fallback when the
+#                field may be absent, or "none" when there is neither.
+#   REQUIRED:    true | false | conditional (<the exact condition>)
+#   HELP:        one-line description of what the field controls.
+#   CONSEQUENCE: OPTIONAL — only present where getting this field wrong has
+#                a real, enforced effect (see the validation code cited in
+#                each one). Its absence means no such effect is enforced.
+#
+# A consumer scans for `^FIELD: ` to find block starts and reads whatever
+# `KEY: ` lines follow, up to the next blank line.
+# ---------------------------------------------------------------------------
+_schema_field() {
+  # $1=path $2=type $3=default $4=required $5=help $6=consequence(optional)
+  _emit "FIELD:"       "$1"
+  _emit "TYPE:"        "$2"
+  _emit "DEFAULT:"     "$3"
+  _emit "REQUIRED:"    "$4"
+  _emit "HELP:"        "$5"
+  [[ -n "${6:-}" ]] && _emit "CONSEQUENCE:" "$6"
+  echo ""
+}
+
+_do_schema() {
+  echo "STATUS: ok"
+  echo ""
+
+  _schema_field "version" "int" "1" "true" \
+    "Envelope schema version; v1 is the only version implemented — show blocks on anything else."
+
+  _schema_field "enabled" "bool" "false" "true" \
+    "Master run switch for this repo's pipeline." \
+    "The kill switch. When false, 'plan' exits immediately with STATUS: paused and produces no queue — no issue is touched, regardless of every other field in this envelope."
+
+  _schema_field "select" "map" "none (required map, no default)" "true" \
+    "Which issues are eligible for this run: bucket, label exclusions, and the readiness gate."
+
+  _schema_field "select.bucket" "string" "nuevo-entrante" "true" \
+    "Which triage bucket the queue is built from; locked to 'nuevo-entrante' in v1."
+
+  _schema_field "select.exclude_labels" "list" "[blocked, wip, discuss]" "true" \
+    "Labels that remove an otherwise-eligible issue from the queue."
+
+  _schema_field "select.require_readiness" "bool" "true" "true" \
+    "When true, an issue with an empty body is excluded from the queue as not-ready."
+
+  _schema_field "order" "map" "none (required map, no default)" "true" \
+    "How the eligible queue is ordered before the budget cut is applied."
+
+  _schema_field "order.by" "list" "[priority-label, created-asc] (the only legal value in v1)" "true" \
+    "Ordering keys, in priority; locked to [priority-label, created-asc] in v1."
+
+  _schema_field "order.priority_labels" "list" \
+    "none — absent means the built-in cascade (p0 > priority:high/priority:urgent tied > bug > none), FIFO by created-asc within a tier" \
+    "false" \
+    "Optional positional priority list — list position is the tier (0 = highest); overrides the built-in cascade when present."
+
+  _schema_field "budget" "map" "none (required map, no default)" "true" \
+    "How much work and how much time this run may spend."
+
+  _schema_field "budget.max_issues" "int" "3" "true" \
+    "Maximum number of issues taken from the ordered queue in one run." \
+    "One of only two things that actually stop a run. 'plan' sorts the eligible queue by tier then created-at and cuts it at this position — everything past the cut is excluded with reason 'budget-cut (beyond max_issues=N)'."
+
+  _schema_field "budget.stop_at" "string (nullable HH:MM)" "null (no cutoff time)" "true" \
+    "Optional wall-clock cutoff; null means no time limit." \
+    "The other thing that actually stops a run. When non-null, sweep-execute checks it before starting each issue (E2.1): once now >= stop_at, the current issue and every remaining pending issue in this repo are marked no_alcanzada ('stop_at HH:MM alcanzado') and the run ends here without starting them."
+
+  _schema_field "base" "map" "none (required map, no default)" "true" \
+    "Which git ref new work-unit branches are cut from, and (optionally) the integration branch."
+
+  _schema_field "base.strategy" "string" "nearest-tag" "true" \
+    "Branch strategy for new work: 'nearest-tag' or 'dev'."
+
+  _schema_field "base.integration_branch" "string" \
+    "dev (envelope.sh show falls back to 'dev' when this key is absent)" \
+    "conditional (optional in general; required when merge.mode is integration-branch)" \
+    "Branch DevLead may merge work-unit PRs into when merge.mode is integration-branch." \
+    "Must never be the repo's default branch. When merge.mode is integration-branch, envelope.sh resolves the TRUE current default branch from the remote (gh repo view, falling back to the local symref) and blocks 'show' if this matches it — otherwise merge-to-trunk becomes reachable under a name that reads as safe (GOVERNANCE.md §A3, clause 2)."
+
+  _schema_field "forbidden_zones" "string" "inherit (the only legal value in v1)" "true" \
+    "Forbidden-zone policy source; locked to 'inherit' in v1 — comes from the global config, not a per-repo override."
+
+  _schema_field "on_failure" "map" "none (required map, no default)" "true" \
+    "What happens to the queue when a work unit's gate goes red."
+
+  _schema_field "on_failure.policy" "string" "park-and-continue (the only legal value in v1)" "true" \
+    "Failure handling policy; locked to 'park-and-continue' in v1."
+
+  _schema_field "on_failure.skip_dependents" "bool" "true" "true" \
+    "When true, work units that depend on a parked unit are skipped rather than attempted out of order."
+
+  _schema_field "merge" "map" "none (required map, no default)" "true" \
+    "How far DevLead may merge on its own. See GOVERNANCE.md §A3."
+
+  _schema_field "merge.mode" "string" "never" "true" \
+    "Merge authority granted to DevLead for this repo." \
+    "never (default) ends the pipeline at PR creation — DevLead invokes neither git merge nor gh pr merge. integration-branch lets DevLead merge green work-unit PRs into base.integration_branch, and ONLY there, then opens one long-lived PR from that branch to the default branch. default-branch is RESERVED and REJECTED outright — enabling it is its own governance decision, not an envelope edit (GOVERNANCE.md §A3)."
+
+  _schema_field "report" "map" "none (required map, no default)" "true" \
+    "Where run results are written."
+
+  _schema_field "report.to" "string" "journal-per-repo (the only legal value in v1)" "true" \
+    "Report destination; locked to 'journal-per-repo' in v1."
+
+  _schema_field "discover" "map" \
+    "absent — discovery stays disabled; pre-existing envelopes stay valid unchanged" "false" \
+    "Optional issue-discovery stage: explores declared modules against specs and files issues for gaps found. It never executes from what it files — the issue is the artifact that crosses into the already-governed pipeline."
+
+  _schema_field "discover.enabled" "bool" "none — must be set explicitly whenever the discover: block is present" \
+    "conditional (required once the discover: block is present)" \
+    "Turns the discovery stage on or off for this repo."
+
+  _schema_field "discover.label" "string" "none" \
+    "conditional (required when discover.enabled is true)" \
+    "Label discovery stamps on every issue it files." \
+    "Must appear in select.exclude_labels. Otherwise plan-driven mode picks up and executes discovery's own filed issues on its very next run, unreviewed, which collapses the two-night review cycle — envelope.sh blocks 'show' outright when it is missing."
+
+  _schema_field "discover.modules" "list-of-objects" "none" \
+    "conditional (required, non-empty, when discover.enabled is true)" \
+    "Modules discovery explores, each paired with the spec it is checked against."
+
+  _schema_field "discover.modules[].path" "string" "none" \
+    "conditional (required on every entry when discover.enabled is true)" \
+    "Repo-relative path (ADR-3 convention) to the module being explored." \
+    "Must be repo-relative, not absolute — same ADR-3 convention ref-resolver.sh enforces for task specs. An absolute path silently escapes the repo boundary; envelope.sh blocks 'show' outright when it sees one."
+
+  _schema_field "discover.modules[].spec" "string" "none" \
+    "conditional (required on every entry when discover.enabled is true)" \
+    "Repo-relative path to the spec file this module is checked against." \
+    "Must be repo-relative, not absolute — same ADR-3 convention ref-resolver.sh enforces for task specs. An absolute path silently escapes the repo boundary; envelope.sh blocks 'show' outright when it sees one."
+
+  exit 0
+}
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 _cmd="${1:-check}"
@@ -1019,7 +1176,8 @@ case "$_cmd" in
     exit 0
     ;;
   upgrade) _do_upgrade "${2:-}"; exit 0 ;;
-  show)  _do_show ;;
-  plan)  _do_plan ;;
-  *) echo "uso: envelope.sh {check|init|show|plan|upgrade}" >&2; exit 2 ;;
+  show)   _do_show ;;
+  plan)   _do_plan ;;
+  schema) _do_schema ;;
+  *) echo "uso: envelope.sh {check|init|show|plan|upgrade|schema}" >&2; exit 2 ;;
 esac
