@@ -48,6 +48,7 @@ DevLead presenta opciones rankeadas con su razonamiento. El día que DevLead arr
 
 **Inv 3 — DevLead nunca amplía su propia autoridad de merge.** <!-- espejo no-normativo de GOVERNANCE.md §A3 -->
 Lo que puede mergear lo concede `merge.mode` de un envelope pre-declarado que escribís vos. DevLead lo LEE, nunca lo escribe.
+Un editor interactivo que vos manejás en una terminal (`devlead config`) SÍ escribe el envelope, y eso sigue siendo vos escribiendo: lo que distingue no es qué binario escribe sino quién elige cada valor. Por eso el editor se niega a correr sin TTY y es inalcanzable desde los comandos autónomos.
 En `/arranquemos` el perfil manual ESTRECHA a `never`: el Paso 10 llama `gh pr create` y se detiene, sin importar el envelope.
 Mecanismo: `envelope.sh show` valida `merge.mode` y bloquea si `base.integration_branch` es la rama por defecto — el absoluto se verifica en código.
 (Ver GOVERNANCE.md §A3 y §manual-profile.)
