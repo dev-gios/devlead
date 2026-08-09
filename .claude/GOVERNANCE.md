@@ -50,6 +50,23 @@ No es "el usuario tipea el comando de merge". Es: **ningún código entra a la r
 
 Apilar ramas (`depends-on`, PRs encadenados) NO es mergear y nunca requirió esta autoridad.
 
+#### Quién escribe el envelope — la escritura interactiva la dirige un humano
+
+"DevLead lo LEE, nunca lo escribe" distingue **quién dirige la escritura**, no qué binario la ejecuta.
+
+Un editor de configuración interactivo, donde cada escritura la elige un humano sentado en la terminal, ES el usuario configurando su propia máquina — con asistencia. Proponer un valor por defecto es asistencia; escribirlo sin que el humano lo haya elegido, no. Lo prohibido no se mueve: DevLead derivando y aplicando configuración por su cuenta se estaría auto-concediendo autoridad, y sigue prohibido sin excepción por modo, flag, ni instrucción inline.
+
+**La condición es un requisito, no una recomendación.** Un editor de configuración que escriba el envelope DEBE:
+
+1. **Negarse a correr sin TTY.** Sin humano del otro lado no hay quién dirija la escritura, y un editor que igual escribe dejó de ser asistencia: es DevLead escribiendo.
+2. **Ser inalcanzable desde `sweep-execute`, `sweep-loop` y `sweep-discover`.** Los tres, nombrados. Ninguno puede invocarlo, ni directa ni indirectamente, ni a través de un wrapper.
+
+Si alguna vía autónoma puede invocarlo alguna vez, A3 está **roto** — no flexibilizado, no matizado: roto. La condición no admite grados. O el editor es inalcanzable desde todo camino autónomo, o el absoluto se cayó.
+
+**El precedente ya existe en este código; el mecanismo no es nuevo.** `_do_optin` en `.devlead/scripts/envelope.sh` gatea su única pregunta con `[[ ! -t 0 ]] → return 0`: sin TTY no pregunta, no escribe `~/.devlead/autonomous-repos` y no toca el timer. Y `envelope.sh init` (`_do_init`) ya escribe el scaffold del envelope — lo crea solo si no existe, nunca lo sobrescribe, y lo deja en `merge.mode: never`. Los caminos autónomos llaman `check` y `plan`, ambos de solo lectura. Esta cláusula nombra lo que el código ya hacía.
+
+**Chequeo narrow-not-widen:** antes, un humano escribía YAML a mano en un editor de texto. Después, un humano contesta prompts y se escriben las elecciones de ese mismo humano. El conjunto de configuraciones alcanzables no crece — no hay valor que el editor pueda escribir que el humano no pudiera haber tipeado, y `default-branch` lo sigue rechazando `_do_show` igual que antes. Lo único que cambia es cuánto tiene que saber el humano para llegar a ellas. DevLead no gana nada: su autoridad de merge la sigue concediendo el envelope, y el envelope lo siguen decidiendo humanos.
+
 ### §A4 — PARK siempre con razón exacta
 
 **A4 · PARK siempre con razón exacta. Cuando una issue es aparcada, la razón EXACTA del gate se registra verbatim, sin parafrasear. PARK ≠ pass.**
