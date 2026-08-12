@@ -911,6 +911,10 @@ _envelope_menu() {
       [[ "$t" == "map" ]] && continue
       [[ "$f" == *"[]."* ]] && continue
       cur="$(_current_value "$f" "$t" "${SCHEMA_DEFAULT[$i]}")"
+      # A hand-edited envelope.yml can carry an embedded newline in a scalar
+      # value; left unsanitized it would split this label across two gum
+      # choose lines and break the label<->index exact-match pairing below.
+      cur="${cur//$'\n'/ }"
       args+=("$(printf '%-32s %s' "$f" "$cur")" "$i")
       rendered+=("$i")
     done

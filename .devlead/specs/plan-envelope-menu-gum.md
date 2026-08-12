@@ -51,6 +51,11 @@ These MUST hold regardless of implementation approach; any scenario violating on
 - WHEN `_envelope_menu` is opened
 - THEN the field picker is rendered via `gum choose` through `_menu`, with no `printf '%2d)'`-style output anywhere in the dispatch path
 
+#### Scenario: blank Enter or q/Q at the field picker backs out
+- GIVEN the envelope field picker is open (gum or no-gum)
+- WHEN the user submits a blank Enter, or types `q`/`Q`, instead of picking a field
+- THEN `_menu` returns its "b" sentinel and `_envelope_menu` exits back to the caller (`_main_menu`) immediately, per the same contract `_machine_menu`/`_fleet_menu`/`_main_menu` have followed since PR #23 — no redisplay loop, no hang
+
 ### REQ-2: Per-type field editors match plan, fallback identical to today
 `_edit_field` MUST present `bool` as a two-option `gum choose` (`true`/`false` literal labels, per C1), and `int` / `string` / `"string (nullable HH:MM)"` via `_input` prefilled with the field's current value. `list`, `list-of-objects`, and `map` MUST be unchanged (C6). Under `DEVLEAD_NO_GUM=1`, every type MUST fall back to behavior identical to today's `read -r -p` flow.
 
