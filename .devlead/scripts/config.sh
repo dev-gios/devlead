@@ -154,6 +154,25 @@ _confirm() {
   esac
 }
 
+# _input <prompt> <current> — mirrors _menu's has-gum/fallback shape for
+# free-text entry, so envelope field editors get the same presentation
+# contract as every other widget in this file (D1). Prints the resolved
+# value on stdout and nothing else (C3); returns non-zero on cancel/decline
+# so callers use the same `v="$(_input ...)" || v=""` shape _menu's callers
+# already use.
+_input() {
+  local _prompt="$1" _cur="$2"
+  if _has_gum; then
+    local _v
+    _v="$(gum input --header "${_prompt%: }" --value "$_cur" 2>/dev/null)" || return 1
+    printf '%s' "$_v"
+    return 0
+  fi
+  local _v
+  read -r -p "$_prompt" _v || return 1
+  printf '%s' "$_v"
+}
+
 _json_escape_str() {
   local s="$1"
   s="${s//\\/\\\\}"
@@ -827,9 +846,9 @@ _edit_field() {
 _envelope_menu() {
   while true; do
     if [[ ! -f "$ENV_FILE" ]]; then
-      echo ""
-      echo "--- Envelope ---"
-      echo "no envelope.yml for this repo yet."
+      echo "" >&2
+      echo "--- Envelope ---" >&2
+      echo "no envelope.yml for this repo yet." >&2
       if _confirm "Create one now (the existing scaffold command)?"; then
         bash "$ENVELOPE_BIN" init
       fi
@@ -847,47 +866,54 @@ _envelope_menu() {
       return 1
     fi
 
-    echo ""
-    echo "--- Envelope ($ENV_FILE) ---"
-    local -a idx_field=()
-    local i n=0 f t cur
+    # Build the picker over the same eligible-field filter as before (skip
+    # groups and list-of-objects children); labels carry the field name +
+    # current value, values carry the SCHEMA_FIELD index — never the field
+    # name itself, so the field name is never a literal in this file (C1).
+    local -a args=() rendered=()
+    local i f t cur
     for i in "${!SCHEMA_FIELD[@]}"; do
       f="${SCHEMA_FIELD[$i]}"
       t="${SCHEMA_TYPE[$i]}"
       [[ "$t" == "map" ]] && continue
       [[ "$f" == *"[]."* ]] && continue
-      n=$((n + 1))
-      idx_field[$n]="$i"
       cur="$(_current_value "$f" "$t" "${SCHEMA_DEFAULT[$i]}")"
-      printf '%2d) %-32s %s\n' "$n" "$f" "$cur"
+      args+=("$(printf '%-32s %s' "$f" "$cur")" "$i")
+      rendered+=("$i")
     done
-    echo " b) Back"
-    echo "(pick a number, or type a field's exact name)"
 
-    local choice matched_si=""
-    read -r -p "> " choice || choice="b"
-    case "$choice" in
-      b|B) return 0 ;;
-      "") continue ;;
-    esac
+    local hdr="Envelope ($ENV_FILE)"
+    _has_gum || hdr="$hdr — pick a number, or type a field's exact name"
 
-    if [[ "$choice" =~ ^[0-9]+$ && -n "${idx_field[$choice]:-}" ]]; then
-      matched_si="${idx_field[$choice]}"
-    else
+    local choice
+    choice="$(_menu "$hdr" "${args[@]}")"
+
+    if [[ "$choice" == "b" ]]; then
+      return 0
+    fi
+
+    # Dotted-name entry (typed instead of a number) only ever reaches this
+    # function through _menu's fallback-only __invalid__<raw> return — the
+    # gum branch never produces it (C4).
+    local matched_si=""
+    if [[ "$choice" == __invalid__* ]]; then
+      local typed="${choice#__invalid__}"
       local k
-      for k in "${idx_field[@]}"; do
-        if [[ "${SCHEMA_FIELD[$k]}" == "$choice" ]]; then
+      for k in "${rendered[@]}"; do
+        if [[ "${SCHEMA_FIELD[$k]}" == "$typed" ]]; then
           matched_si="$k"
           break
         fi
       done
+    else
+      matched_si="$choice"
     fi
 
     if [[ -n "$matched_si" ]]; then
       _edit_field "${SCHEMA_FIELD[$matched_si]}" "${SCHEMA_TYPE[$matched_si]}" "${SCHEMA_REQUIRED[$matched_si]}" \
         "${SCHEMA_HELP[$matched_si]}" "${SCHEMA_CONSEQUENCE[$matched_si]}"
     else
-      echo "config: unknown option '$choice'"
+      echo "config: unknown option '${choice#__invalid__}'" >&2
     fi
   done
 }

@@ -461,6 +461,68 @@ STUB
   fi
 }
 
+# ===========================================================================
+# T10 — envelope dispatch renders through _menu (plain pty,
+# DEVLEAD_NO_GUM=1): "3" picks "Envelope (this repo)" from the main menu,
+# "b" backs out of the field list without touching any field, "q" quits. The
+# field list itself must come from _menu's own fallback renderer, not a
+# hand-rolled printf loop — proven by the "===" header shape and the absence
+# of the OLD "--- Envelope (" banner.
+# ===========================================================================
+t10_envelope_dispatch_via_menu() {
+  read -r dir home < <(_new_sandbox t10)
+  local out
+  out="$(_drive "$dir" "$home" "3" "b" "q")"
+
+  contains "T10: field list renders via _menu's fallback header shape" \
+    "$out" "=== Envelope ("
+  contains "T10: field list carries the 'b) Back' entry" "$out" "b) Back"
+  contains "T10: the no-gum hint line is present" \
+    "$out" "pick a number, or type a field's exact name"
+  not_contains "T10: the old hand-rolled banner is gone" "$out" "--- Envelope ("
+}
+
+# ===========================================================================
+# T10b — _input/_edit_field/_envelope_menu stay §A3-private: neither sweep
+# script (the only two files that could smuggle the envelope screen into an
+# autonomous path) references them at all.
+# ===========================================================================
+t10b_envelope_helpers_stay_private() {
+  local -a helpers=(_input _edit_field _envelope_menu)
+  local -a sweep_scripts=(
+    "$REPO_ROOT/.devlead/scripts/sweep.sh"
+    "$REPO_ROOT/.devlead/scripts/sweep-loop.sh"
+  )
+  local h s found=""
+  for h in "${helpers[@]}"; do
+    for s in "${sweep_scripts[@]}"; do
+      [[ -f "$s" ]] || continue
+      grep -qF "$h" "$s" && found+="$h in $(basename "$s") "
+    done
+  done
+  if [[ -z "$found" ]]; then
+    pass "T10b: none of _input/_edit_field/_envelope_menu are referenced by sweep.sh or sweep-loop.sh"
+  else
+    fail "T10b: found envelope-menu helper reference(s) in sweep scripts: $found"
+  fi
+}
+
+# ===========================================================================
+# T10c — the fallback-only dotted-name path (C4) still resolves through
+# _menu's __invalid__<raw> return, and the unknown-option message names the
+# TYPED text, never the raw __invalid__-prefixed value.
+# ===========================================================================
+t10c_dotted_name_unknown_option() {
+  read -r dir home < <(_new_sandbox t10c)
+  local out
+  out="$(_drive "$dir" "$home" "3" "no.such.field" "b" "q")"
+
+  contains "T10c: unknown dotted name reports the typed text" \
+    "$out" "unknown option 'no.such.field'"
+  not_contains "T10c: the raw __invalid__ prefix never leaks into the message" \
+    "$out" "__invalid__no.such.field"
+}
+
 main() {
   t1_tty_gate
   t2_no_hardcoded_field_list
@@ -471,6 +533,9 @@ main() {
   t7_gum_branch
   t8_fleet_screen_plain
   t9_gum_branch_fleet
+  t10_envelope_dispatch_via_menu
+  t10b_envelope_helpers_stay_private
+  t10c_dotted_name_unknown_option
 
   echo ""
   echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
