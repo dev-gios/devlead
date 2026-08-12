@@ -1,30 +1,41 @@
 #!/usr/bin/env bash
-# unit-devlead-active.sh — regression coverage for .devlead/scripts/devlead-active.sh
+# unit-devlead-session.sh — regression coverage for .devlead/scripts/devlead-session.sh
 #
-#   bash test/unit-devlead-active.sh
+#   bash test/unit-devlead-session.sh
 #
-# Covers .devlead/specs/plan-session-expiry.md REQ-1..REQ-11:
-#   - REQ-1/REQ-2: on writes path<TAB>epoch, refreshes in place, absorbs
-#     legacy bare lines, exactly one entry per path.
-#   - REQ-3/REQ-4: check never mutates the file and evaluates freshness via a
-#     fail-closed ladder (0 <= age < TTL*3600, else INERT).
-#   - REQ-5: on/off rewrite via field-based matching that preserves foreign
-#     lines byte-for-byte; check parses via the two-var read loop.
-#   - REQ-6/REQ-7: configurable + pinned TTL, invalid overrides fall back to
-#     the default and warn on stderr, never disabling the gate.
-#   - REQ-8: check writes nothing to stdout.
-#   - REQ-9: off removes by field match, both entry formats.
-#   - REQ-11: this suite + the gate-check fixture + Makefile wiring.
+# Covers .devlead/specs/plan-session-expiry.md REQ-1..REQ-11 (unaffected by the
+# rename) plus .devlead/specs/plan-registry-rename.md REQ-2/REQ-3 (migration
+# and read-only legacy fallback):
+#   - REQ-1/REQ-2 (session-expiry): on writes path<TAB>epoch, refreshes in
+#     place, absorbs legacy bare lines, exactly one entry per path.
+#   - REQ-3/REQ-4 (session-expiry): check never mutates the file and evaluates
+#     freshness via a fail-closed ladder (0 <= age < TTL*3600, else INERT).
+#   - REQ-5 (session-expiry): on/off rewrite via field-based matching that
+#     preserves foreign lines byte-for-byte; check parses via the two-var
+#     read loop.
+#   - REQ-6/REQ-7 (session-expiry): configurable + pinned TTL, invalid
+#     overrides fall back to the default and warn on stderr, never disabling
+#     the gate.
+#   - REQ-8 (session-expiry): check writes nothing to stdout.
+#   - REQ-9 (session-expiry): off removes by field match, both entry formats.
+#   - REQ-11 (session-expiry): this suite + the gate-check fixture + Makefile
+#     wiring.
+#   - REQ-2 (registry-rename): one-shot migration under the on/off lock —
+#     old-only migrates exactly once (stderr notice, second run silent);
+#     both-exist aborts loudly, never merges, neither file modified.
+#   - REQ-3 (registry-rename): check's read-only legacy fallback — old-only
+#     reads the legacy file without mutating it; both-exist reads only the
+#     new file, silently.
 #
 # SAFETY: every scenario runs under an isolated $HOME inside a throwaway
-# /tmp sandbox — never the real machine's ~/.devlead/active-repos. All
+# /tmp sandbox — never the real machine's ~/.devlead/session-repos. All
 # invocations also pin GIT_CEILING_DIRECTORIES to the sandbox so a sandbox
 # path never accidentally resolves to a real ancestor git repo.
 set -uo pipefail
 
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
-SCRIPT="$REPO_ROOT/.devlead/scripts/devlead-active.sh"
-SANDBOX="$(mktemp -d /tmp/devlead-active.XXXXXX)"
+SCRIPT="$REPO_ROOT/.devlead/scripts/devlead-session.sh"
+SANDBOX="$(mktemp -d /tmp/devlead-session.XXXXXX)"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -65,9 +76,23 @@ entry() { printf '%s\t%s' "$1" "$2"; }
 # entry3 <path> <ts> <extra> — a malformed 3-field line.
 entry3() { printf '%s\t%s\t%s' "$1" "$2" "$3"; }
 
-# write_file <home> [line ...] — (re)creates ~/.devlead/active-repos with the
+# write_file <home> [line ...] — (re)creates ~/.devlead/session-repos with the
 # given lines. Called with no lines, it creates an empty (0-byte) file.
 write_file() {
+  local home="$1"
+  shift
+  mkdir -p "$home/.devlead"
+  if [[ "$#" -eq 0 ]]; then
+    : > "$home/.devlead/session-repos"
+  else
+    printf '%s\n' "$@" > "$home/.devlead/session-repos"
+  fi
+}
+
+# write_legacy_file <home> [line ...] — (re)creates ~/.devlead/active-repos
+# (the pre-rename path) with the given lines, for migration/fallback
+# fixtures. Called with no lines, it creates an empty (0-byte) file.
+write_legacy_file() {
   local home="$1"
   shift
   mkdir -p "$home/.devlead"
@@ -100,9 +125,9 @@ count_for() {
   printf '%s' "$n"
 }
 
-# run_cmd <home> <cwd> <cmd> [ENV=val ...] — runs devlead-active.sh <cmd> with
-# HOME=<home> and cwd=<cwd>, pinning GIT_CEILING_DIRECTORIES to the sandbox.
-# Sets RUN_OUT, RUN_ERR, RUN_RC.
+# run_cmd <home> <cwd> <cmd> [ENV=val ...] — runs devlead-session.sh <cmd>
+# with HOME=<home> and cwd=<cwd>, pinning GIT_CEILING_DIRECTORIES to the
+# sandbox. Sets RUN_OUT, RUN_ERR, RUN_RC.
 run_cmd() {
   local home="$1" cwd="$2" cmd="$3" errfile
   shift 3
@@ -150,10 +175,10 @@ check "ladder: age exactly TTL*3600 -> inert" "$RUN_RC" "1"
 
 g4_home="$(mkhome)"; g4_root="$(mkroot)"
 write_file "$g4_home" "$(entry "$g4_root" "$((NOW - (TTL_SEC + 60)))")"
-g4_before="$(< "$g4_home/.devlead/active-repos")"
+g4_before="$(< "$g4_home/.devlead/session-repos")"
 run_cmd "$g4_home" "$g4_root" check DEVLEAD_SESSION_TTL_HOURS=4
 check "ladder: expired -> inert" "$RUN_RC" "1"
-g4_after="$(< "$g4_home/.devlead/active-repos")"
+g4_after="$(< "$g4_home/.devlead/session-repos")"
 check "ladder: expired line still present verbatim after check" "$g4_after" "$g4_before"
 
 g5_home="$(mkhome)"; g5_root="$(mkroot)"
@@ -243,16 +268,16 @@ check "F2: leading-zero ts rejected without aborting scan of later valid entry" 
 # ===========================================================================
 run_cmd "$g1_home" "$g1_root" check DEVLEAD_SESSION_TTL_HOURS=4
 check "purity: stdout empty on active (exit 0) path" "$RUN_OUT" ""
-p1_before="$(< "$g1_home/.devlead/active-repos")"
+p1_before="$(< "$g1_home/.devlead/session-repos")"
 run_cmd "$g1_home" "$g1_root" check DEVLEAD_SESSION_TTL_HOURS=4
-p1_after="$(< "$g1_home/.devlead/active-repos")"
+p1_after="$(< "$g1_home/.devlead/session-repos")"
 check "purity: file bytes identical before/after on exit 0" "$p1_after" "$p1_before"
 
 run_cmd "$g4_home" "$g4_root" check DEVLEAD_SESSION_TTL_HOURS=4
 check "purity: stdout empty on inert (exit 1) path" "$RUN_OUT" ""
-p2_before="$(< "$g4_home/.devlead/active-repos")"
+p2_before="$(< "$g4_home/.devlead/session-repos")"
 run_cmd "$g4_home" "$g4_root" check DEVLEAD_SESSION_TTL_HOURS=4
-p2_after="$(< "$g4_home/.devlead/active-repos")"
+p2_after="$(< "$g4_home/.devlead/session-repos")"
 check "purity: file bytes identical before/after on exit 1" "$p2_after" "$p2_before"
 
 # ===========================================================================
@@ -312,22 +337,22 @@ check "default pin: age D*3600+120, env unset -> inert" "$RUN_RC" "1"
 # ===========================================================================
 o1_home="$(mkhome)"; o1_root="$(mkroot)"
 run_cmd "$o1_home" "$o1_root" on
-check "on: creates ~/.devlead/active-repos" "$([[ -f "$o1_home/.devlead/active-repos" ]] && echo yes || echo no)" "yes"
-o1_line="$(< "$o1_home/.devlead/active-repos")"
-o1_ts="$(ts_of "$o1_home/.devlead/active-repos" "$o1_root")"
+check "on: creates ~/.devlead/session-repos" "$([[ -f "$o1_home/.devlead/session-repos" ]] && echo yes || echo no)" "yes"
+o1_line="$(< "$o1_home/.devlead/session-repos")"
+o1_ts="$(ts_of "$o1_home/.devlead/session-repos" "$o1_root")"
 check "on: writes exactly one path<TAB>digits line" "$o1_line" "$(entry "$o1_root" "$o1_ts")"
 check "on: ts field is all digits" "$([[ "$o1_ts" =~ ^[0-9]+$ ]] && echo yes || echo no)" "yes"
 
 o2_home="$(mkhome)"; o2_root="$(mkroot)"
 run_cmd "$o2_home" "$o2_root" on
 run_cmd "$o2_home" "$o2_root" on
-o2_n="$(count_for "$o2_home/.devlead/active-repos" "$o2_root")"
+o2_n="$(count_for "$o2_home/.devlead/session-repos" "$o2_root")"
 check "on: running twice still leaves exactly one entry" "$o2_n" "1"
 
 o3_home="$(mkhome)"; o3_root="$(mkroot)"
 write_file "$o3_home" "$(entry "$o3_root" "$((NOW - 999999))")"
 run_cmd "$o3_home" "$o3_root" on
-o3_ts="$(ts_of "$o3_home/.devlead/active-repos" "$o3_root")"
+o3_ts="$(ts_of "$o3_home/.devlead/session-repos" "$o3_root")"
 o3_after="$(date -u +%s)"
 o3_age=$((o3_after - o3_ts))
 check "on: refreshes a stale entry to a fresh timestamp" "$([[ "$o3_age" -ge 0 && "$o3_age" -le 10 ]] && echo yes || echo no)" "yes"
@@ -337,7 +362,7 @@ write_file "$o4_home" "$o4_root"
 run_cmd "$o4_home" "$o4_root" on
 run_cmd "$o4_home" "$o4_root" check
 check "on: absorbs a bare legacy line for our path, subsequent check is active" "$RUN_RC" "0"
-o4_n="$(count_for "$o4_home/.devlead/active-repos" "$o4_root")"
+o4_n="$(count_for "$o4_home/.devlead/session-repos" "$o4_root")"
 check "on: absorbing a legacy line leaves exactly one entry" "$o4_n" "1"
 
 o5_home="$(mkhome)"; o5_root="$(mkroot)"
@@ -345,7 +370,7 @@ o5_foreign_bare="$SANDBOX/foreign-bare-repo"
 o5_foreign_extra="$(entry3 "$SANDBOX/foreign-extra-repo" "$NOW" "extra")"
 write_file "$o5_home" "$o5_foreign_bare" "$o5_foreign_extra"
 run_cmd "$o5_home" "$o5_root" on
-o5_after="$(< "$o5_home/.devlead/active-repos")"
+o5_after="$(< "$o5_home/.devlead/session-repos")"
 contains "on: preserves a foreign bare line verbatim" "$o5_after" "$o5_foreign_bare"
 contains "on: preserves a foreign 3-field line verbatim" "$o5_after" "$o5_foreign_extra"
 
@@ -363,13 +388,13 @@ check "on: no stderr even with a garbage TTL override (validation is check-only)
 f1_home="$(mkhome)"; f1_root="$(mkroot)"
 run_cmd "$f1_home" "$f1_root" on
 run_cmd "$f1_home" "$f1_root" off
-f1_n="$(count_for "$f1_home/.devlead/active-repos" "$f1_root")"
+f1_n="$(count_for "$f1_home/.devlead/session-repos" "$f1_root")"
 check "off: removes its own timestamped entry" "$f1_n" "0"
 
 f2_home="$(mkhome)"; f2_root="$(mkroot)"
 write_file "$f2_home" "$f2_root"
 run_cmd "$f2_home" "$f2_root" off
-f2_n="$(count_for "$f2_home/.devlead/active-repos" "$f2_root")"
+f2_n="$(count_for "$f2_home/.devlead/session-repos" "$f2_root")"
 check "off: removes its own bare legacy line" "$f2_n" "0"
 
 f3_home="$(mkhome)"; f3_root="$(mkroot)"; f3_foreign="$(mkroot)"
@@ -377,7 +402,7 @@ write_file "$f3_home" \
   "$(entry "$f3_root" "$NOW")" \
   "$(entry "$f3_foreign" "$NOW")"
 run_cmd "$f3_home" "$f3_root" off
-f3_after="$(< "$f3_home/.devlead/active-repos")"
+f3_after="$(< "$f3_home/.devlead/session-repos")"
 contains "off: leaves a foreign entry verbatim" "$f3_after" "$(entry "$f3_foreign" "$NOW")"
 
 f4_base="$SANDBOX/prefix-x"
@@ -387,8 +412,8 @@ write_file "$f4_home" \
   "$(entry "$f4_base/repo" "$NOW")" \
   "$(entry "$f4_base/repo2" "$NOW")"
 run_cmd "$f4_home" "$f4_base/repo" off
-f4_n_repo="$(count_for "$f4_home/.devlead/active-repos" "$f4_base/repo")"
-f4_n_repo2="$(count_for "$f4_home/.devlead/active-repos" "$f4_base/repo2")"
+f4_n_repo="$(count_for "$f4_home/.devlead/session-repos" "$f4_base/repo")"
+f4_n_repo2="$(count_for "$f4_home/.devlead/session-repos" "$f4_base/repo2")"
 check "off: exact-match, removes only the exact path (not a path-prefix sibling)" "$f4_n_repo" "0"
 check "off: exact-match, sibling with a similar prefix survives" "$f4_n_repo2" "1"
 
@@ -396,7 +421,7 @@ f5_home="$(mkhome)"; f5_root="$(mkroot)"
 run_cmd "$f5_home" "$f5_root" off
 check "off: no file present -> exit 0" "$RUN_RC" "0"
 contains "off: no file present -> still prints the deactivation message" "$RUN_OUT" "DevLead inactivo en:"
-check "off: no file present -> creates nothing" "$([[ -e "$f5_home/.devlead/active-repos" ]] && echo yes || echo no)" "no"
+check "off: no file present -> creates nothing" "$([[ -e "$f5_home/.devlead/session-repos" ]] && echo yes || echo no)" "no"
 
 f6_home="$(mkhome)"; f6_root="$(mkroot)"
 run_cmd "$f6_home" "$f6_root" on
@@ -408,6 +433,109 @@ f7_home="$(mkhome)"; f7_root="$(mkroot)"
 run_cmd "$f7_home" "$f7_root" on
 run_cmd "$f7_home" "$f7_root" off DEVLEAD_SESSION_TTL_HOURS=garbage
 check "off: no stderr on garbage TTL (validation is check-only)" "$RUN_ERR" ""
+
+# ===========================================================================
+# Migration (registry-rename REQ-2) — one-shot mv under the on/off lock.
+# ===========================================================================
+
+# --- old-only 'on' migrates exactly once ------------------------------------
+mo1_home="$(mkhome)"; mo1_root="$(mkroot)"; mo1_foreign="$(mkroot)"
+write_legacy_file "$mo1_home" "$(entry "$mo1_foreign" "$NOW")"
+mo1_legacy_before="$(< "$mo1_home/.devlead/active-repos")"
+run_cmd "$mo1_home" "$mo1_root" on
+check "migration on: legacy file gone after migration" "$([[ -e "$mo1_home/.devlead/active-repos" ]] && echo yes || echo no)" "no"
+contains "migration on: new file carries the legacy foreign entry verbatim" "$(< "$mo1_home/.devlead/session-repos")" "$mo1_legacy_before"
+contains "migration on: own root entry present after migration" "$(< "$mo1_home/.devlead/session-repos")" "$mo1_root"
+contains "migration on: stderr prints a migration notice" "$RUN_ERR" "migrated"
+contains "migration on: notice names the legacy path" "$RUN_ERR" "active-repos"
+contains "migration on: notice names the new path" "$RUN_ERR" "session-repos"
+
+run_cmd "$mo1_home" "$mo1_root" on
+check "migration on: second run is silent (no repeated notice)" "$RUN_ERR" ""
+
+# --- old-only 'off' migrates exactly once -----------------------------------
+mo2_home="$(mkhome)"; mo2_root="$(mkroot)"; mo2_foreign="$(mkroot)"
+write_legacy_file "$mo2_home" "$(entry "$mo2_foreign" "$NOW")"
+run_cmd "$mo2_home" "$mo2_root" off
+check "migration off: legacy file gone after migration" "$([[ -e "$mo2_home/.devlead/active-repos" ]] && echo yes || echo no)" "no"
+check "migration off: new file exists after migration" "$([[ -f "$mo2_home/.devlead/session-repos" ]] && echo yes || echo no)" "yes"
+contains "migration off: new file carries the legacy foreign entry verbatim" "$(< "$mo2_home/.devlead/session-repos")" "$(entry "$mo2_foreign" "$NOW")"
+contains "migration off: stderr prints a migration notice" "$RUN_ERR" "migrated"
+
+run_cmd "$mo2_home" "$mo2_root" off
+check "migration off: second run is silent (no repeated notice)" "$RUN_ERR" ""
+
+# --- both-exist 'on' aborts loudly, never merges ----------------------------
+mb1_home="$(mkhome)"; mb1_root="$(mkroot)"
+write_legacy_file "$mb1_home" "$(entry "$mb1_root" "$((NOW - 100))")"
+write_file "$mb1_home" "$(entry "$mb1_root" "$NOW")"
+mb1_legacy_before="$(< "$mb1_home/.devlead/active-repos")"
+mb1_new_before="$(< "$mb1_home/.devlead/session-repos")"
+run_cmd "$mb1_home" "$mb1_root" on
+check "migration on both-exist: exits nonzero" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
+contains "migration on both-exist: stderr names the legacy path" "$RUN_ERR" "active-repos"
+contains "migration on both-exist: stderr names the new path" "$RUN_ERR" "session-repos"
+mb1_legacy_after="$(< "$mb1_home/.devlead/active-repos")"
+mb1_new_after="$(< "$mb1_home/.devlead/session-repos")"
+check "migration on both-exist: legacy file byte-identical after abort" "$mb1_legacy_after" "$mb1_legacy_before"
+check "migration on both-exist: new file byte-identical after abort" "$mb1_new_after" "$mb1_new_before"
+
+# --- both-exist 'off' aborts loudly, never merges ---------------------------
+mb2_home="$(mkhome)"; mb2_root="$(mkroot)"
+write_legacy_file "$mb2_home" "$(entry "$mb2_root" "$((NOW - 100))")"
+write_file "$mb2_home" "$(entry "$mb2_root" "$NOW")"
+mb2_legacy_before="$(< "$mb2_home/.devlead/active-repos")"
+mb2_new_before="$(< "$mb2_home/.devlead/session-repos")"
+run_cmd "$mb2_home" "$mb2_root" off
+check "migration off both-exist: exits nonzero" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
+contains "migration off both-exist: stderr names the legacy path" "$RUN_ERR" "active-repos"
+contains "migration off both-exist: stderr names the new path" "$RUN_ERR" "session-repos"
+mb2_legacy_after="$(< "$mb2_home/.devlead/active-repos")"
+mb2_new_after="$(< "$mb2_home/.devlead/session-repos")"
+check "migration off both-exist: legacy file byte-identical after abort" "$mb2_legacy_after" "$mb2_legacy_before"
+check "migration off both-exist: new file byte-identical after abort" "$mb2_new_after" "$mb2_new_before"
+
+# ===========================================================================
+# check's read-only legacy fallback (registry-rename REQ-3)
+# ===========================================================================
+
+# --- old-only check: fresh entry -> active, legacy untouched, new not created
+mc1_home="$(mkhome)"; mc1_root="$(mkroot)"
+write_legacy_file "$mc1_home" "$(entry "$mc1_root" "$NOW")"
+mc1_before="$(< "$mc1_home/.devlead/active-repos")"
+run_cmd "$mc1_home" "$mc1_root" check DEVLEAD_SESSION_TTL_HOURS=4
+check "fallback check: old-only fresh entry -> active" "$RUN_RC" "0"
+check "fallback check: stdout empty" "$RUN_OUT" ""
+mc1_after="$(< "$mc1_home/.devlead/active-repos")"
+check "fallback check: legacy file byte-identical before/after" "$mc1_after" "$mc1_before"
+check "fallback check: new file NOT created by a read-only check" "$([[ -e "$mc1_home/.devlead/session-repos" ]] && echo yes || echo no)" "no"
+
+# --- old-only check: expired entry -> inert (TTL honored through fallback) --
+mc2_home="$(mkhome)"; mc2_root="$(mkroot)"
+write_legacy_file "$mc2_home" "$(entry "$mc2_root" "$((NOW - (TTL_SEC + 60)))")"
+run_cmd "$mc2_home" "$mc2_root" check DEVLEAD_SESSION_TTL_HOURS=4
+check "fallback check: old-only expired entry -> inert" "$RUN_RC" "1"
+check "fallback check: new file NOT created on the inert path either" "$([[ -e "$mc2_home/.devlead/session-repos" ]] && echo yes || echo no)" "no"
+
+# --- both-exist check: prefers new file silently, neither file mutated -----
+mc3_home="$(mkhome)"; mc3_root="$(mkroot)"
+write_legacy_file "$mc3_home" "$(entry "$mc3_root" "$((NOW - (TTL_SEC + 60)))")"
+write_file "$mc3_home" "$(entry "$mc3_root" "$NOW")"
+mc3_legacy_before="$(< "$mc3_home/.devlead/active-repos")"
+mc3_new_before="$(< "$mc3_home/.devlead/session-repos")"
+run_cmd "$mc3_home" "$mc3_root" check DEVLEAD_SESSION_TTL_HOURS=4
+check "fallback check: both-exist reads the new (fresh) file -> active" "$RUN_RC" "0"
+check "fallback check: both-exist stdout empty" "$RUN_OUT" ""
+mc3_legacy_after="$(< "$mc3_home/.devlead/active-repos")"
+mc3_new_after="$(< "$mc3_home/.devlead/session-repos")"
+check "fallback check: both-exist legacy file unchanged" "$mc3_legacy_after" "$mc3_legacy_before"
+check "fallback check: both-exist new file unchanged" "$mc3_new_after" "$mc3_new_before"
+
+mc4_home="$(mkhome)"; mc4_root="$(mkroot)"
+write_legacy_file "$mc4_home" "$(entry "$mc4_root" "$NOW")"
+write_file "$mc4_home" "$(entry "$mc4_root" "$((NOW - (TTL_SEC + 60)))")"
+run_cmd "$mc4_home" "$mc4_root" check DEVLEAD_SESSION_TTL_HOURS=4
+check "fallback check: both-exist reads the new (stale) file even though legacy is fresh -> inert" "$RUN_RC" "1"
 
 # ===========================================================================
 # Concurrency (FIX 1): unlocked read-modify-write loses concurrent writers.
@@ -432,7 +560,7 @@ done
 
 cc_total=0
 for cc_r in "${cc_roots[@]}"; do
-  cc_total=$((cc_total + $(count_for "$cc_home/.devlead/active-repos" "$cc_r")))
+  cc_total=$((cc_total + $(count_for "$cc_home/.devlead/session-repos" "$cc_r")))
 done
 check "concurrency: $CONC_N concurrent 'on' for $CONC_N distinct repos -> exactly $CONC_N entries survive" "$cc_total" "$CONC_N"
 
@@ -447,7 +575,7 @@ done
 
 cc_off_total=0
 for cc_r in "${cc_roots[@]}"; do
-  cc_off_total=$((cc_off_total + $(count_for "$cc_home/.devlead/active-repos" "$cc_r")))
+  cc_off_total=$((cc_off_total + $(count_for "$cc_home/.devlead/session-repos" "$cc_r")))
 done
 check "concurrency: $CONC_N concurrent 'off' for the same $CONC_N repos -> 0 entries remain" "$cc_off_total" "0"
 
@@ -457,28 +585,28 @@ check "concurrency: $CONC_N concurrent 'off' for the same $CONC_N repos -> 0 ent
 # ===========================================================================
 wf1_home="$(mkhome)"; wf1_root="$(mkroot)"
 mkdir -p "$wf1_home/.devlead"
-printf '%s\t%s\n' "$wf1_root" "$((NOW - 999999))" > "$wf1_home/.devlead/active-repos"
-wf1_before="$(< "$wf1_home/.devlead/active-repos")"
+printf '%s\t%s\n' "$wf1_root" "$((NOW - 999999))" > "$wf1_home/.devlead/session-repos"
+wf1_before="$(< "$wf1_home/.devlead/session-repos")"
 chmod 500 "$wf1_home/.devlead"
 run_cmd "$wf1_home" "$wf1_root" on
 chmod 700 "$wf1_home/.devlead"
 check "write-failure: on exits nonzero on read-only .devlead" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
 check "write-failure: on prints no success banner on failure" "$([[ "$RUN_OUT" == *"DevLead activo en:"* ]] && echo yes || echo no)" "no"
 check "write-failure: on prints an error to stderr" "$([[ -n "$RUN_ERR" ]] && echo yes || echo no)" "yes"
-wf1_after="$(< "$wf1_home/.devlead/active-repos")"
+wf1_after="$(< "$wf1_home/.devlead/session-repos")"
 check "write-failure: on leaves registry unchanged" "$wf1_after" "$wf1_before"
 
 wf2_home="$(mkhome)"; wf2_root="$(mkroot)"
 mkdir -p "$wf2_home/.devlead"
-printf '%s\t%s\n' "$wf2_root" "$NOW" > "$wf2_home/.devlead/active-repos"
-wf2_before="$(< "$wf2_home/.devlead/active-repos")"
+printf '%s\t%s\n' "$wf2_root" "$NOW" > "$wf2_home/.devlead/session-repos"
+wf2_before="$(< "$wf2_home/.devlead/session-repos")"
 chmod 500 "$wf2_home/.devlead"
 run_cmd "$wf2_home" "$wf2_root" off
 chmod 700 "$wf2_home/.devlead"
 check "write-failure: off exits nonzero on read-only .devlead" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
 check "write-failure: off prints no success banner on failure" "$([[ "$RUN_OUT" == *"DevLead inactivo en:"* ]] && echo yes || echo no)" "no"
 check "write-failure: off prints an error to stderr" "$([[ -n "$RUN_ERR" ]] && echo yes || echo no)" "yes"
-wf2_after="$(< "$wf2_home/.devlead/active-repos")"
+wf2_after="$(< "$wf2_home/.devlead/session-repos")"
 check "write-failure: off leaves registry unchanged" "$wf2_after" "$wf2_before"
 
 # ===========================================================================
@@ -494,7 +622,7 @@ mkdir -p "$pv1_evil_dir"
 run_cmd "$pv1_home" "$pv1_evil_dir" on
 check "path validation: on rejects a root containing a NEWLINE byte" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
 contains "path validation: on's NEWLINE rejection reports an error on stderr" "$RUN_ERR" "TAB or NEWLINE"
-check "path validation: on writes nothing for a NEWLINE root" "$([[ -e "$pv1_home/.devlead/active-repos" ]] && echo yes || echo no)" "no"
+check "path validation: on writes nothing for a NEWLINE root" "$([[ -e "$pv1_home/.devlead/session-repos" ]] && echo yes || echo no)" "no"
 
 pv2_home="$(mkhome)"
 pv2_tab_dir="$SANDBOX/$(printf 'ev\til')"
@@ -502,28 +630,28 @@ mkdir -p "$pv2_tab_dir"
 run_cmd "$pv2_home" "$pv2_tab_dir" on
 check "path validation: on rejects a root containing a TAB byte" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
 contains "path validation: on's TAB rejection reports an error on stderr" "$RUN_ERR" "TAB or NEWLINE"
-check "path validation: on writes nothing for a TAB root" "$([[ -e "$pv2_home/.devlead/active-repos" ]] && echo yes || echo no)" "no"
+check "path validation: on writes nothing for a TAB root" "$([[ -e "$pv2_home/.devlead/session-repos" ]] && echo yes || echo no)" "no"
 
 pv3_home="$(mkhome)"
 pv3_evil_dir="$SANDBOX/$(printf 'evil3\nvictim3')"
 mkdir -p "$pv3_evil_dir"
 mkdir -p "$pv3_home/.devlead"
-printf 'sentinel\t%s\n' "$NOW" > "$pv3_home/.devlead/active-repos"
-pv3_before="$(< "$pv3_home/.devlead/active-repos")"
+printf 'sentinel\t%s\n' "$NOW" > "$pv3_home/.devlead/session-repos"
+pv3_before="$(< "$pv3_home/.devlead/session-repos")"
 run_cmd "$pv3_home" "$pv3_evil_dir" off
 check "path validation: off rejects a root containing a NEWLINE byte" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
-pv3_after="$(< "$pv3_home/.devlead/active-repos")"
+pv3_after="$(< "$pv3_home/.devlead/session-repos")"
 check "path validation: off's NEWLINE rejection leaves registry unchanged" "$pv3_after" "$pv3_before"
 
 pv4_home="$(mkhome)"
 pv4_tab_dir="$SANDBOX/$(printf 'ev4\til4')"
 mkdir -p "$pv4_tab_dir"
 mkdir -p "$pv4_home/.devlead"
-printf 'sentinel\t%s\n' "$NOW" > "$pv4_home/.devlead/active-repos"
-pv4_before="$(< "$pv4_home/.devlead/active-repos")"
+printf 'sentinel\t%s\n' "$NOW" > "$pv4_home/.devlead/session-repos"
+pv4_before="$(< "$pv4_home/.devlead/session-repos")"
 run_cmd "$pv4_home" "$pv4_tab_dir" off
 check "path validation: off rejects a root containing a TAB byte" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
-pv4_after="$(< "$pv4_home/.devlead/active-repos")"
+pv4_after="$(< "$pv4_home/.devlead/session-repos")"
 check "path validation: off's TAB rejection leaves registry unchanged" "$pv4_after" "$pv4_before"
 
 # ===========================================================================
@@ -537,7 +665,7 @@ c2_home="$(mkhome)"; c2_root="$(mkroot)"
 run_cmd "$c2_home" "$c2_root" bogus
 check "CLI: bogus subcommand -> exit 2" "$RUN_RC" "2"
 check "CLI: bogus subcommand -> stdout empty" "$RUN_OUT" ""
-contains "CLI: bogus subcommand -> usage on stderr" "$RUN_ERR" "uso: devlead-active.sh"
+contains "CLI: bogus subcommand -> usage on stderr" "$RUN_ERR" "uso: devlead-session.sh"
 
 c3_home="$(mkhome)"; c3_root="$(mkroot)"
 write_file "$c3_home" "$(entry "$c3_root" "$((NOW - 999999))")"
@@ -553,7 +681,7 @@ check "CLI: hook-guard invocation form is non-zero when expired" "$c3_rc" "1"
 # ===========================================================================
 w_makefile="$REPO_ROOT/Makefile"
 w_hit="no"
-grep -qF "test/unit-devlead-active.sh" "$w_makefile" && w_hit="yes"
+grep -qF "test/unit-devlead-session.sh" "$w_makefile" && w_hit="yes"
 check "self-wiring: this suite is referenced by the Makefile" "$w_hit" "yes"
 
 echo ""

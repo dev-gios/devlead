@@ -223,7 +223,7 @@ bootstrap_symlinks() {
     "$repo_dir/.devlead/scripts/branch.sh|$devlead_dir/scripts/branch.sh|x"
     "$repo_dir/.devlead/scripts/ref-resolver.sh|$devlead_dir/scripts/ref-resolver.sh|x"
     "$repo_dir/.devlead/scripts/forbidden-check.sh|$devlead_dir/scripts/forbidden-check.sh|x"
-    "$repo_dir/.devlead/scripts/devlead-active.sh|$devlead_dir/scripts/devlead-active.sh|x"
+    "$repo_dir/.devlead/scripts/devlead-session.sh|$devlead_dir/scripts/devlead-session.sh|x"
     "$repo_dir/.devlead/scripts/envelope.sh|$devlead_dir/scripts/envelope.sh|x"
     "$repo_dir/.devlead/scripts/envelope-auth.sh|$devlead_dir/scripts/envelope-auth.sh|x"
     "$repo_dir/.devlead/scripts/sweep.sh|$devlead_dir/scripts/sweep.sh|x"
@@ -249,6 +249,13 @@ bootstrap_symlinks() {
       BOOTSTRAP_SYMLINKS_FAILED+=("$_dst")
     fi
   done
+
+  # Prune the orphaned pre-rename script (devlead-active.sh -> devlead-session.sh).
+  # A single hardcoded path only — never a glob — because an orphaned legacy
+  # executable would still write ~/.devlead/active-repos if invoked, pushing
+  # the machine into the permanent both-exist abort in _migrate_registry.
+  local _legacy="$devlead_dir/scripts/devlead-active.sh"
+  [[ -e "$_legacy" || -L "$_legacy" ]] && { rm -f "$_legacy" && echo "bootstrap: removed legacy $_legacy (renamed to devlead-session.sh)" >&2; }
 
   return 0
 }

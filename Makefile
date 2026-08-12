@@ -16,7 +16,7 @@ test:
 	bash test/unit-envelope-merge-mode.sh
 	bash test/unit-envelope-discover.sh
 	bash test/unit-envelope-schema.sh
-	bash test/unit-devlead-active.sh
+	bash test/unit-devlead-session.sh
 	bash test/unit-gate-check.sh
 	bash test/unit-publish-manifest.sh
 	bash test/unit-discover-command.sh

@@ -15,13 +15,13 @@
 # SAFETY: every scenario runs inside a throwaway /tmp git sandbox (bare local
 # "origin" remotes, never a real network remote). $HOME and $XDG_CACHE_HOME
 # are both overridden to sandbox paths for every gate-check.sh invocation, so
-# the DevLead opt-in marker (~/.devlead/active-repos) and the test-runner
+# the DevLead opt-in marker (~/.devlead/session-repos) and the test-runner
 # result cache never touch the real machine's $HOME or ~/.cache.
 set -uo pipefail
 
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 GATE_SH="$REPO_ROOT/.claude/hooks/gate-check.sh"
-DEVLEAD_ACTIVE_SH="$REPO_ROOT/.devlead/scripts/devlead-active.sh"
+DEVLEAD_SESSION_SH="$REPO_ROOT/.devlead/scripts/devlead-session.sh"
 SANDBOX="$(mktemp -d /tmp/devlead-gate-check.XXXXXX)"
 
 PASS_COUNT=0
@@ -87,10 +87,10 @@ mk_repo() {
 activate_devlead() {
   local repo="$1" home="$2"
   mkdir -p "$home/.devlead/scripts"
-  cp "$DEVLEAD_ACTIVE_SH" "$home/.devlead/scripts/devlead-active.sh"
+  cp "$DEVLEAD_SESSION_SH" "$home/.devlead/scripts/devlead-session.sh"
   local root
   root="$(git -C "$repo" rev-parse --show-toplevel)"
-  printf '%s\t%s\n' "$root" "$(date -u +%s)" > "$home/.devlead/active-repos"
+  printf '%s\t%s\n' "$root" "$(date -u +%s)" > "$home/.devlead/session-repos"
 }
 
 # run_gate <repo-dir> <sandbox-home> <cache-dir> — the one true way to invoke

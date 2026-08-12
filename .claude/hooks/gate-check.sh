@@ -35,7 +35,7 @@ fi
 # DevLead is an opt-in mode, not an always-on daemon (DEVLEAD.md §2, decision 7).
 # Without this guard a global Stop hook would block every session in every repo.
 # ---------------------------------------------------------------------------
-if ! bash "$HOME/.devlead/scripts/devlead-active.sh" check 2>/dev/null; then
+if ! bash "$HOME/.devlead/scripts/devlead-session.sh" check 2>/dev/null; then
   exit 0
 fi
 

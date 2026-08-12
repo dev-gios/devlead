@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# devlead-active.sh — manages the DevLead opt-in marker.
+# devlead-session.sh — manages the DevLead opt-in marker.
 #
 # DevLead is an opt-in mode, NOT an always-on daemon (DEVLEAD.md §2, decision 7).
 # The hooks (post-edit.sh, gate-check.sh) are registered globally but stay INERT
-# unless the current repo is in the active list. /arranquemos turns it on for the
+# unless the current repo is in the session list. /arranquemos turns it on for the
 # day; /cerremos turns it off.
 #
 # Usage:
-#   devlead-active.sh on     → mark the current repo as DevLead-active (dedup)
-#   devlead-active.sh off    → unmark the current repo
-#   devlead-active.sh check  → exit 0 if active here, exit 1 if not
+#   devlead-session.sh on     → mark the current repo as DevLead-active (dedup)
+#   devlead-session.sh off    → unmark the current repo
+#   devlead-session.sh check  → exit 0 if active here, exit 1 if not
 #
-# State lives in ~/.devlead/active-repos, one entry per line in the format
+# State lives in ~/.devlead/session-repos, one entry per line in the format
 # `path<TAB>epoch` (UTC seconds from `date -u +%s`). Entries expire on their
 # own: `check` treats an entry older than the TTL (default 16h, override via
 # DEVLEAD_SESSION_TTL_HOURS) as inert WITHOUT deleting it — `off` stays the
@@ -25,10 +25,18 @@
 # a TAB or NEWLINE byte is rejected outright (nothing written) since either
 # would corrupt the registry format or inject a spoofed entry.
 # It is local machine state — never committed, never a source of truth on the "qué".
+#
+# Pre-rename machines may still have ~/.devlead/active-repos on disk (this
+# script used to be devlead-active.sh). `_migrate_registry` moves that file
+# to the new path exactly once, under the same lock used for on/off writes;
+# `check` falls back to reading it read-only when only the old file exists,
+# so hooks never silently go inert on an unmigrated machine.
 
 set -uo pipefail
 
-ACTIVE_FILE="$HOME/.devlead/active-repos"
+SESSION_FILE="$HOME/.devlead/session-repos"
+LEGACY_SESSION_FILE="$HOME/.devlead/active-repos"  # pre-rename path; referenced
+# only here, in check's read-only fallback, and in bootstrap's prune (REQ-1).
 _TTL_DEFAULT_HOURS=16
 
 # Resolve the repo root (or $PWD if not in a git repo) so the marker is stable
@@ -43,7 +51,7 @@ _repo_root() {
 _resolve_ttl_hours() {
   local _h="${DEVLEAD_SESSION_TTL_HOURS:-$_TTL_DEFAULT_HOURS}"
   if ! [[ "$_h" =~ ^[1-9][0-9]*$ ]]; then
-    echo "devlead-active: DEVLEAD_SESSION_TTL_HOURS='$_h' is not a positive integer — using ${_TTL_DEFAULT_HOURS}h instead" >&2
+    echo "devlead-session: DEVLEAD_SESSION_TTL_HOURS='$_h' is not a positive integer — using ${_TTL_DEFAULT_HOURS}h instead" >&2
     _h="$_TTL_DEFAULT_HOURS"
   fi
   printf '%s' "$_h"
@@ -70,12 +78,12 @@ _drop_root() {
 # read-only and does not need it.
 _validate_root() {
   if [[ "$_root" == *$'\t'* || "$_root" == *$'\n'* ]]; then
-    echo "devlead-active: repo path contains a TAB or NEWLINE byte — refusing to write (would corrupt the registry or inject a spoofed entry)" >&2
+    echo "devlead-session: repo path contains a TAB or NEWLINE byte — refusing to write (would corrupt the registry or inject a spoofed entry)" >&2
     exit 1
   fi
 }
 
-# _acquire_lock — opens fd 9 on "${ACTIVE_FILE}.lock" (a dedicated lockfile,
+# _acquire_lock — opens fd 9 on "${SESSION_FILE}.lock" (a dedicated lockfile,
 # never the registry file itself — the rewrite path replaces the registry's
 # inode via `mv`, so locking that file directly would not serialize anything)
 # and takes an exclusive flock, waiting up to a few seconds. Exits 1 with a
@@ -83,12 +91,27 @@ _validate_root() {
 # — so on/off never proceed with an unlocked read-rewrite-replace. `check`
 # stays read-only and lock-free; it never calls this.
 _acquire_lock() {
-  local _lock="${ACTIVE_FILE}.lock"
-  exec 9>"$_lock" || { echo "devlead-active: cannot open lock file $_lock" >&2; exit 1; }
+  local _lock="${SESSION_FILE}.lock"
+  exec 9>"$_lock" || { echo "devlead-session: cannot open lock file $_lock" >&2; exit 1; }
   if ! flock -w 5 9; then
-    echo "devlead-active: could not acquire lock on $_lock within 5s" >&2
+    echo "devlead-session: could not acquire lock on $_lock within 5s" >&2
     exit 1
   fi
+}
+
+# _migrate_registry — called under the on/off flock, before any write to
+# SESSION_FILE. Handles the three possible pre-rename layouts:
+#   both exist  → refuse to merge or choose; abort loudly, nothing written
+#   old only    → mv old->new exactly once, notify on stderr
+#   else        → no-op (already migrated, or fresh install)
+_migrate_registry() {
+  if [[ -f "$LEGACY_SESSION_FILE" && -f "$SESSION_FILE" ]]; then
+    echo "devlead-session: both $LEGACY_SESSION_FILE and $SESSION_FILE exist — refusing to merge or choose. Keep the entries you want in $SESSION_FILE, delete $LEGACY_SESSION_FILE, then re-run." >&2
+    exit 1
+  fi
+  [[ -f "$LEGACY_SESSION_FILE" ]] || return 0
+  mv "$LEGACY_SESSION_FILE" "$SESSION_FILE" || { echo "devlead-session: failed to migrate $LEGACY_SESSION_FILE -> $SESSION_FILE" >&2; exit 1; }
+  echo "devlead-session: migrated $LEGACY_SESSION_FILE -> $SESSION_FILE (session registry renamed)" >&2
 }
 
 _cmd="${1:-check}"
@@ -97,17 +120,18 @@ _root="$(_repo_root)"
 case "$_cmd" in
   on)
     _validate_root
-    mkdir -p "$(dirname "$ACTIVE_FILE")" || { echo "devlead-active: cannot create $(dirname "$ACTIVE_FILE")" >&2; exit 1; }
-    touch "$ACTIVE_FILE" || { echo "devlead-active: cannot write $ACTIVE_FILE" >&2; exit 1; }
+    mkdir -p "$(dirname "$SESSION_FILE")" || { echo "devlead-session: cannot create $(dirname "$SESSION_FILE")" >&2; exit 1; }
     _acquire_lock
-    _tmp="$(mktemp "${ACTIVE_FILE}.XXXXXX")" || { echo "devlead-active: mktemp failed for $ACTIVE_FILE" >&2; exit 1; }
-    if ! { _drop_root < "$ACTIVE_FILE"; printf '%s\t%s\n' "$_root" "$(date -u +%s)"; } > "$_tmp"; then
-      echo "devlead-active: failed writing $_tmp" >&2
+    _migrate_registry
+    touch "$SESSION_FILE" || { echo "devlead-session: cannot write $SESSION_FILE" >&2; exit 1; }
+    _tmp="$(mktemp "${SESSION_FILE}.XXXXXX")" || { echo "devlead-session: mktemp failed for $SESSION_FILE" >&2; exit 1; }
+    if ! { _drop_root < "$SESSION_FILE"; printf '%s\t%s\n' "$_root" "$(date -u +%s)"; } > "$_tmp"; then
+      echo "devlead-session: failed writing $_tmp" >&2
       rm -f "$_tmp"
       exit 1
     fi
-    if ! mv "$_tmp" "$ACTIVE_FILE"; then
-      echo "devlead-active: failed to replace $ACTIVE_FILE" >&2
+    if ! mv "$_tmp" "$SESSION_FILE"; then
+      echo "devlead-session: failed to replace $SESSION_FILE" >&2
       rm -f "$_tmp"
       exit 1
     fi
@@ -115,24 +139,29 @@ case "$_cmd" in
     ;;
   off)
     _validate_root
-    if [[ -f "$ACTIVE_FILE" ]]; then
+    if [[ -f "$SESSION_FILE" || -f "$LEGACY_SESSION_FILE" ]]; then
       _acquire_lock
-      _tmp="$(mktemp "${ACTIVE_FILE}.XXXXXX")" || { echo "devlead-active: mktemp failed for $ACTIVE_FILE" >&2; exit 1; }
-      if ! _drop_root < "$ACTIVE_FILE" > "$_tmp"; then
-        echo "devlead-active: failed writing $_tmp" >&2
-        rm -f "$_tmp"
-        exit 1
-      fi
-      if ! mv "$_tmp" "$ACTIVE_FILE"; then
-        echo "devlead-active: failed to replace $ACTIVE_FILE" >&2
-        rm -f "$_tmp"
-        exit 1
+      _migrate_registry
+      if [[ -f "$SESSION_FILE" ]]; then
+        _tmp="$(mktemp "${SESSION_FILE}.XXXXXX")" || { echo "devlead-session: mktemp failed for $SESSION_FILE" >&2; exit 1; }
+        if ! _drop_root < "$SESSION_FILE" > "$_tmp"; then
+          echo "devlead-session: failed writing $_tmp" >&2
+          rm -f "$_tmp"
+          exit 1
+        fi
+        if ! mv "$_tmp" "$SESSION_FILE"; then
+          echo "devlead-session: failed to replace $SESSION_FILE" >&2
+          rm -f "$_tmp"
+          exit 1
+        fi
       fi
     fi
     echo "DevLead inactivo en: $_root"
     ;;
   check)
-    [[ -f "$ACTIVE_FILE" ]] || exit 1
+    _read="$SESSION_FILE"
+    [[ -f "$_read" ]] || _read="$LEGACY_SESSION_FILE"
+    [[ -f "$_read" ]] || exit 1
     _max=$(( $(_resolve_ttl_hours) * 3600 ))
     _now="$(date -u +%s)"
     while IFS=$'\t' read -r _p _ts || [[ -n "$_p" ]]; do
@@ -146,11 +175,11 @@ case "$_cmd" in
       (( _age < 0 )) && continue
       (( _age >= _max )) && continue
       exit 0
-    done < "$ACTIVE_FILE"
+    done < "$_read"
     exit 1
     ;;
   *)
-    echo "uso: devlead-active.sh {on|off|check}" >&2
+    echo "uso: devlead-session.sh {on|off|check}" >&2
     exit 2
     ;;
 esac

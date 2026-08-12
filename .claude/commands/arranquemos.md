@@ -88,7 +88,7 @@ Si el output muestra advertencias en `--- WARNINGS ---`, vas a mostrarlas visibl
 Si es un repo git válido, encendé DevLead para este repo (marca opt-in que activa los hooks solo acá) ejecutando con el Bash tool:
 
 ```
-bash ~/.devlead/scripts/devlead-active.sh on
+bash ~/.devlead/scripts/devlead-session.sh on
 ```
 
 Esto respeta el invariante 7: DevLead es opt-in, se enciende con `/arranquemos` y se apaga con `/cerremos`. Fuera de eso, los hooks quedan inertes.

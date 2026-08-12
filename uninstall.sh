@@ -51,7 +51,9 @@ _remove_devlead_link() {
 # ---------------------------------------------------------------------------
 _section "Scripts"
 
-for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh devlead-active.sh envelope.sh envelope-auth.sh sweep.sh; do
+# devlead-active.sh: pre-rename name, kept so a machine at any migration
+# stage is fully cleaned (REQ-6) — devlead-session.sh is the current name.
+for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh devlead-active.sh devlead-session.sh envelope.sh envelope-auth.sh sweep.sh; do
   _remove_devlead_link "$DEVLEAD_DIR/scripts/$_name" "$REPO_DIR/.devlead/scripts/$_name"
 done
 

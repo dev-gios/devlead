@@ -111,7 +111,7 @@ Después de escribir, confirmá:
 Apagá DevLead para este repo (desactiva los hooks hasta el próximo `/arranquemos`) ejecutando con el Bash tool:
 
 ```
-bash ~/.devlead/scripts/devlead-active.sh off
+bash ~/.devlead/scripts/devlead-session.sh off
 ```
 
 Esto cierra el modo opt-in (invariante 7): los hooks vuelven a quedar inertes en este repo hasta que arranques el día de nuevo.
