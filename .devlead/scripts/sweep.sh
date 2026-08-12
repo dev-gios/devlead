@@ -91,7 +91,7 @@ _sweep_repo() {
   enrolled=$(echo "$check_out" | grep "^ENROLLED:" | awk '{print $2}')
   if [[ "$enrolled" != "true" ]]; then
     echo "### $repo_path"
-    echo "**STATUS: skipped** — no envelope.yml (ENROLLED: ${enrolled:-false}) — listed in the fleet but nothing authorizes work here. Fix: cd $repo_path && devlead init"
+    echo "**STATUS: skipped** — no envelope.yml (ENROLLED: ${enrolled:-false}) — listed in the fleet but nothing authorizes work here. Fix: cd '$repo_path' && devlead init"
     echo ""
     echo "- $repo_path: no medible — not-enrolled." >&4
     return
@@ -105,7 +105,7 @@ _sweep_repo() {
     if [[ "$enabled" == "false" ]]; then
       echo "**STATUS: skipped** — disabled (ENABLED: false) — the envelope's kill-switch is off by choice. No action needed."
     else
-      echo "**STATUS: skipped** — ENABLED: ${enabled:-unknown} — envelope.yml exists but its switch could not be read. Check: cd $repo_path && devlead check"
+      echo "**STATUS: skipped** — ENABLED: ${enabled:-unknown} — envelope.yml exists but its switch could not be read. Check: cd '$repo_path' && devlead check"
     fi
     echo ""
     echo "- $repo_path: no medible — not-enabled." >&4

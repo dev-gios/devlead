@@ -107,7 +107,7 @@ s1_no_envelope() {
   run_sweep "$home" >/dev/null
   local digest; digest="$(digest_file "$home")"
 
-  grep -qF "no envelope.yml (ENROLLED: false) — listed in the fleet but nothing authorizes work here. Fix: cd $repo && devlead init" "$digest" \
+  grep -qF "no envelope.yml (ENROLLED: false) — listed in the fleet but nothing authorizes work here. Fix: cd '$repo' && devlead init" "$digest" \
     && pass "S1 REQ-1: no-envelope STATUS line names the exact fix command" \
     || fail "S1 REQ-1: no-envelope STATUS line missing/mismatched — $(grep -A2 "### $repo" "$digest" || true)"
 
@@ -174,7 +174,7 @@ s4_enabled_maybe() {
   run_sweep "$home" >/dev/null
   local digest; digest="$(digest_file "$home")"
 
-  grep -qF "ENABLED: unknown — envelope.yml exists but its switch could not be read. Check: cd $repo && devlead check" "$digest" \
+  grep -qF "ENABLED: unknown — envelope.yml exists but its switch could not be read. Check: cd '$repo' && devlead check" "$digest" \
     && pass "S4 REQ-2/D2: unreadable-switch STATUS line is actionable and distinct from the deliberate-off wording" \
     || fail "S4: unreadable-switch STATUS line missing/mismatched — $(grep -A2 "### $repo" "$digest" || true)"
 
@@ -193,27 +193,35 @@ s4_enabled_maybe() {
 # outside string literals; explicitly excludes the two quoted advisory
 # strings ("Add repos with: echo /path/to/repo >> $REPOS_FILE") which are
 # themselves inside echo "..." string literals, not real redirections.
+# Pure static source check (plain grep -nE, no yq/rg dependency) — this is
+# the ONLY automated guard of §A1 (sweep.sh must never write to the fleet
+# list), so it MUST run even when yq is missing, unlike S1-S4 which
+# genuinely execute envelope.sh and need yq to read 'enabled'.
 # ---------------------------------------------------------------------------
 s5_sweep_never_writes_fleet_list() {
   local hits
-  hits="$(rg -n '(>>?\s*"?\$REPOS_FILE"?|>>?\s*"?\$HOME/\.devlead/autonomous-repos"?)' "$SWEEP_BIN" \
-    | rg -v 'echo "Add repos with:' || true)"
+  hits="$(grep -nE '(>>?\s*"?\$REPOS_FILE"?|>>?\s*"?\$HOME/\.devlead/autonomous-repos"?)' "$SWEEP_BIN" \
+    | grep -v 'echo "Add repos with:' || true)"
   [[ -z "$hits" ]] \
     && pass "S5 REQ-5/C1: zero real writes to REPOS_FILE/autonomous-repos in sweep.sh (advisory echo strings excluded)" \
     || fail "S5 REQ-5/C1: found a write shape targeting the fleet list — $hits"
 }
 
 main() {
-  if ! command -v yq &>/dev/null; then
-    note "yq not found on PATH — skipping unit-sweep-report.sh (envelope.sh requires yq to read 'enabled')"
-    exit 0
-  fi
-
-  s1_no_envelope
-  s2_enabled_false
-  s3_enabled_true
-  s4_enabled_maybe
+  # S5 is a pure static source check (plain grep, no yq/rg dependency) — it
+  # is the ONLY automated guard of §A1 and must ALWAYS run, even when yq is
+  # missing from PATH. Only S1-S4 genuinely execute envelope.sh and need the
+  # yq gate below.
   s5_sweep_never_writes_fleet_list
+
+  if ! command -v yq &>/dev/null; then
+    note "yq not found on PATH — skipping S1-S4 (envelope.sh requires yq to read 'enabled')"
+  else
+    s1_no_envelope
+    s2_enabled_false
+    s3_enabled_true
+    s4_enabled_maybe
+  fi
 
   echo ""
   echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX_ROOT) ==="
