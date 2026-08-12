@@ -16,12 +16,13 @@ test:
 	bash test/unit-envelope-merge-mode.sh
 	bash test/unit-envelope-discover.sh
 	bash test/unit-envelope-schema.sh
-	bash test/unit-devlead-active.sh
+	bash test/unit-devlead-session.sh
 	bash test/unit-gate-check.sh
 	bash test/unit-publish-manifest.sh
 	bash test/unit-discover-command.sh
 	bash test/unit-doctor.sh
 	bash test/unit-config-menu.sh
+	bash test/unit-sweep-report.sh
 	bash test/unit-sweep-loop.sh
 	bash test/unit-loop-units.sh
 	bash test/unit-registry-separation.sh

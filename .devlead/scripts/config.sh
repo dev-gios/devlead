@@ -154,6 +154,25 @@ _confirm() {
   esac
 }
 
+# _input <prompt> <current> — mirrors _menu's has-gum/fallback shape for
+# free-text entry, so envelope field editors get the same presentation
+# contract as every other widget in this file (D1). Prints the resolved
+# value on stdout and nothing else (C3); returns non-zero on cancel/decline
+# so callers use the same `v="$(_input ...)" || v=""` shape _menu's callers
+# already use.
+_input() {
+  local _prompt="$1" _cur="$2"
+  if _has_gum; then
+    local _v
+    _v="$(gum input --header "${_prompt%: }" --value "$_cur" 2>/dev/null)" || return 1
+    printf '%s' "$_v"
+    return 0
+  fi
+  local _v
+  read -r -p "$_prompt" _v || return 1
+  printf '%s' "$_v"
+}
+
 _json_escape_str() {
   local s="$1"
   s="${s//\\/\\\\}"
@@ -262,35 +281,6 @@ _machine_token() {
   return 0
 }
 
-_machine_enrollment() {
-  local repos_file="$HOME/.devlead/autonomous-repos"
-  local repo="$REPO_ROOT"
-  echo ""
-  echo "--- Repo enrollment (autonomous sweep) ---"
-  local enrolled=false
-  if [[ -f "$repos_file" ]] && grep -qxF "$repo" "$repos_file" 2>/dev/null; then
-    enrolled=true
-  fi
-  echo "this repo ($repo): $([[ "$enrolled" == true ]] && echo enrolled || echo "not enrolled")"
-
-  if [[ "$enrolled" == true ]]; then
-    if _confirm "Remove this repo from the autonomous sweep enrollment?"; then
-      local tmp="$repos_file.tmp.$$"
-      grep -vxF "$repo" "$repos_file" > "$tmp" 2>/dev/null || : > "$tmp"
-      mv -f "$tmp" "$repos_file"
-      echo "config: removed"
-    fi
-  else
-    if _confirm "Enroll this repo in the autonomous sweep?"; then
-      mkdir -p "$(dirname "$repos_file")"
-      touch "$repos_file"
-      grep -qxF "$repo" "$repos_file" 2>/dev/null || echo "$repo" >> "$repos_file"
-      echo "config: enrolled"
-    fi
-  fi
-  return 0
-}
-
 _machine_toggle_timer() {
   local unit="$1" desc="$2"
   local state
@@ -340,14 +330,171 @@ _machine_menu() {
       "Install state"                        doctor \
       "Source checkout anchor"               source \
       "GitHub token"                         token \
-      "Repo enrollment (autonomous sweep)"   enrollment \
       "Timers"                               timers)"
     case "$choice" in
       doctor) _machine_doctor ;;
       source) _machine_source_repo ;;
       token) _machine_token ;;
-      enrollment) _machine_enrollment ;;
       timers) _machine_timers ;;
+      b) return 0 ;;
+      *) echo "config: unknown option '${choice#__invalid__}'" ;;
+    esac
+  done
+}
+
+# =============================================================================
+# Section 1a — Fleet enrollment (this repo) — REQ-3/D3: a single top-level
+# screen replacing the old machine-scoped "Repo enrollment" entry. Fleet-list
+# membership is repo-scoped, not machine-scoped, and folding it under
+# "Machine setup" was part of why the two enrollment halves read as unrelated
+# in the first place.
+#
+# Both halves are re-derived live on every render (Inv 2), never cached
+# across a menu loop iteration: fleet-list membership via a plain grep
+# against ~/.devlead/autonomous-repos (same idiom envelope.sh's own
+# _do_optin and sweep.sh already use), and envelope state exclusively via
+# `envelope.sh check`'s ENROLLED/ENABLED KEY:value CLI protocol — never by
+# re-parsing envelope.yml or naming a dotted field, per C4.
+# =============================================================================
+
+_fleet_list_status() {
+  local repo="$1" repos_file="$HOME/.devlead/autonomous-repos"
+  if [[ -f "$repos_file" ]] && grep -qxF "$repo" "$repos_file" 2>/dev/null; then
+    printf 'listed'
+  else
+    printf 'not-listed'
+  fi
+}
+
+# _fleet_envelope_status — on | off | missing | unreadable, derived purely
+# from `envelope.sh check`'s ENROLLED/ENABLED protocol (C4). Mirrors
+# sweep.sh's own Gate 1/Gate 2 reading exactly, so the two screens can never
+# silently disagree about what "on"/"off"/"missing" means.
+_fleet_envelope_status() {
+  local check_out enrolled enabled
+  check_out="$(bash "$ENVELOPE_BIN" check 2>/dev/null)"
+  enrolled="$(echo "$check_out" | grep "^ENROLLED:" | awk '{print $2}')"
+  if [[ "$enrolled" != "true" ]]; then
+    printf 'missing'
+    return 0
+  fi
+  enabled="$(echo "$check_out" | grep "^ENABLED:" | awk '{print $2}')"
+  case "$enabled" in
+    true) printf 'on' ;;
+    false) printf 'off' ;;
+    *) printf 'unreadable' ;;
+  esac
+}
+
+_fleet_verdict() {
+  local list_status="$1" env_status="$2"
+  if [[ "$list_status" != "listed" ]]; then
+    printf 'the sweep never visits this repo'
+    return 0
+  fi
+  case "$env_status" in
+    on) printf 'runs tonight' ;;
+    off) printf 'listed, deliberately off — nothing to fix' ;;
+    *) printf 'listed but can never run — this is the broken shape' ;;
+  esac
+}
+
+# Set by _fleet_render for the current loop iteration; consumed by
+# _fleet_menu to build its dynamic action labels without re-deriving state
+# a second time in the same render.
+_FLEET_LIST_STATUS=""
+_FLEET_ENV_STATUS=""
+
+# _fleet_render — D5: the human-facing block goes to stderr, same convention
+# _menu already uses, so a piped `devlead config` still shows the state next
+# to the menu.
+_fleet_render() {
+  local repo="$REPO_ROOT"
+  local list_status env_status verdict
+  list_status="$(_fleet_list_status "$repo")"
+  env_status="$(_fleet_envelope_status)"
+  verdict="$(_fleet_verdict "$list_status" "$env_status")"
+
+  local list_label env_label
+  [[ "$list_status" == "listed" ]] && list_label="listed" || list_label="not listed"
+  case "$env_status" in
+    on) env_label="on" ;;
+    off) env_label="off" ;;
+    missing) env_label="missing" ;;
+    *) env_label="unreadable" ;;
+  esac
+
+  {
+    echo ""
+    echo "--- Enrollment (this repo) ---"
+    echo "repo: $repo"
+    echo ""
+    echo "fleet list (~/.devlead/autonomous-repos): $list_label"
+    echo "  grants: WHERE the nightly sweep looks. Listing alone authorizes no work."
+    echo "envelope (.devlead/envelope.yml): $env_label"
+    echo "  grants: WHETHER this repo may work, and how far. Without it every visit ends in a skip."
+    echo ""
+    echo "verdict: $verdict"
+  } >&2
+
+  _FLEET_LIST_STATUS="$list_status"
+  _FLEET_ENV_STATUS="$env_status"
+}
+
+# _fleet_toggle_list — verbatim write bodies from the retired
+# _machine_enrollment (D3): only the surrounding menu changed, not the logic
+# that mutates ~/.devlead/autonomous-repos.
+_fleet_toggle_list() {
+  local repos_file="$HOME/.devlead/autonomous-repos"
+  local repo="$REPO_ROOT"
+  if [[ "$_FLEET_LIST_STATUS" == "listed" ]]; then
+    if _confirm "Remove this repo from the fleet list (~/.devlead/autonomous-repos)?"; then
+      local tmp="$repos_file.tmp.$$"
+      grep -vxF "$repo" "$repos_file" > "$tmp" 2>/dev/null || : > "$tmp"
+      mv -f "$tmp" "$repos_file"
+      echo "config: removed from fleet list"
+    fi
+  else
+    if _confirm "Add this repo to the fleet list (~/.devlead/autonomous-repos)?"; then
+      mkdir -p "$(dirname "$repos_file")"
+      touch "$repos_file"
+      grep -qxF "$repo" "$repos_file" 2>/dev/null || echo "$repo" >> "$repos_file"
+      echo "config: added to fleet list"
+    fi
+  fi
+  return 0
+}
+
+_fleet_menu() {
+  while true; do
+    _fleet_render
+
+    local list_label
+    if [[ "$_FLEET_LIST_STATUS" == "listed" ]]; then
+      list_label="Remove from fleet list"
+    else
+      list_label="Add to fleet list"
+    fi
+
+    local envelope_label
+    if [[ "$_FLEET_ENV_STATUS" == "missing" ]]; then
+      envelope_label="Create the envelope here"
+    else
+      envelope_label="Open the envelope editor"
+    fi
+
+    local choice
+    choice="$(_menu "Enrollment (this repo)" \
+      "$list_label"     list \
+      "$envelope_label" envelope)"
+    case "$choice" in
+      list) _fleet_toggle_list ;;
+      # Both "create" and "edit" route through the SAME existing
+      # _envelope_menu call site (REQ-3/2.3) — it already offers the
+      # `bash "$ENVELOPE_BIN" init` prompt when ENV_FILE is missing and the
+      # schema-driven editor when it is present. No second init call site
+      # is added here.
+      envelope) _envelope_menu ;;
       b) return 0 ;;
       *) echo "config: unknown option '${choice#__invalid__}'" ;;
     esac
@@ -472,6 +619,22 @@ _current_value() {
   esac
 }
 
+# _raw_value <field> — scalar-only counterpart to _current_value: returns the
+# RAW stored value (empty string on unset/null), never the DECORATED label
+# _current_value produces (e.g. "(unset — default: 3)"). Used exclusively to
+# prefill a gum widget — prefilling the decorated label would be a bug (D2).
+_raw_value() {
+  local field="$1"
+  local path=".${field}"
+  local t
+  t="$(yq e "${path} | type" "$ENV_FILE" 2>/dev/null)"
+  if [[ "$t" == "!!null" || -z "$t" ]]; then
+    printf ''
+  else
+    yq e "${path}" "$ENV_FILE" 2>/dev/null
+  fi
+}
+
 # _ensure_parent_path field file — makes sure every ancestor map of a dotted
 # path exists (as an empty map) in the given file before a leaf assignment
 # runs. Derived purely from the dotted path string handed in at runtime —
@@ -577,11 +740,13 @@ _edit_list_of_objects() {
   local path_help="" path_conseq="" spec_help="" spec_conseq=""
   _schema_lookup "${field}[].path" path_help path_conseq
   _schema_lookup "${field}[].spec" spec_help spec_conseq
-  echo "Enter entries one at a time. Leave the path prompt blank to finish."
-  [[ -n "$path_help" ]] && echo "  path: $path_help"
-  [[ -n "$path_conseq" ]] && echo "        CONSEQUENCE: $path_conseq"
-  [[ -n "$spec_help" ]] && echo "  spec: $spec_help"
-  [[ -n "$spec_conseq" ]] && echo "        CONSEQUENCE: $spec_conseq"
+  {
+    echo "Enter entries one at a time. Leave the path prompt blank to finish."
+    [[ -n "$path_help" ]] && echo "  path: $path_help"
+    [[ -n "$path_conseq" ]] && echo "        CONSEQUENCE: $path_conseq"
+    [[ -n "$spec_help" ]] && echo "  spec: $spec_help"
+    [[ -n "$spec_conseq" ]] && echo "        CONSEQUENCE: $spec_conseq"
+  } >&2
 
   local json="[" first=true count=0 p s
   while true; do
@@ -598,7 +763,7 @@ _edit_list_of_objects() {
     if _confirm "No entries entered — set $field to an empty list?"; then
       _commit_change "$field" ".${field} = []"
     else
-      echo "config: cancelled"
+      echo "config: cancelled" >&2
     fi
     return 0
   fi
@@ -606,84 +771,99 @@ _edit_list_of_objects() {
   if _confirm "Save $count entries for $field?"; then
     NEW_MODS_JSON="$json" _commit_change "$field" ".${field} = (strenv(NEW_MODS_JSON) | from_json)"
   else
-    echo "config: cancelled"
+    echo "config: cancelled" >&2
   fi
 }
 
 _edit_field() {
   local field="$1" type="$2" required="$3" help="$4" consequence="$5"
-  echo ""
-  echo "--- $field ($type) ---"
-  [[ -n "$help" ]] && echo "$help"
-  if [[ -n "$consequence" ]]; then
+  {
     echo ""
-    echo "CONSEQUENCE: $consequence"
-  fi
-  echo ""
+    echo "--- $field ($type) ---"
+    [[ -n "$help" ]] && echo "$help"
+    if [[ -n "$consequence" ]]; then
+      echo ""
+      echo "CONSEQUENCE: $consequence"
+    fi
+    echo ""
+  } >&2
 
   case "$type" in
     bool)
       local ans
-      read -r -p "New value for $field — yes/no (blank = cancel): " ans || ans=""
+      # Two-option gum choose with the literal true/false labels (D4) — NOT
+      # routed through _menu, whose fallback would render a NUMBERED list and
+      # turn a plain "no" answer into __invalid__no under DEVLEAD_NO_GUM=1.
+      if _has_gum; then
+        ans="$(printf '%s\n' true false \
+          | gum choose --header "New value for $field" 2>/dev/null)" || ans=""
+      else
+        read -r -p "New value for $field — yes/no (blank = cancel): " ans || ans=""
+      fi
       case "${ans,,}" in
-        y|yes|si|sí)
-          if _confirm "Set $field = true?"; then _commit_change "$field" ".${field} = true"; else echo "config: cancelled"; fi
+        y|yes|si|sí|true)
+          if _confirm "Set $field = true?"; then _commit_change "$field" ".${field} = true"; else echo "config: cancelled" >&2; fi
           ;;
-        n|no)
-          if _confirm "Set $field = false?"; then _commit_change "$field" ".${field} = false"; else echo "config: cancelled"; fi
+        n|no|false)
+          if _confirm "Set $field = false?"; then _commit_change "$field" ".${field} = false"; else echo "config: cancelled" >&2; fi
           ;;
-        "") echo "config: cancelled" ;;
-        *) echo "config: '$ans' is not yes/no — cancelled" ;;
+        "") echo "config: cancelled" >&2 ;;
+        *) echo "config: '$ans' is not yes/no — cancelled" >&2 ;;
       esac
       ;;
     int)
       local v
-      read -r -p "New integer value for $field (blank = cancel): " v || v=""
+      v="$(_input "New integer value for $field (blank = cancel): " "$(_raw_value "$field")")" || v=""
       if [[ -z "$v" ]]; then
-        echo "config: cancelled"
+        echo "config: cancelled" >&2
       elif [[ "$v" =~ ^[0-9]+$ ]]; then
-        if _confirm "Set $field = $v?"; then _commit_change "$field" ".${field} = ${v}"; else echo "config: cancelled"; fi
+        if _confirm "Set $field = $v?"; then _commit_change "$field" ".${field} = ${v}"; else echo "config: cancelled" >&2; fi
       else
-        echo "config: '$v' is not a non-negative integer — cancelled"
+        echo "config: '$v' is not a non-negative integer — cancelled" >&2
       fi
       ;;
     "string (nullable HH:MM)")
       local v
-      read -r -p "New value HH:MM, or blank to clear: " v || v=""
+      v="$(_input "New value HH:MM, or blank to clear: " "$(_raw_value "$field")")" || v=""
       if [[ -z "$v" ]]; then
-        if _confirm "Clear $field?"; then _commit_change "$field" ".${field} = null"; else echo "config: cancelled"; fi
+        # Esc-on-blank under gum collapses to the same v="" as a blank Enter
+        # under the no-gum fallback (_input's non-zero return either way), so
+        # this confirm-then-null path is the ONLY clear affordance for both
+        # presentations — a deliberate gum-only route that stays C7-compliant
+        # (no new "Clear" UI is introduced).
+        if _confirm "Clear $field?"; then _commit_change "$field" ".${field} = null"; else echo "config: cancelled" >&2; fi
       elif [[ "$v" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
         if _confirm "Set $field = $v?"; then
           NEW_STR_VAL="$v" _commit_change "$field" ".${field} = strenv(NEW_STR_VAL)"
         else
-          echo "config: cancelled"
+          echo "config: cancelled" >&2
         fi
       else
-        echo "config: '$v' is not HH:MM — cancelled"
+        echo "config: '$v' is not HH:MM — cancelled" >&2
       fi
       ;;
     string)
       local v
-      read -r -p "New value for $field (blank = cancel): " v || v=""
+      v="$(_input "New value for $field (blank = cancel): " "$(_raw_value "$field")")" || v=""
       if [[ -z "$v" ]]; then
-        echo "config: cancelled"
+        echo "config: cancelled" >&2
       elif _confirm "Set $field = '$v'?"; then
         NEW_STR_VAL="$v" _commit_change "$field" ".${field} = strenv(NEW_STR_VAL)"
       else
-        echo "config: cancelled"
+        echo "config: cancelled" >&2
       fi
       ;;
     list)
       local v json
       read -r -p "New comma-separated values for $field (blank = $( [[ "$required" == "true" ]] && echo "empty list" || echo "clear" )): " v || v=""
       if [[ -z "$v" && "$required" != "true" ]]; then
-        if _confirm "Clear $field?"; then _commit_change "$field" ".${field} = null"; else echo "config: cancelled"; fi
+        if _confirm "Clear $field?"; then _commit_change "$field" ".${field} = null"; else echo "config: cancelled" >&2; fi
       else
         json="$(_csv_to_json_array "$v")"
         if _confirm "Set $field = $json?"; then
           NEW_LIST_JSON="$json" _commit_change "$field" ".${field} = (strenv(NEW_LIST_JSON) | from_json)"
         else
-          echo "config: cancelled"
+          echo "config: cancelled" >&2
         fi
       fi
       ;;
@@ -691,7 +871,7 @@ _edit_field() {
       _edit_list_of_objects "$field"
       ;;
     *)
-      echo "config: '$field' has no directly settable value here"
+      echo "config: '$field' has no directly settable value here" >&2
       ;;
   esac
 }
@@ -699,9 +879,9 @@ _edit_field() {
 _envelope_menu() {
   while true; do
     if [[ ! -f "$ENV_FILE" ]]; then
-      echo ""
-      echo "--- Envelope ---"
-      echo "no envelope.yml for this repo yet."
+      echo "" >&2
+      echo "--- Envelope ---" >&2
+      echo "no envelope.yml for this repo yet." >&2
       if _confirm "Create one now (the existing scaffold command)?"; then
         bash "$ENVELOPE_BIN" init
       fi
@@ -719,47 +899,58 @@ _envelope_menu() {
       return 1
     fi
 
-    echo ""
-    echo "--- Envelope ($ENV_FILE) ---"
-    local -a idx_field=()
-    local i n=0 f t cur
+    # Build the picker over the same eligible-field filter as before (skip
+    # groups and list-of-objects children); labels carry the field name +
+    # current value, values carry the SCHEMA_FIELD index — never the field
+    # name itself, so the field name is never a literal in this file (C1).
+    local -a args=() rendered=()
+    local i f t cur
     for i in "${!SCHEMA_FIELD[@]}"; do
       f="${SCHEMA_FIELD[$i]}"
       t="${SCHEMA_TYPE[$i]}"
       [[ "$t" == "map" ]] && continue
       [[ "$f" == *"[]."* ]] && continue
-      n=$((n + 1))
-      idx_field[$n]="$i"
       cur="$(_current_value "$f" "$t" "${SCHEMA_DEFAULT[$i]}")"
-      printf '%2d) %-32s %s\n' "$n" "$f" "$cur"
+      # A hand-edited envelope.yml can carry an embedded newline in a scalar
+      # value; left unsanitized it would split this label across two gum
+      # choose lines and break the label<->index exact-match pairing below.
+      cur="${cur//$'\n'/ }"
+      args+=("$(printf '%-32s %s' "$f" "$cur")" "$i")
+      rendered+=("$i")
     done
-    echo " b) Back"
-    echo "(pick a number, or type a field's exact name)"
 
-    local choice matched_si=""
-    read -r -p "> " choice || choice="b"
-    case "$choice" in
-      b|B) return 0 ;;
-      "") continue ;;
-    esac
+    local hdr="Envelope ($ENV_FILE)"
+    _has_gum || hdr="$hdr — pick a number, or type a field's exact name"
 
-    if [[ "$choice" =~ ^[0-9]+$ && -n "${idx_field[$choice]:-}" ]]; then
-      matched_si="${idx_field[$choice]}"
-    else
+    local choice
+    choice="$(_menu "$hdr" "${args[@]}")"
+
+    if [[ "$choice" == "b" ]]; then
+      return 0
+    fi
+
+    # Dotted-name entry (typed instead of a number) only ever reaches this
+    # function through _menu's fallback-only __invalid__<raw> return — the
+    # gum branch never produces it (C4).
+    local matched_si=""
+    if [[ "$choice" == __invalid__* ]]; then
+      local typed="${choice#__invalid__}"
       local k
-      for k in "${idx_field[@]}"; do
-        if [[ "${SCHEMA_FIELD[$k]}" == "$choice" ]]; then
+      for k in "${rendered[@]}"; do
+        if [[ "${SCHEMA_FIELD[$k]}" == "$typed" ]]; then
           matched_si="$k"
           break
         fi
       done
+    else
+      matched_si="$choice"
     fi
 
     if [[ -n "$matched_si" ]]; then
       _edit_field "${SCHEMA_FIELD[$matched_si]}" "${SCHEMA_TYPE[$matched_si]}" "${SCHEMA_REQUIRED[$matched_si]}" \
         "${SCHEMA_HELP[$matched_si]}" "${SCHEMA_CONSEQUENCE[$matched_si]}"
     else
-      echo "config: unknown option '$choice'"
+      echo "config: unknown option '${choice#__invalid__}'" >&2
     fi
   done
 }
@@ -774,11 +965,13 @@ _main_menu() {
     # both cancel and the last entry, and there is nowhere above here to go.
     local choice
     choice="$(_menu "DevLead config — $REPO_ROOT" \
-      "Machine setup"          machine \
-      "Envelope (this repo)"   envelope \
-      "Quit"                   quit)"
+      "Machine setup"              machine \
+      "Enrollment (this repo)"     fleet \
+      "Envelope (this repo)"       envelope \
+      "Quit"                       quit)"
     case "$choice" in
       machine) _machine_menu ;;
+      fleet) _fleet_menu ;;
       envelope) _envelope_menu ;;
       quit|b) return 0 ;;
       *) echo "config: unknown option '${choice#__invalid__}'" ;;
