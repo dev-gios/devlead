@@ -218,7 +218,7 @@ _do_optin() {
   repo="$(_repo_root)"
 
   # Inv 2 — re-derive live state, never assume from a prior run. Same dedup
-  # pattern used elsewhere in this codebase (e.g. devlead-active.sh): a plain
+  # pattern used elsewhere in this codebase (e.g. devlead-session.sh): a plain
   # grep -qxF against the repos file, not a remembered/hardcoded status.
   local repos_file="$HOME/.devlead/autonomous-repos"
   local _already_enrolled=false

@@ -111,7 +111,9 @@ Después de escribir, confirmá:
 Apagá DevLead para este repo (desactiva los hooks hasta el próximo `/arranquemos`) ejecutando con el Bash tool:
 
 ```
-bash ~/.devlead/scripts/devlead-active.sh off
+bash ~/.devlead/scripts/devlead-session.sh off
 ```
 
 Esto cierra el modo opt-in (invariante 7): los hooks vuelven a quedar inertes en este repo hasta que arranques el día de nuevo.
+
+El registro `~/.devlead/session-repos` que escribe `devlead-session.sh` no otorgaba ninguna autoridad mientras estuvo activo — solo sacaba los hooks del estado inerte para esta sesión. Es distinto de `~/.devlead/autonomous-repos`, que sí habilita ramas/commits/PRs sin supervisión (Inv 3).

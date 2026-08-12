@@ -5,14 +5,17 @@
 #   bash test/unit-registry-separation.sh
 #
 # DevLead has two enablement registries with different authority:
-#   ~/.devlead/active-repos      — session-scoped, ephemeral, grants nothing
-#                                   (devlead-active.sh, /arranquemos, /cerremos)
+#   ~/.devlead/session-repos     — session-scoped, ephemeral, grants nothing
+#                                   (devlead-session.sh, /arranquemos, /cerremos).
+#                                   The pre-rename ~/.devlead/active-repos is
+#                                   still read read-only as a migration
+#                                   fallback (plan-registry-rename.md REQ-2/REQ-3).
 #   ~/.devlead/autonomous-repos  — durable, grants unsupervised branches,
 #                                   commits and PRs (Inv 3 authority; sweep.sh,
 #                                   sweep-loop.sh)
 # This suite proves neither registry is read on the other's path, and locks
-# that invariant before two sibling tasks (session expiry, the
-# active-repos -> session-repos rename) touch the surrounding code.
+# that invariant now that the active-repos -> session-repos rename has landed
+# (plan-registry-rename.md) alongside the session-expiry work.
 #
 # Covers: REQ-1 REQ-2 REQ-3 REQ-4 REQ-5 REQ-6 REQ-7 REQ-8 REQ-9 REQ-10 REQ-11
 #         REQ-12
@@ -61,12 +64,12 @@ SANDBOX="$(mktemp -d /tmp/devlead-registry-separation.XXXXXX)"
 
 # ---------------------------------------------------------------------------
 # Data block — registry identity + path-sets, rename-resilient (REQ-7).
-# The coming active-repos -> session-repos rename touches ONLY this block;
-# no assertion logic below hardcodes a registry literal inline.
+# The active-repos -> session-repos rename (plan-registry-rename.md) touches
+# ONLY this block; no assertion logic below hardcodes a registry literal inline.
 # ---------------------------------------------------------------------------
-SESSION_NAMES=( "active-repos" "session-repos" )      # current + post-rename
+SESSION_NAMES=( "active-repos" "session-repos" )      # pre-rename + current
 SESSION_VARS=( "ACTIVE_FILE" "SESSION_FILE" )
-SESSION_SCRIPT="devlead-active.sh"                    # indirect authority — a
+SESSION_SCRIPT="devlead-session.sh"                   # indirect authority — a
                                                        # bare mention is not a
                                                        # real read; only an
                                                        # actual on|off|check
@@ -89,7 +92,7 @@ AUTONOMOUS_EXPECTED=( sweep.sh sweep-loop.sh envelope.sh bootstrap-lib.sh
                       state.sh run-state.sh doctor.sh )
 AUTONOMOUS_EXTRA=( .claude/commands/sweep-execute.md )     # string-scan only
 SESSION_PATH_SET=( .claude/hooks/post-edit.sh .claude/hooks/gate-check.sh
-                   .devlead/scripts/devlead-active.sh )
+                   .devlead/scripts/devlead-session.sh )
 # REVERSE_OPTIONAL (FIX-2): scanned on the reverse (session) path when
 # present, never required to exist (REQ-12 exempts it explicitly) — the
 # project has no per-repo linter today, but post-edit.sh:53 already invokes
@@ -101,8 +104,14 @@ REVERSE_OPTIONAL=( .devlead/lint.sh )
 FORWARD_SCAN_ROOTS=( .devlead/scripts .claude/hooks )
 # shellcheck disable=SC2034 # read through _closure_walk's nameref (arg $3)
 CLOSURE_DIRS=( .devlead/scripts .claude/hooks )
+# devlead-active.sh: bootstrap-lib.sh's prune block (REQ-5 of
+# plan-registry-rename.md) assigns the OLD script name into a local variable
+# so it can rm -f an orphaned legacy install — that assignment line matches
+# EDGE_RE's variable-assignment shape, so the closure walk sees it as an
+# edge to a file that no longer exists in the repo (git mv'd away). Expected
+# and unresolvable by design, same as install.sh below.
 # shellcheck disable=SC2034 # read through _set_diff_report's nameref (arg $2)
-EXPECTED_UNRESOLVED=( install.sh )
+EXPECTED_UNRESOLVED=( install.sh devlead-active.sh )
 
 # ---------------------------------------------------------------------------
 # Regexes — joined from the data block above with `local IFS='|'`, never
@@ -427,14 +436,14 @@ EOF
 out="$(scan_file "$FIX_REVERSE" "fixtures/reverse.sh" "$AUTO_RE")"
 contains "fixture reverse: autonomous-registry read fires" "$out" "fixtures/reverse.sh:2: _y=\"\$HOME/.devlead/autonomous-repos\""
 
-# --- Fixture 3: indirect authority via devlead-active.sh subcommand (fires)
+# --- Fixture 3: indirect authority via devlead-session.sh subcommand (fires)
 FIX_INDIRECT="$FIXTURES/indirect.sh"
 cat > "$FIX_INDIRECT" <<'EOF'
 #!/usr/bin/env bash
-bash "$HOME/.devlead/scripts/devlead-active.sh" check
+bash "$HOME/.devlead/scripts/devlead-session.sh" check
 EOF
 out="$(scan_file "$FIX_INDIRECT" "fixtures/indirect.sh" "$SESSION_RE")"
-contains "fixture indirect: devlead-active.sh subcommand invocation fires" "$out" "fixtures/indirect.sh:2:"
+contains "fixture indirect: devlead-session.sh subcommand invocation fires" "$out" "fixtures/indirect.sh:2:"
 
 # --- Fixture 4: prose mention (silent — exercises the '#'-strip) ---------
 FIX_PROSE="$FIXTURES/prose.sh"
@@ -449,7 +458,7 @@ check "fixture prose: comment-only mention stays silent" "$out" ""
 FIX_ENVELOPE221="$FIXTURES/envelope-221.sh"
 cat > "$FIX_ENVELOPE221" <<'EOF'
 #!/usr/bin/env bash
-  # pattern used elsewhere in this codebase (e.g. devlead-active.sh): a plain
+  # pattern used elsewhere in this codebase (e.g. devlead-session.sh): a plain
 EOF
 out="$(scan_file "$FIX_ENVELOPE221" "fixtures/envelope-221.sh" "$SESSION_RE")"
 check "fixture envelope-221: real prose case stays silent" "$out" ""
@@ -458,7 +467,7 @@ check "fixture envelope-221: real prose case stays silent" "$out" ""
 FIX_MANIFEST226="$FIXTURES/manifest-226.sh"
 cat > "$FIX_MANIFEST226" <<'EOF'
 #!/usr/bin/env bash
-    "$repo_dir/.devlead/scripts/devlead-active.sh|$devlead_dir/scripts/devlead-active.sh|x"
+    "$repo_dir/.devlead/scripts/devlead-session.sh|$devlead_dir/scripts/devlead-session.sh|x"
 EOF
 out="$(scan_file "$FIX_MANIFEST226" "fixtures/manifest-226.sh" "$SESSION_RE")"
 check "fixture manifest-226: manifest-string mention stays silent" "$out" ""
@@ -532,18 +541,18 @@ cat > "$FIX9_ROOT/scripts/branch-standin.sh" <<'EOF'
 #!/usr/bin/env bash
 _x="$HOME/.devlead/active-repos"
 EOF
-cat > "$FIX9_ROOT/scripts/devlead-active.sh" <<'EOF'
+cat > "$FIX9_ROOT/scripts/devlead-session.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "session-side stand-in — must be excluded from the blanket scan"
 EOF
 # shellcheck disable=SC2034 # read through _forward_scan_set's nameref (arg $2)
 FIX9_ROOTS=( scripts )
 # shellcheck disable=SC2034 # read through _forward_scan_set's nameref (arg $3)
-FIX9_EXEMPT=( scripts/devlead-active.sh )
+FIX9_EXEMPT=( scripts/devlead-session.sh )
 _forward_scan_set "$FIX9_ROOT" FIX9_ROOTS FIX9_EXEMPT
 _fix9_set="${FORWARD_SET[*]}"
 contains "fixture forward-universe: FORWARD_SET includes closure-invisible script (FIX 1)" "$_fix9_set" "scripts/branch-standin.sh"
-not_contains "fixture forward-universe: FORWARD_SET excludes declared session-side stand-in (FIX 1)" "$_fix9_set" "scripts/devlead-active.sh"
+not_contains "fixture forward-universe: FORWARD_SET excludes declared session-side stand-in (FIX 1)" "$_fix9_set" "scripts/devlead-session.sh"
 _fix9_out=""
 for _rel in "${FORWARD_SET[@]}"; do
   _fix9_out+="$(scan_file "$FIX9_ROOT/$_rel" "$_rel" "$SESSION_RE")"$'\n'
@@ -569,7 +578,7 @@ contains "fixture lint.sh: optional reverse-side member fires when present (FIX 
 FIX_INDIRECT2="$FIXTURES/indirect2.sh"
 cat > "$FIX_INDIRECT2" <<'EOF'
 #!/usr/bin/env bash
-DA_BIN="$HOME/.devlead/scripts/devlead-active.sh"
+DA_BIN="$HOME/.devlead/scripts/devlead-session.sh"
 bash "$DA_BIN" check
 EOF
 out="$(scan_file "$FIX_INDIRECT2" "fixtures/indirect2.sh" "$SESSION_RE")"
