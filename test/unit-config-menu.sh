@@ -26,6 +26,16 @@
 # be echoed by the tty driver regardless of `-rs`, which is a timing
 # artifact of the driver, not of config.sh.
 #
+# PRESENTATION: these scenarios type "1", "2", "b" at the child, which is the
+# numbered-prompt contract. config.sh renders through gum when gum is present,
+# and gum's selector reads arrow keys — those digits mean nothing to it, so a
+# machine with gum installed would hang here forever rather than fail. Hanging
+# tests are worse than failing ones, so the opt-out is exported once, for the
+# whole file: the scripted path always drives the plain prompts. The gum path
+# has its own scenarios at the end, which assert the branch is chosen
+# correctly without trying to type at a selector.
+export DEVLEAD_NO_GUM=1
+#
 # SAFETY: every sandbox is a throwaway /tmp directory. HOME is always
 # overridden. Nothing here touches the real repo's own envelope.yml or the
 # real machine's ~/.devlead.
@@ -267,6 +277,76 @@ t6_wiring() {
     || fail "T6: test/unit-config-menu.sh missing from the Makefile"
 }
 
+# ===========================================================================
+# T7 — the gum presentation branch
+#
+# The scenarios above deliberately run with DEVLEAD_NO_GUM=1, so without this
+# the gum branch would ship completely unexercised. It cannot be driven by
+# typing at it — that is the whole reason for the opt-out — so a stub `gum`
+# earlier on PATH stands in for the selector and answers with a fixed label.
+# That proves the branch is taken and its answer dispatched, which is what
+# actually breaks; it does not try to test Charm's rendering.
+# ===========================================================================
+t7_gum_branch() {
+  local dir home
+  read -r dir home < <(_new_sandbox t7)
+
+  # A stub gum that records every call and always picks the first real entry.
+  local stubdir="$SANDBOX/t7/bin"
+  mkdir -p "$stubdir"
+  # The stub must eventually answer "Back", or the menu loop never ends: a
+  # selector that always returns the first entry walks into a submenu, returns,
+  # and is asked again forever. First call descends, every later call backs
+  # out — enough to prove the branch works, and it terminates.
+  cat > "$stubdir/gum" <<'STUB'
+#!/usr/bin/env bash
+echo "gum called: $*" >> "$GUM_CALLS"
+case "${1:-}" in
+  choose)
+    n=$(cat "$GUM_CALLS.n" 2>/dev/null || echo 0)
+    n=$((n + 1)); echo "$n" > "$GUM_CALLS.n"
+    if [[ "$n" -eq 1 ]]; then head -n 1; else echo "Back"; fi
+    ;;
+  confirm) exit 1 ;;     # decline, so nothing is ever written by this test
+  *) exit 0 ;;
+esac
+STUB
+  chmod +x "$stubdir/gum"
+
+  local calls="$SANDBOX/t7/gum-calls"; : > "$calls"
+  local out
+  out="$( (cd "$dir" && HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" \
+      DEVLEAD_NO_GUM=0 script -qec "bash .devlead/scripts/config.sh" /dev/null) 2>&1 )"
+
+  contains "T7: gum is invoked when present and not opted out" \
+    "$(cat "$calls")" "gum called: choose"
+  contains "T7: the header names the repo being configured" \
+    "$(cat "$calls")" "DevLead config"
+  not_contains "T7: the numbered fallback prompt is not rendered too" \
+    "$out" "b) Back"
+
+  # These two exercise the FALLBACK, which reads from the pty — so they must
+  # be typed at, exactly like every other scenario here. Redirecting stdin from
+  # /dev/null does not end the read: `script` owns the pty and keeps it open,
+  # so the child waits forever instead of seeing EOF.
+  #
+  # The opt-out must win over an installed gum, or the whole suite is a lie.
+  # The other direction — opt-out set, or gum absent — is NOT re-driven here on
+  # purpose. Every scenario above already runs with DEVLEAD_NO_GUM=1 against a
+  # machine that has gum installed, and they all reach the numbered prompts; if
+  # the opt-out did not win, this file would hang rather than pass. That is
+  # stronger coverage than one more pty invocation, and it cannot rot.
+  #
+  # The remaining half is the selection predicate itself, which is cheap to
+  # assert directly and needs no terminal at all.
+  local pred
+  pred="$(sed -n '/^_has_gum()/,/^}/p' "$CONFIG_SRC")"
+  contains "T7: the opt-out is checked before gum is looked up" \
+    "$pred" "DEVLEAD_NO_GUM"
+  contains "T7: gum availability is probed, not assumed" \
+    "$pred" "command -v gum"
+}
+
 main() {
   t1_tty_gate
   t2_no_hardcoded_field_list
@@ -274,6 +354,7 @@ main() {
   t4_invalid_change_reverts
   t5_token_never_leaks
   t6_wiring
+  t7_gum_branch
 
   echo ""
   echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="

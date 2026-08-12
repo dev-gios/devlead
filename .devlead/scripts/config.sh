@@ -69,9 +69,83 @@ ENV_FILE="$REPO_ROOT/.devlead/envelope.yml"
 # ---------------------------------------------------------------------------
 # Small shared helpers
 # ---------------------------------------------------------------------------
+# --- Presentation layer -----------------------------------------------------
+# Every menu below renders through _menu/_confirm rather than printing its own
+# numbered list, so there is ONE place that knows how a choice is presented.
+# gum (github.com/charmbracelet/gum) gives arrow-key navigation when it is
+# installed; without it the original numbered prompts are used verbatim.
+#
+# The fallback is not a courtesy. It is required in three situations that all
+# happen for real:
+#   - a machine that simply does not have gum installed
+#   - DEVLEAD_NO_GUM=1, the explicit opt-out
+#   - test/unit-config-menu.sh, which drives this script through a pty with
+#     `script -qec` and types "1", "2", "b" at it. Those keystrokes mean
+#     nothing to gum's selector, so the suite exports the opt-out and keeps
+#     exercising the plain path end to end.
+#
+# Choosing is presentation. What a choice DOES is unchanged, and the TTY gate
+# above still governs whether any of this runs at all.
+_has_gum() {
+  [[ "${DEVLEAD_NO_GUM:-0}" != "1" ]] && command -v gum &>/dev/null
+}
+
+# _menu <header> <label1> <value1> [<label2> <value2> ...]
+# Prints the chosen value on stdout. Prints "b" when the user goes back or
+# cancels, so every caller's existing `b)` case keeps working untouched.
+_menu() {
+  local _header="$1"; shift
+  local -a _labels=() _values=()
+  while [[ "$#" -ge 2 ]]; do
+    _labels+=("$1"); _values+=("$2"); shift 2
+  done
+
+  if _has_gum; then
+    local _pick
+    _pick="$(printf '%s\n' "${_labels[@]}" "Back" \
+      | gum choose --header "$_header" 2>/dev/null)" || { printf 'b'; return 0; }
+    local _i
+    for _i in "${!_labels[@]}"; do
+      if [[ "${_labels[$_i]}" == "$_pick" ]]; then
+        printf '%s' "${_values[$_i]}"; return 0
+      fi
+    done
+    printf 'b'; return 0
+  fi
+
+  # Everything the human SEES goes to stderr: this function's stdout is its
+  # return channel, and a caller reads it through $( ). Printing the list on
+  # stdout would swallow the menu and hand the caller the menu text glued to
+  # the answer.
+  echo "" >&2
+  echo "=== $_header ===" >&2
+  local _i
+  for _i in "${!_labels[@]}"; do
+    printf '%d) %s\n' "$((_i + 1))" "${_labels[$_i]}" >&2
+  done
+  echo "b) Back" >&2
+  local _choice
+  read -r -p "> " _choice || _choice="b"
+  case "$_choice" in
+    # q/Q accepted everywhere, not just at the top level: it was the documented
+    # quit key before this helper existed, and muscle memory outlives menus.
+    b|B|q|Q|"") printf 'b'; return 0 ;;
+  esac
+  if [[ "$_choice" =~ ^[0-9]+$ ]] && \
+     (( _choice >= 1 && _choice <= ${#_values[@]} )); then
+    printf '%s' "${_values[$((_choice - 1))]}"; return 0
+  fi
+  printf '__invalid__%s' "$_choice"
+  return 0
+}
+
 _confirm() {
   # $1 = prompt describing what will happen. Same affirmative-token
   # convention as envelope.sh's own _do_optin: y/yes/si/sí, case-insensitive.
+  if _has_gum; then
+    gum confirm "$1" && return 0
+    return 1
+  fi
   local ans
   read -r -p "$1 [y/N] " ans || ans=""
   case "${ans,,}" in
@@ -244,45 +318,38 @@ _machine_toggle_timer() {
 }
 
 _machine_timers() {
-  echo ""
-  echo "--- Timers ---"
-  echo "1) sweep timer  — plan-only, read-only; writes nothing to any repo"
-  echo "2) loop timer   — autonomous; CREATES BRANCHES, COMMITS, and OPENS PRs"
-  echo "b) Back"
   local choice
-  read -r -p "> " choice || choice="b"
+  choice="$(_menu "Timers" \
+    "sweep timer  — plan-only, read-only; writes nothing to any repo" sweep \
+    "loop timer   — autonomous; CREATES BRANCHES, COMMITS, and OPENS PRs" loop)"
   case "$choice" in
-    1) _machine_toggle_timer devlead-sweep.timer \
+    sweep) _machine_toggle_timer devlead-sweep.timer \
          "This timer only reads state and writes a plan-only report — it makes no repo changes." ;;
-    2) _machine_toggle_timer devlead-loop.timer \
+    loop) _machine_toggle_timer devlead-loop.timer \
          "This timer runs the autonomous loop unattended — it CREATES BRANCHES, COMMITS, and OPENS PRs against enrolled repos." ;;
-    b|B) return 0 ;;
-    *) echo "config: unknown option '$choice'" ;;
+    b) return 0 ;;
+    *) echo "config: unknown option '${choice#__invalid__}'" ;;
   esac
   return 0
 }
 
 _machine_menu() {
   while true; do
-    echo ""
-    echo "=== Machine setup ==="
-    echo "1) Install state"
-    echo "2) Source checkout anchor"
-    echo "3) GitHub token"
-    echo "4) Repo enrollment (autonomous sweep)"
-    echo "5) Timers"
-    echo "b) Back"
     local choice
-    read -r -p "> " choice || choice="b"
+    choice="$(_menu "Machine setup" \
+      "Install state"                        doctor \
+      "Source checkout anchor"               source \
+      "GitHub token"                         token \
+      "Repo enrollment (autonomous sweep)"   enrollment \
+      "Timers"                               timers)"
     case "$choice" in
-      1) _machine_doctor ;;
-      2) _machine_source_repo ;;
-      3) _machine_token ;;
-      4) _machine_enrollment ;;
-      5) _machine_timers ;;
-      b|B) return 0 ;;
-      "") : ;;
-      *) echo "config: unknown option '$choice'" ;;
+      doctor) _machine_doctor ;;
+      source) _machine_source_repo ;;
+      token) _machine_token ;;
+      enrollment) _machine_enrollment ;;
+      timers) _machine_timers ;;
+      b) return 0 ;;
+      *) echo "config: unknown option '${choice#__invalid__}'" ;;
     esac
   done
 }
@@ -703,19 +770,18 @@ _envelope_menu() {
 
 _main_menu() {
   while true; do
-    echo ""
-    echo "=== DevLead config — $REPO_ROOT ==="
-    echo "1) Machine setup"
-    echo "2) Envelope (this repo)"
-    echo "q) Quit"
+    # "Back" reads as Quit at the top level; the shared helper returns "b" for
+    # both cancel and the last entry, and there is nowhere above here to go.
     local choice
-    read -r -p "> " choice || choice="q"
+    choice="$(_menu "DevLead config — $REPO_ROOT" \
+      "Machine setup"          machine \
+      "Envelope (this repo)"   envelope \
+      "Quit"                   quit)"
     case "$choice" in
-      1) _machine_menu ;;
-      2) _envelope_menu ;;
-      q|Q) return 0 ;;
-      "") : ;;
-      *) echo "config: unknown option '$choice'" ;;
+      machine) _machine_menu ;;
+      envelope) _envelope_menu ;;
+      quit|b) return 0 ;;
+      *) echo "config: unknown option '${choice#__invalid__}'" ;;
     esac
   done
 }
