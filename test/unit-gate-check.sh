@@ -90,7 +90,7 @@ activate_devlead() {
   cp "$DEVLEAD_ACTIVE_SH" "$home/.devlead/scripts/devlead-active.sh"
   local root
   root="$(git -C "$repo" rev-parse --show-toplevel)"
-  printf '%s\n' "$root" > "$home/.devlead/active-repos"
+  printf '%s\t%s\n' "$root" "$(date -u +%s)" > "$home/.devlead/active-repos"
 }
 
 # run_gate <repo-dir> <sandbox-home> <cache-dir> — the one true way to invoke
