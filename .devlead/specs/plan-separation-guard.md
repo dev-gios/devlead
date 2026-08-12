@@ -16,15 +16,25 @@ read across their intended boundary, and locks that invariant before two sibling
 
 ### Requirement: REQ-1 — Forward Violation Detection
 
-The system MUST fail the test suite if any file on the autonomous path — `sweep.sh`,
-`sweep-loop.sh`, or any script/prompt file transitively invoked or sourced by them —
-contains a real read of the session registry (`active-repos` literal, its future
-`session-repos` literal, or the `ACTIVE_FILE` canonical variable name).
+The system MUST fail the test suite if any file on the autonomous path contains a real
+read of the session registry (`active-repos` literal, its future `session-repos` literal,
+the `ACTIVE_FILE` canonical variable name matched with word boundaries, or a real
+invocation of `devlead-active.sh` — including the two-line idiom where the script path is
+composed into a variable on one line and invoked via that variable on a later line).
+The autonomous path is scanned as a blanket set: every `*.sh` file directly under
+`.devlead/scripts/` and `.claude/hooks/`, except the declared session-side set
+(`post-edit.sh`, `gate-check.sh`, `devlead-active.sh`), plus `.claude/commands/sweep-execute.md`
+in the string-search net. This scan universe is independent of the transitive-closure
+derivation in REQ-8 — a script reachable only through a string-scanned surface, or through
+call-site-composed indirection that produces no literal `NAME.sh` token, is still covered
+because the universe is "everything present under the roots", not "everything the
+edge-walker could resolve".
 
 #### Scenario: Clean autonomous path passes
 
-- GIVEN the current repo tree (sweep.sh, sweep-loop.sh, and their transitive closure)
-- WHEN the guard scans the autonomous path-set
+- GIVEN the current repo tree (every `.devlead/scripts/*.sh` and `.claude/hooks/*.sh` file
+  except the declared session-side set, plus `sweep-execute.md`)
+- WHEN the guard scans the autonomous blanket set
 - THEN no session-registry reference is found and this check reports PASS
 
 #### Scenario: Planted forward violation fails
@@ -37,7 +47,10 @@ contains a real read of the session registry (`active-repos` literal, its future
 
 The system MUST fail the test suite if `post-edit.sh`, `gate-check.sh`, or
 `devlead-active.sh` uses `autonomous-repos` (literal, or the `REPOS_FILE` canonical
-variable name) as an authority source.
+variable name matched with word boundaries) as an authority source. `.devlead/lint.sh`
+(invoked by `post-edit.sh` when present) is an additional, OPTIONAL member of this
+scan set: scanned when it exists on disk, skipped without failing when it does not
+(it does not exist in this repo today).
 
 #### Scenario: Clean session path passes
 
@@ -127,11 +140,11 @@ assertions never hardcode these values inline.
 
 ### Requirement: REQ-8 — Transitive-Closure Derivation With Declared Expected Set
 
-The system MUST derive the autonomous path-set as the transitive closure of scripts
-invoked or sourced from `sweep.sh` and `sweep-loop.sh` (including `.claude/commands/sweep-execute.md`
-in the string-search net), and MUST assert that derived set equals an explicitly declared
-expected set — failing loudly if the call graph has grown or shrunk without the declaration
-being updated.
+The system MUST derive the transitive closure of scripts invoked or sourced from
+`sweep.sh` and `sweep-loop.sh`, and MUST assert that derived set equals an explicitly
+declared expected set — failing loudly if the call graph has grown or shrunk without the
+declaration being updated. This closure derivation is a standalone call-graph drift lock;
+it does NOT bound the REQ-1 forward scan (see REQ-1's blanket scan universe).
 
 #### Scenario: Derived closure matches declared expectation
 
@@ -177,6 +190,27 @@ state, since both registry directions are confirmed clean today.
 - GIVEN the current repository tree with no planted violations
 - WHEN `bash test/unit-registry-separation.sh` runs
 - THEN all real-tree checks (REQ-1, REQ-2 non-fixture scenarios) report PASS and the script exits 0
+
+### Requirement: REQ-12 — Declared-File Existence Guard
+
+The system MUST assert that every non-optional declared scanned file (the autonomous
+closure roots, the session-side path-set, and `.claude/commands/sweep-execute.md`) exists
+on disk, failing loudly and naming the missing file if it does not. `.devlead/lint.sh` is
+the sole optional member (REQ-2) and is exempt from this guard. Without this assertion, a
+rename or removal of a declared file silently voids the coverage of the check that scans
+it, since a missing file degrades to an empty (and therefore "clean") scan result.
+
+#### Scenario: All declared non-optional files exist
+
+- GIVEN the current repository tree
+- WHEN the guard checks existence of every declared scanned file
+- THEN every non-optional file is found and this check reports PASS for each
+
+#### Scenario: A missing declared file fails loudly
+
+- GIVEN a declared scanned file path that does not exist on disk
+- WHEN the guard checks its existence
+- THEN the check reports FAIL, naming that file
 
 ## Out of Scope
 
