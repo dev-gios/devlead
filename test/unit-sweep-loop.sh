@@ -8,6 +8,21 @@
 # the real ~/.devlead tree is never read or written.
 set -uo pipefail
 
+# HERMETIC ENVIRONMENT. Every knob below is an input to the script under test,
+# so inheriting one from the caller's shell silently rewrites what these
+# scenarios assert. That is not theoretical: with DEVLEAD_LOOP_REPO exported,
+# the loop resolves a repo before the "outside a git work tree" scenarios can
+# observe it failing to, and 21 of them fail for a reason that has nothing to
+# do with the code. Each scenario sets what it needs as a command prefix; the
+# ambient shell gets no vote.
+#
+# sweep-loop.sh strips these same variables from the child it invokes, which is
+# what keeps the unattended path clean. This unset is the other half: it keeps
+# the suite honest no matter who runs it, or with what exported.
+unset DEVLEAD_LOOP_DRYRUN DEVLEAD_LOOP_MAX DEVLEAD_LOOP_SLEEP \
+      DEVLEAD_CLAUDE_BIN DEVLEAD_LOOP_REPO DEVLEAD_ALLOW_DRIFT \
+      DEVLEAD_DOCTOR_BIN
+
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 LOOP="$REPO_ROOT/.devlead/scripts/sweep-loop.sh"
 RUN_STATE="$REPO_ROOT/.devlead/scripts/run-state.sh"
@@ -506,6 +521,69 @@ rc=$?
 check "ok-and-trunk: exits 0" "$rc" "0"
 not_contains "ok-and-trunk: no provenance block message" "$out" "provenance"
 check "ok-and-trunk: claude WAS invoked" "$([[ -f "$MARKER_FILE" ]] && echo yes || echo no)" "yes"
+
+# --- The launcher does not leak its own configuration to the child ---------
+# REGRESSION. The systemd unit sets EnvironmentFile=, so DEVLEAD_LOOP_REPO and
+# its siblings live in the SERVICE environment and every descendant inherits
+# them — `claude`, then /sweep-execute, then `make test`. DEVLEAD_LOOP_REPO
+# reaching this very file's sandbox made the 21 "outside a git work tree" guard
+# tests fail and turned the gate red on ten consecutive unattended runs, while
+# the task work in the branches was already complete. The gate was right to
+# fail: the environment had lied to it about where the repo was.
+#
+# The assertion is on the CHILD's environment, not on the launcher's output,
+# because that is where the damage happened.
+ENV_DUMP="$SANDBOX/child-env-dump"
+FAKE_CLAUDE_ENVDUMP="$SANDBOX/fake-claude-envdump"
+cat > "$FAKE_CLAUDE_ENVDUMP" <<FAKE
+#!/usr/bin/env bash
+env | grep '^DEVLEAD_' | sort > "$ENV_DUMP"
+echo "sweep-execute: ran"
+exit 0
+FAKE
+chmod +x "$FAKE_CLAUDE_ENVDUMP"
+
+ENVLEAK_PLAN="$SANDBOX/plan-envleak.yml"
+cat > "$ENVLEAK_PLAN" <<'YML'
+version: 1
+tasks:
+  - id: gamma
+    title: "Unsettled on purpose"
+    type: feat
+YML
+
+rm -f "$ENV_DUMP"
+DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" \
+DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ENVDUMP" \
+DEVLEAD_LOOP_REPO="$REPO_ROOT" \
+DEVLEAD_LOOP_MAX=9 \
+DEVLEAD_LOOP_SLEEP=0 \
+DEVLEAD_ALLOW_DRIFT=1 \
+  bash "$LOOP" --plan "$ENVLEAK_PLAN" --max-iterations 1 >/dev/null 2>&1
+child_env="$(cat "$ENV_DUMP" 2>/dev/null || echo "<no dump: child never ran>")"
+
+check "env-leak: the child actually ran and dumped its environment" \
+  "$([[ -s "$ENV_DUMP" ]] && echo yes || echo no)" "yes"
+
+for _leaky in DEVLEAD_LOOP_REPO DEVLEAD_LOOP_MAX DEVLEAD_LOOP_SLEEP \
+              DEVLEAD_CLAUDE_BIN DEVLEAD_ALLOW_DRIFT DEVLEAD_DOCTOR_BIN \
+              DEVLEAD_LOOP_DRYRUN; do
+  not_contains "env-leak: $_leaky does not reach the child" "$child_env" "$_leaky="
+done
+unset _leaky
+
+# Over-stripping is the opposite failure and just as real: run-state.sh runs
+# INSIDE the child and needs its sandbox root, so this one must survive.
+contains "env-leak: DEVLEAD_RUN_STATE_DIR still reaches the child" \
+  "$child_env" "DEVLEAD_RUN_STATE_DIR="
+
+# The dry run is how this invocation gets verified before it is trusted, so it
+# has to show the strip flags rather than a prettier command than the real one.
+envstrip_out="$(DEVLEAD_LOOP_DRYRUN=1 bash "$LOOP" --plan "$PLAN" --max-iterations 1 2>&1)"
+contains "env-leak: dry run renders the strip flags" \
+  "$envstrip_out" "env -u DEVLEAD_LOOP_DRYRUN"
+contains "env-leak: dry run still shows the claude invocation" \
+  "$envstrip_out" "-u DEVLEAD_DOCTOR_BIN claude -p"
 
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="

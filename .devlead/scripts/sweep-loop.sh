@@ -414,9 +414,44 @@ _sweep_prompt() {
   printf '%s' "$_prompt"
 }
 
+# --- Launcher-scoped environment --------------------------------------------
+# Every DEVLEAD_* knob this script consumes is launcher-only: it tells THIS
+# script where to cd, how often to iterate, which binaries to call. None of
+# them is read by sweep-execute, nor by anything sweep-execute runs
+# (gate-check.sh, envelope.sh, run-state.sh, branch.sh, the hooks).
+#
+# That matters because the systemd unit sets EnvironmentFile=, which puts these
+# in the SERVICE's environment — so every descendant inherits them, `make test`
+# included. Not hypothetical: DEVLEAD_LOOP_REPO reached the sandbox of
+# test/unit-sweep-loop.sh and made its 21 "outside a git work tree" guard tests
+# fail, turning the gate red on ten consecutive runs while the task work in the
+# branches was already complete. The gate was right to fail — the environment
+# lied to it about where the repo was.
+#
+# Stripping at the invocation boundary fixes the class. Unsetting the variable
+# inside the one test that happened to notice would leave every other child
+# process still reading the launcher's private configuration.
+_LAUNCHER_ONLY_VARS=(
+  DEVLEAD_LOOP_DRYRUN
+  DEVLEAD_LOOP_MAX
+  DEVLEAD_LOOP_SLEEP
+  DEVLEAD_CLAUDE_BIN
+  DEVLEAD_LOOP_REPO
+  DEVLEAD_ALLOW_DRIFT
+  DEVLEAD_DOCTOR_BIN
+)
+_ENV_STRIP=()
+for _v in "${_LAUNCHER_ONLY_VARS[@]}"; do _ENV_STRIP+=(-u "$_v"); done
+unset _v
+
 # Readable form for the dry run: what you would type, not %q's backslash soup.
+# Renders the strip flags too — a dry run that hides them would no longer be a
+# preview of the real invocation, and this dry run is the verification tool.
 _sweep_display() {
-  printf '%s -p "%s"' "$CLAUDE_BIN" "$(_sweep_prompt)"
+  local _v
+  printf 'env'
+  for _v in "${_LAUNCHER_ONLY_VARS[@]}"; do printf ' -u %s' "$_v"; done
+  printf ' %s -p "%s"' "$CLAUDE_BIN" "$(_sweep_prompt)"
 }
 
 # --- Reactive not-a-git-repo detection --------------------------------------
@@ -457,7 +492,7 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
   fi
 
   echo "sweep-loop: iteration $_iter/$MAX_ITER — invoking $CLAUDE_BIN"
-  "$CLAUDE_BIN" -p "$(_sweep_prompt)" | tee "$_SWEEP_OUT"
+  env "${_ENV_STRIP[@]}" "$CLAUDE_BIN" -p "$(_sweep_prompt)" | tee "$_SWEEP_OUT"
   _rc=${PIPESTATUS[0]}
   echo "sweep-loop: iteration $_iter exited $_rc"
 
