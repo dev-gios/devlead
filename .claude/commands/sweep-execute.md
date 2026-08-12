@@ -191,7 +191,7 @@ modos (ver su propio texto para el detalle de fuente por modo):
 - *(Solo plan-driven)* Corré `bash ~/.devlead/scripts/envelope-auth.sh plan` fresh — el wrapper `envelope-auth.sh` resuelve el auth internamente (mismo chain de 4 pasos verificado en el paso anterior) y lo exporta en su propio proceso antes de invocar `envelope.sh plan`, por lo que el token nunca aparece en la línea de comando — parseá la sección `--- INCLUDED (queue order) ---` para obtener los `#N` (ver sección E1.4 para el formato exacto). **Este plan es BEST-EFFORT: puede diferir del plan real si el auth resuelto acá difiere del de E1.3 o si el estado de GitHub cambia entre E0 y E1.4. La cola AUTORITATIVA es la re-derivada por repo en E1.4 (Inv 2 — el estado siempre se re-deriva en vivo). Que E0 y E1.4 difieran es esperado y normal; E1.4 siempre gana.**
 - **Señal de costo (D7, ambos modos):** para cada `#N` corré `bash ~/.devlead/scripts/ref-resolver.sh {N}` y contá cuántos devuelven una línea que matchea el patrón usando `grep -E '^SPEC:\s+none$'` (el flag `-E` es obligatorio: `grep` plano sin flags NO interpreta `\s` como clase de whitespace y no matchea, `grep -E` sí) — **whitespace-safe**: el output real de `ref-resolver.sh` es `SPEC:   none` (espacios/tabs múltiples, verificado en el script), NUNCA compares contra el literal de un solo espacio `"SPEC: none"`. **La fuente de los `#N` depende del modo: en plan-driven son los obtenidos del bullet anterior (INCLUDED de `envelope-auth.sh plan`); en scoped son directamente la lista declarada en E0 (el bullet anterior no corrió).** Acumulá `K` (issues sin spec) sobre `M` (total INCLUDED en plan-driven, o total declarado en scoped) — en plan-driven, la acumulación es a través de todos los repos del run; en scoped hay un solo repo, así que `K` y `M` son directamente los de ESE repo. Se muestra en el preview de abajo.
 
-**Nota sobre las anotaciones de E0:** las etiquetas `cannot-cd`, `skipped`, `auth-unavailable` usadas arriba son labels de PREVIEW SOLAMENTE — son previsualizaciones de los STATUS canónicos de E1.x (p.ej. `skipped` aquí corresponde a `STATUS: skipped — disabled (ENABLED: false)` o `STATUS: skipped — no envelope.yml (devlead init)` en E1.2). El STATUS canónico y autoritativo se emite durante el outer loop (E1.1–E1.4), no en E0.
+**Nota sobre las anotaciones de E0:** las etiquetas `cannot-cd`, `skipped`, `auth-unavailable` usadas arriba son labels de PREVIEW SOLAMENTE — son previsualizaciones de los STATUS canónicos de E1.x (p.ej. `skipped` aquí corresponde a `STATUS: skipped — disabled (ENABLED: false)` o `STATUS: skipped — no envelope.yml (ENROLLED: false) — listed in the fleet but nothing authorizes work here. Fix: cd $repo_path && devlead init` en E1.2). El STATUS canónico y autoritativo se emite durante el outer loop (E1.1–E1.4), no en E0.
 
 ### Mostrar preview completo
 
@@ -372,7 +372,7 @@ bash ~/.devlead/scripts/envelope.sh check
 Extraé `ENROLLED:` y `ENABLED:` de la salida.
 
 Si `ENROLLED: false` (o ausente):
-- Registrá `REPO → STATUS: skipped — no envelope.yml (devlead init)`
+- Registrá `REPO → STATUS: skipped — no envelope.yml (ENROLLED: false) — listed in the fleet but nothing authorizes work here. Fix: cd $repo_path && devlead init`
 - Continuá con el siguiente repo.
 
 Si `ENABLED: false`:
@@ -380,7 +380,7 @@ Si `ENABLED: false`:
 - Continuá con el siguiente repo.
 
 Si `ENABLED: unknown` (switch no legible — yq ausente o `enabled:` no booleano):
-- Registrá `REPO → STATUS: skipped — ENABLED: unknown (switch could not be read)`
+- Registrá `REPO → STATUS: skipped — ENABLED: unknown — envelope.yml exists but its switch could not be read. Check: cd $repo_path && devlead check`
 - Continuá con el siguiente repo.
 
 ### E1.3 — Gate: auth chain (resolve token)
@@ -982,9 +982,9 @@ El vocabulario de resultado (pr-created, parked-*, etc.) es idéntico al de los 
 | Resultado de repo | Cuando |
 |-------------------|--------|
 | `STATUS: completado` | happy path: repo procesado completamente (inner loop agotó la cola en E2) |
-| `STATUS: skipped — no envelope.yml (devlead init)` | ENROLLED: false en E1.2 |
+| `STATUS: skipped — no envelope.yml (ENROLLED: false) — listed in the fleet but nothing authorizes work here. Fix: cd $repo_path && devlead init` | ENROLLED: false en E1.2 |
 | `STATUS: skipped — disabled (ENABLED: false)` | ENABLED: false en E1.2 |
-| `STATUS: skipped — ENABLED: unknown (switch could not be read)` | ENABLED: unknown en E1.2 |
+| `STATUS: skipped — ENABLED: unknown — envelope.yml exists but its switch could not be read. Check: cd $repo_path && devlead check` | ENABLED: unknown en E1.2 |
 | `STATUS: skipped — paused (kill-switch active)` | plan retorna STATUS: paused |
 | `STATUS: skipped — auth-unavailable` | la cadena de auth de 4 pasos falla en E1.3 |
 | `STATUS: cannot-cd` | cd al repo falla en E1.1 |
