@@ -461,6 +461,260 @@ STUB
   fi
 }
 
+# ===========================================================================
+# T10 — envelope dispatch renders through _menu (plain pty,
+# DEVLEAD_NO_GUM=1): "3" picks "Envelope (this repo)" from the main menu,
+# "b" backs out of the field list without touching any field, "q" quits. The
+# field list itself must come from _menu's own fallback renderer, not a
+# hand-rolled printf loop — proven by the "===" header shape and the absence
+# of the OLD "--- Envelope (" banner.
+# ===========================================================================
+t10_envelope_dispatch_via_menu() {
+  read -r dir home < <(_new_sandbox t10)
+  local out
+  out="$(_drive "$dir" "$home" "3" "b" "q")"
+
+  contains "T10: field list renders via _menu's fallback header shape" \
+    "$out" "=== Envelope ("
+  contains "T10: field list carries the 'b) Back' entry" "$out" "b) Back"
+  contains "T10: the no-gum hint line is present" \
+    "$out" "pick a number, or type a field's exact name"
+  not_contains "T10: the old hand-rolled banner is gone" "$out" "--- Envelope ("
+}
+
+# ===========================================================================
+# T10b — _input/_edit_field/_envelope_menu stay §A3-private: neither sweep
+# script (the only two files that could smuggle the envelope screen into an
+# autonomous path) references them at all.
+# ===========================================================================
+t10b_envelope_helpers_stay_private() {
+  local -a helpers=(_input _edit_field _envelope_menu)
+  local -a sweep_scripts=(
+    "$REPO_ROOT/.devlead/scripts/sweep.sh"
+    "$REPO_ROOT/.devlead/scripts/sweep-loop.sh"
+  )
+  local h s found=""
+  for h in "${helpers[@]}"; do
+    for s in "${sweep_scripts[@]}"; do
+      [[ -f "$s" ]] || continue
+      grep -qF "$h" "$s" && found+="$h in $(basename "$s") "
+    done
+  done
+  if [[ -z "$found" ]]; then
+    pass "T10b: none of _input/_edit_field/_envelope_menu are referenced by sweep.sh or sweep-loop.sh"
+  else
+    fail "T10b: found envelope-menu helper reference(s) in sweep scripts: $found"
+  fi
+}
+
+# ===========================================================================
+# T10c — the fallback-only dotted-name path (C4) still resolves through
+# _menu's __invalid__<raw> return, and the unknown-option message names the
+# TYPED text, never the raw __invalid__-prefixed value.
+# ===========================================================================
+t10c_dotted_name_unknown_option() {
+  read -r dir home < <(_new_sandbox t10c)
+  local out
+  out="$(_drive "$dir" "$home" "3" "no.such.field" "b" "q")"
+
+  contains "T10c: unknown dotted name reports the typed text" \
+    "$out" "unknown option 'no.such.field'"
+  not_contains "T10c: the raw __invalid__ prefix never leaks into the message" \
+    "$out" "__invalid__no.such.field"
+}
+
+# ===========================================================================
+# T10d — a blank Enter at the field picker backs out to the caller (the
+# shared `_menu` "b" sentinel), matching `_machine_menu`/`_fleet_menu`/
+# `_main_menu`'s contract since PR #23: "3" opens the envelope screen, a
+# blank line submits nothing, and the main menu header must reappear exactly
+# once more — proving `_envelope_menu` returned rather than redisplaying the
+# field list (which would hang this pty-driven test on the final "q").
+# ===========================================================================
+t10d_blank_at_field_picker_backs_out() {
+  read -r dir home < <(_new_sandbox t10d)
+  local out
+  out="$(_drive "$dir" "$home" "3" "" "q")"
+
+  local main_menu_count field_list_count
+  main_menu_count="$(grep -c "=== DevLead config" <<< "$out")"
+  field_list_count="$(grep -c "=== Envelope (" <<< "$out")"
+  check_eq "T10d: blank Enter at the field picker lands back on the main menu (re-rendered once, no redisplay loop)" \
+    "$main_menu_count" "2"
+  check_eq "T10d: the field picker itself was rendered exactly once, not looped" \
+    "$field_list_count" "1"
+}
+
+# ===========================================================================
+# T11 — gum branch: envelope dispatch + bool field editor. A stub gum
+# buffers each call's piped stdin (the "options"), logs it, and picks by
+# LABEL: call 1 picks "Envelope (" from the main menu, call 2 picks the
+# padded "enabled" field-list row, every later call answers "Back" (the
+# T7/T9 self-terminating idiom). `confirm` always declines, so nothing is
+# ever committed — envelope.yml must stay byte-identical.
+# ===========================================================================
+t11_gum_envelope_dispatch_and_bool() {
+  local dir home
+  read -r dir home < <(_new_sandbox t11)
+
+  local stubdir="$SANDBOX/t11/bin"
+  mkdir -p "$stubdir"
+  cat > "$stubdir/gum" <<'STUB'
+#!/usr/bin/env bash
+echo "gum called: $*" >> "$GUM_CALLS"
+case "${1:-}" in
+  choose)
+    stub_opts="$(cat)"
+    echo "gum options: $stub_opts" >> "$GUM_CALLS"
+    n=$(cat "$GUM_CALLS.n" 2>/dev/null || echo 0)
+    n=$((n + 1)); echo "$n" > "$GUM_CALLS.n"
+    if [[ "$n" -eq 1 ]]; then
+      printf '%s\n' "$stub_opts" | grep -F "Envelope ("
+    elif [[ "$n" -eq 2 ]]; then
+      printf '%s\n' "$stub_opts" | grep -E "^enabled +"
+    else
+      echo "Back"
+    fi
+    ;;
+  confirm) exit 1 ;;     # decline everywhere — this stub never writes anything
+  *) exit 0 ;;
+esac
+STUB
+  chmod +x "$stubdir/gum"
+
+  local calls="$SANDBOX/t11/gum-calls"; : > "$calls"
+  local before after
+  before="$(cat "$dir/.devlead/envelope.yml")"
+  ( cd "$dir" && HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" \
+      DEVLEAD_NO_GUM=0 script -qec "bash .devlead/scripts/config.sh" /dev/null ) >/dev/null 2>&1
+  after="$(cat "$dir/.devlead/envelope.yml")"
+
+  contains "T11: envelope dispatch is rendered via gum choose with the Envelope header" \
+    "$(cat "$calls")" "choose --header Envelope ("
+  contains "T11: the bool field editor is rendered via its own gum choose header" \
+    "$(cat "$calls")" "choose --header New value for enabled"
+  # The dispatch call's own options block already contains the substrings
+  # "true"/"false" (other fields' current values, e.g.
+  # select.require_readiness), so a whole-log `contains` would pass even if
+  # the bool widget never ran. Isolate the bool call's OWN options block —
+  # the lines between its "gum called:" line and the next one — and assert
+  # against exactly that.
+  local bool_options_block
+  bool_options_block="$(awk '
+    /^gum called: choose --header New value for enabled$/ { capture=1; next }
+    /^gum called:/ { capture=0 }
+    capture
+  ' "$calls")"
+  check_eq "T11: the bool field editor's own options block is exactly true/false" \
+    "$bool_options_block" "$(printf 'gum options: true\nfalse')"
+  check_eq "T11: envelope.yml is byte-identical (confirm always declines)" "$after" "$before"
+}
+
+# ===========================================================================
+# T12 — gum branch: int field prefill. The stub adds an `input)` arm (for
+# `gum input`, invoked by `_input`) that logs its arguments and echoes a
+# fixed new value, proving the widget is actually invoked with the current
+# stored value as --value. `confirm` declines, so nothing is committed.
+# ===========================================================================
+t12_gum_input_prefill() {
+  local dir home
+  read -r dir home < <(_new_sandbox t12)
+
+  local stubdir="$SANDBOX/t12/bin"
+  mkdir -p "$stubdir"
+  cat > "$stubdir/gum" <<'STUB'
+#!/usr/bin/env bash
+echo "gum called: $*" >> "$GUM_CALLS"
+case "${1:-}" in
+  choose)
+    stub_opts="$(cat)"
+    echo "gum options: $stub_opts" >> "$GUM_CALLS"
+    n=$(cat "$GUM_CALLS.n" 2>/dev/null || echo 0)
+    n=$((n + 1)); echo "$n" > "$GUM_CALLS.n"
+    if [[ "$n" -eq 1 ]]; then
+      printf '%s\n' "$stub_opts" | grep -F "Envelope ("
+    elif [[ "$n" -eq 2 ]]; then
+      printf '%s\n' "$stub_opts" | grep -E "^budget.max_issues +"
+    else
+      echo "Back"
+    fi
+    ;;
+  input) echo "7" ;;
+  confirm) exit 1 ;;     # decline — this stub never writes anything
+  *) exit 0 ;;
+esac
+STUB
+  chmod +x "$stubdir/gum"
+
+  local calls="$SANDBOX/t12/gum-calls"; : > "$calls"
+  local before after
+  before="$(cat "$dir/.devlead/envelope.yml")"
+  ( cd "$dir" && HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" \
+      DEVLEAD_NO_GUM=0 script -qec "bash .devlead/scripts/config.sh" /dev/null ) >/dev/null 2>&1
+  after="$(cat "$dir/.devlead/envelope.yml")"
+
+  contains "T12: gum input is invoked prefilled with the current stored value" \
+    "$(cat "$calls")" "--value 3"
+  check_eq "T12: envelope.yml is byte-identical (confirm declines)" "$after" "$before"
+}
+
+# ===========================================================================
+# T13 — gum branch: nullable-time prefill with an UNSET field. `budget.stop_at`
+# (type `"string (nullable HH:MM)"`) starts null in the fixture, so this is
+# the only scenario that can tell a correct empty `--value ""` apart from a
+# regression that accidentally prefills the DECORATED placeholder
+# `_current_value` renders for the dispatch list (e.g. "(unset — default:
+# null (no cutoff time))") — `_raw_value` must be what reaches `gum input`,
+# never that label (D2). The stub's `input)` arm echoes blank, mirroring a
+# blank submit; `confirm` declines everywhere (same self-terminating idiom as
+# T11/T12), so envelope.yml must stay byte-identical either way.
+# ===========================================================================
+t13_gum_input_nullable_blank_prefill() {
+  local dir home
+  read -r dir home < <(_new_sandbox t13)
+
+  local stubdir="$SANDBOX/t13/bin"
+  mkdir -p "$stubdir"
+  cat > "$stubdir/gum" <<'STUB'
+#!/usr/bin/env bash
+echo "gum called: $*" >> "$GUM_CALLS"
+case "${1:-}" in
+  choose)
+    stub_opts="$(cat)"
+    echo "gum options: $stub_opts" >> "$GUM_CALLS"
+    n=$(cat "$GUM_CALLS.n" 2>/dev/null || echo 0)
+    n=$((n + 1)); echo "$n" > "$GUM_CALLS.n"
+    if [[ "$n" -eq 1 ]]; then
+      printf '%s\n' "$stub_opts" | grep -F "Envelope ("
+    elif [[ "$n" -eq 2 ]]; then
+      printf '%s\n' "$stub_opts" | grep -E "^budget.stop_at +"
+    else
+      echo "Back"
+    fi
+    ;;
+  input) echo "" ;;      # blank submit — the only discriminating prefill test
+  confirm) exit 1 ;;     # decline — this stub never writes anything
+  *) exit 0 ;;
+esac
+STUB
+  chmod +x "$stubdir/gum"
+
+  local calls="$SANDBOX/t13/gum-calls"; : > "$calls"
+  local before after
+  before="$(cat "$dir/.devlead/envelope.yml")"
+  ( cd "$dir" && HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" \
+      DEVLEAD_NO_GUM=0 script -qec "bash .devlead/scripts/config.sh" /dev/null ) >/dev/null 2>&1
+  after="$(cat "$dir/.devlead/envelope.yml")"
+
+  local input_call
+  input_call="$(grep '^gum called: input ' "$calls")"
+  check_eq "T13: gum input for budget.stop_at is invoked with an EMPTY --value (raw null, not the decorated '(unset — ...)' placeholder)" \
+    "$input_call" "gum called: input --header New value HH:MM, or blank to clear --value "
+  not_contains "T13: the decorated 'unset' placeholder never reaches gum input" \
+    "$input_call" "unset"
+  check_eq "T13: envelope.yml is byte-identical (blank submit -> confirm decline)" "$after" "$before"
+}
+
 main() {
   t1_tty_gate
   t2_no_hardcoded_field_list
@@ -471,6 +725,13 @@ main() {
   t7_gum_branch
   t8_fleet_screen_plain
   t9_gum_branch_fleet
+  t10_envelope_dispatch_via_menu
+  t10b_envelope_helpers_stay_private
+  t10c_dotted_name_unknown_option
+  t10d_blank_at_field_picker_backs_out
+  t11_gum_envelope_dispatch_and_bool
+  t12_gum_input_prefill
+  t13_gum_input_nullable_blank_prefill
 
   echo ""
   echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
