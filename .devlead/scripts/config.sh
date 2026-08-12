@@ -262,35 +262,6 @@ _machine_token() {
   return 0
 }
 
-_machine_enrollment() {
-  local repos_file="$HOME/.devlead/autonomous-repos"
-  local repo="$REPO_ROOT"
-  echo ""
-  echo "--- Repo enrollment (autonomous sweep) ---"
-  local enrolled=false
-  if [[ -f "$repos_file" ]] && grep -qxF "$repo" "$repos_file" 2>/dev/null; then
-    enrolled=true
-  fi
-  echo "this repo ($repo): $([[ "$enrolled" == true ]] && echo enrolled || echo "not enrolled")"
-
-  if [[ "$enrolled" == true ]]; then
-    if _confirm "Remove this repo from the autonomous sweep enrollment?"; then
-      local tmp="$repos_file.tmp.$$"
-      grep -vxF "$repo" "$repos_file" > "$tmp" 2>/dev/null || : > "$tmp"
-      mv -f "$tmp" "$repos_file"
-      echo "config: removed"
-    fi
-  else
-    if _confirm "Enroll this repo in the autonomous sweep?"; then
-      mkdir -p "$(dirname "$repos_file")"
-      touch "$repos_file"
-      grep -qxF "$repo" "$repos_file" 2>/dev/null || echo "$repo" >> "$repos_file"
-      echo "config: enrolled"
-    fi
-  fi
-  return 0
-}
-
 _machine_toggle_timer() {
   local unit="$1" desc="$2"
   local state
@@ -340,14 +311,171 @@ _machine_menu() {
       "Install state"                        doctor \
       "Source checkout anchor"               source \
       "GitHub token"                         token \
-      "Repo enrollment (autonomous sweep)"   enrollment \
       "Timers"                               timers)"
     case "$choice" in
       doctor) _machine_doctor ;;
       source) _machine_source_repo ;;
       token) _machine_token ;;
-      enrollment) _machine_enrollment ;;
       timers) _machine_timers ;;
+      b) return 0 ;;
+      *) echo "config: unknown option '${choice#__invalid__}'" ;;
+    esac
+  done
+}
+
+# =============================================================================
+# Section 1a — Fleet enrollment (this repo) — REQ-3/D3: a single top-level
+# screen replacing the old machine-scoped "Repo enrollment" entry. Fleet-list
+# membership is repo-scoped, not machine-scoped, and folding it under
+# "Machine setup" was part of why the two enrollment halves read as unrelated
+# in the first place.
+#
+# Both halves are re-derived live on every render (Inv 2), never cached
+# across a menu loop iteration: fleet-list membership via a plain grep
+# against ~/.devlead/autonomous-repos (same idiom envelope.sh's own
+# _do_optin and sweep.sh already use), and envelope state exclusively via
+# `envelope.sh check`'s ENROLLED/ENABLED KEY:value CLI protocol — never by
+# re-parsing envelope.yml or naming a dotted field, per C4.
+# =============================================================================
+
+_fleet_list_status() {
+  local repo="$1" repos_file="$HOME/.devlead/autonomous-repos"
+  if [[ -f "$repos_file" ]] && grep -qxF "$repo" "$repos_file" 2>/dev/null; then
+    printf 'listed'
+  else
+    printf 'not-listed'
+  fi
+}
+
+# _fleet_envelope_status — on | off | missing | unreadable, derived purely
+# from `envelope.sh check`'s ENROLLED/ENABLED protocol (C4). Mirrors
+# sweep.sh's own Gate 1/Gate 2 reading exactly, so the two screens can never
+# silently disagree about what "on"/"off"/"missing" means.
+_fleet_envelope_status() {
+  local check_out enrolled enabled
+  check_out="$(bash "$ENVELOPE_BIN" check 2>/dev/null)"
+  enrolled="$(echo "$check_out" | grep "^ENROLLED:" | awk '{print $2}')"
+  if [[ "$enrolled" != "true" ]]; then
+    printf 'missing'
+    return 0
+  fi
+  enabled="$(echo "$check_out" | grep "^ENABLED:" | awk '{print $2}')"
+  case "$enabled" in
+    true) printf 'on' ;;
+    false) printf 'off' ;;
+    *) printf 'unreadable' ;;
+  esac
+}
+
+_fleet_verdict() {
+  local list_status="$1" env_status="$2"
+  if [[ "$list_status" != "listed" ]]; then
+    printf 'the sweep never visits this repo'
+    return 0
+  fi
+  case "$env_status" in
+    on) printf 'runs tonight' ;;
+    off) printf 'listed, deliberately off — nothing to fix' ;;
+    *) printf 'listed but can never run — this is the broken shape' ;;
+  esac
+}
+
+# Set by _fleet_render for the current loop iteration; consumed by
+# _fleet_menu to build its dynamic action labels without re-deriving state
+# a second time in the same render.
+_FLEET_LIST_STATUS=""
+_FLEET_ENV_STATUS=""
+
+# _fleet_render — D5: the human-facing block goes to stderr, same convention
+# _menu already uses, so a piped `devlead config` still shows the state next
+# to the menu.
+_fleet_render() {
+  local repo="$REPO_ROOT"
+  local list_status env_status verdict
+  list_status="$(_fleet_list_status "$repo")"
+  env_status="$(_fleet_envelope_status)"
+  verdict="$(_fleet_verdict "$list_status" "$env_status")"
+
+  local list_label env_label
+  [[ "$list_status" == "listed" ]] && list_label="listed" || list_label="not listed"
+  case "$env_status" in
+    on) env_label="on" ;;
+    off) env_label="off" ;;
+    missing) env_label="missing" ;;
+    *) env_label="unreadable" ;;
+  esac
+
+  {
+    echo ""
+    echo "--- Enrollment (this repo) ---"
+    echo "repo: $repo"
+    echo ""
+    echo "fleet list (~/.devlead/autonomous-repos): $list_label"
+    echo "  grants: WHERE the nightly sweep looks. Listing alone authorizes no work."
+    echo "envelope (.devlead/envelope.yml): $env_label"
+    echo "  grants: WHETHER this repo may work, and how far. Without it every visit ends in a skip."
+    echo ""
+    echo "verdict: $verdict"
+  } >&2
+
+  _FLEET_LIST_STATUS="$list_status"
+  _FLEET_ENV_STATUS="$env_status"
+}
+
+# _fleet_toggle_list — verbatim write bodies from the retired
+# _machine_enrollment (D3): only the surrounding menu changed, not the logic
+# that mutates ~/.devlead/autonomous-repos.
+_fleet_toggle_list() {
+  local repos_file="$HOME/.devlead/autonomous-repos"
+  local repo="$REPO_ROOT"
+  if [[ "$_FLEET_LIST_STATUS" == "listed" ]]; then
+    if _confirm "Remove this repo from the fleet list (~/.devlead/autonomous-repos)?"; then
+      local tmp="$repos_file.tmp.$$"
+      grep -vxF "$repo" "$repos_file" > "$tmp" 2>/dev/null || : > "$tmp"
+      mv -f "$tmp" "$repos_file"
+      echo "config: removed from fleet list"
+    fi
+  else
+    if _confirm "Add this repo to the fleet list (~/.devlead/autonomous-repos)?"; then
+      mkdir -p "$(dirname "$repos_file")"
+      touch "$repos_file"
+      grep -qxF "$repo" "$repos_file" 2>/dev/null || echo "$repo" >> "$repos_file"
+      echo "config: added to fleet list"
+    fi
+  fi
+  return 0
+}
+
+_fleet_menu() {
+  while true; do
+    _fleet_render
+
+    local list_label
+    if [[ "$_FLEET_LIST_STATUS" == "listed" ]]; then
+      list_label="Remove from fleet list"
+    else
+      list_label="Add to fleet list"
+    fi
+
+    local envelope_label
+    if [[ "$_FLEET_ENV_STATUS" == "missing" ]]; then
+      envelope_label="Create the envelope here"
+    else
+      envelope_label="Open the envelope editor"
+    fi
+
+    local choice
+    choice="$(_menu "Enrollment (this repo)" \
+      "$list_label"     list \
+      "$envelope_label" envelope)"
+    case "$choice" in
+      list) _fleet_toggle_list ;;
+      # Both "create" and "edit" route through the SAME existing
+      # _envelope_menu call site (REQ-3/2.3) — it already offers the
+      # `bash "$ENVELOPE_BIN" init` prompt when ENV_FILE is missing and the
+      # schema-driven editor when it is present. No second init call site
+      # is added here.
+      envelope) _envelope_menu ;;
       b) return 0 ;;
       *) echo "config: unknown option '${choice#__invalid__}'" ;;
     esac
@@ -774,11 +902,13 @@ _main_menu() {
     # both cancel and the last entry, and there is nowhere above here to go.
     local choice
     choice="$(_menu "DevLead config — $REPO_ROOT" \
-      "Machine setup"          machine \
-      "Envelope (this repo)"   envelope \
-      "Quit"                   quit)"
+      "Machine setup"              machine \
+      "Enrollment (this repo)"     fleet \
+      "Envelope (this repo)"       envelope \
+      "Quit"                       quit)"
     case "$choice" in
       machine) _machine_menu ;;
+      fleet) _fleet_menu ;;
       envelope) _envelope_menu ;;
       quit|b) return 0 ;;
       *) echo "config: unknown option '${choice#__invalid__}'" ;;

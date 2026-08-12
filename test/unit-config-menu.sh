@@ -179,7 +179,7 @@ t2_no_hardcoded_field_list() {
 t3_valid_change() {
   read -r dir home < <(_new_sandbox t3)
   _drive "$dir" "$home" \
-    "2" \
+    "3" \
     "select.require_readiness" \
     "no" \
     "y" \
@@ -205,7 +205,7 @@ t4_invalid_change_reverts() {
 
   local out
   out="$(_drive "$dir" "$home" \
-    "2" \
+    "3" \
     "merge.mode" \
     "integration-branch" \
     "y" \
@@ -347,6 +347,120 @@ STUB
     "$pred" "command -v gum"
 }
 
+# ===========================================================================
+# T8 — the unified fleet-enrollment screen (plain pty, DEVLEAD_NO_GUM=1),
+# fleet-single-source-devlead REQ-3/REQ-4: per shape (listed+enabled,
+# listed+disabled, listed+no-envelope), both halves + both grant lines +
+# the derived verdict must render together on ONE screen, plus a fourth
+# scenario proving the list-membership toggle actually writes
+# ~/.devlead/autonomous-repos under the sandboxed $HOME.
+# ===========================================================================
+t8_fleet_screen_plain() {
+  local dir home out
+
+  # --- shape: listed + enabled ------------------------------------------
+  read -r dir home < <(_new_sandbox t8-enabled)
+  printf '%s' "${DEFAULT_ENVELOPE/enabled: false/enabled: true}" > "$dir/.devlead/envelope.yml"
+  mkdir -p "$home/.devlead"
+  printf '%s\n' "$dir" > "$home/.devlead/autonomous-repos"
+  out="$(_drive "$dir" "$home" "2" "b" "q")"
+  contains "T8 listed+enabled: fleet-list half shows 'listed'" \
+    "$out" "fleet list (~/.devlead/autonomous-repos): listed"
+  contains "T8 listed+enabled: fleet-list grant line present" \
+    "$out" "WHERE the nightly sweep looks. Listing alone authorizes no work."
+  contains "T8 listed+enabled: envelope half shows 'on'" \
+    "$out" "envelope (.devlead/envelope.yml): on"
+  contains "T8 listed+enabled: envelope grant line present" \
+    "$out" "WHETHER this repo may work, and how far. Without it every visit ends in a skip."
+  contains "T8 listed+enabled: verdict is 'runs tonight'" \
+    "$out" "verdict: runs tonight"
+
+  # --- shape: listed + disabled ------------------------------------------
+  read -r dir home < <(_new_sandbox t8-disabled)
+  mkdir -p "$home/.devlead"
+  printf '%s\n' "$dir" > "$home/.devlead/autonomous-repos"
+  out="$(_drive "$dir" "$home" "2" "b" "q")"
+  contains "T8 listed+disabled: envelope half shows 'off'" \
+    "$out" "envelope (.devlead/envelope.yml): off"
+  contains "T8 listed+disabled: verdict is the deliberate-off wording" \
+    "$out" "verdict: listed, deliberately off — nothing to fix"
+
+  # --- shape: listed + no-envelope ---------------------------------------
+  read -r dir home < <(_new_sandbox t8-missing)
+  rm -f "$dir/.devlead/envelope.yml"
+  mkdir -p "$home/.devlead"
+  printf '%s\n' "$dir" > "$home/.devlead/autonomous-repos"
+  out="$(_drive "$dir" "$home" "2" "b" "q")"
+  contains "T8 listed+no-envelope: envelope half shows 'missing'" \
+    "$out" "envelope (.devlead/envelope.yml): missing"
+  contains "T8 listed+no-envelope: verdict is the broken-shape wording" \
+    "$out" "verdict: listed but can never run — this is the broken shape"
+  contains "T8 listed+no-envelope: dynamic action offers to create the envelope" \
+    "$out" "Create the envelope here"
+
+  # --- toggle: not-listed -> Add to fleet list writes autonomous-repos ---
+  read -r dir home < <(_new_sandbox t8-toggle)
+  _drive "$dir" "$home" "2" "1" "y" "b" "q" >/dev/null
+  if [[ -f "$home/.devlead/autonomous-repos" ]] && grep -qxF "$dir" "$home/.devlead/autonomous-repos"; then
+    pass "T8 toggle: 'Add to fleet list' wrote the repo into the sandboxed autonomous-repos"
+  else
+    fail "T8 toggle: autonomous-repos missing or does not contain the repo path"
+  fi
+}
+
+# ===========================================================================
+# T9 — the gum presentation branch for the fleet screen. T7's stub always
+# picks the FIRST real entry, which cannot reach "Enrollment (this repo)"
+# (it is the second top-level item) — this stub instead selects by LABEL
+# text, wherever it sits in the list. `confirm` always declines, so this
+# scenario never writes anything; a call counter caps the loop so a
+# misbehaving selection can never hang the suite.
+# ===========================================================================
+t9_gum_branch_fleet() {
+  local dir home
+  read -r dir home < <(_new_sandbox t9)
+
+  local stubdir="$SANDBOX/t9/bin"
+  mkdir -p "$stubdir"
+  cat > "$stubdir/gum" <<'STUB'
+#!/usr/bin/env bash
+echo "gum called: $*" >> "$GUM_CALLS"
+case "${1:-}" in
+  choose)
+    n=$(cat "$GUM_CALLS.n" 2>/dev/null || echo 0)
+    n=$((n + 1)); echo "$n" > "$GUM_CALLS.n"
+    if [[ "$n" -eq 1 ]]; then
+      # Select by LABEL, not first-entry: find "Enrollment (this repo)"
+      # wherever it sits in the piped list (it is NOT the first item).
+      grep -F "Enrollment (this repo)" || echo "Back"
+    else
+      # Every call after the first backs out — caps the loop instead of
+      # re-descending into the fleet screen forever.
+      echo "Back"
+    fi
+    ;;
+  confirm) exit 1 ;;     # decline everywhere — this stub never writes anything
+  *) exit 0 ;;
+esac
+STUB
+  chmod +x "$stubdir/gum"
+
+  local calls="$SANDBOX/t9/gum-calls"; : > "$calls"
+  ( cd "$dir" && HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" \
+      DEVLEAD_NO_GUM=0 script -qec "bash .devlead/scripts/config.sh" /dev/null ) >/dev/null 2>&1
+
+  contains "T9: gum is invoked for the fleet screen" \
+    "$(cat "$calls")" "gum called: choose"
+  contains "T9: the gum invocation carries the enrollment header" \
+    "$(cat "$calls")" "Enrollment (this repo)"
+
+  if [[ -f "$home/.devlead/autonomous-repos" ]]; then
+    fail "T9: autonomous-repos was written despite confirm always declining"
+  else
+    pass "T9: nothing was written — confirm decline path honored"
+  fi
+}
+
 main() {
   t1_tty_gate
   t2_no_hardcoded_field_list
@@ -355,6 +469,8 @@ main() {
   t5_token_never_leaks
   t6_wiring
   t7_gum_branch
+  t8_fleet_screen_plain
+  t9_gum_branch_fleet
 
   echo ""
   echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
