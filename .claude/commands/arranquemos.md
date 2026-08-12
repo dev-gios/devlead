@@ -93,6 +93,8 @@ bash ~/.devlead/scripts/devlead-session.sh on
 
 Esto respeta el invariante 7: DevLead es opt-in, se enciende con `/arranquemos` y se apaga con `/cerremos`. Fuera de eso, los hooks quedan inertes.
 
+El registro `~/.devlead/session-repos` que escribe `devlead-session.sh` NO otorga ninguna autoridad — solo saca los hooks del estado inerte para esta sesión. Es distinto de `~/.devlead/autonomous-repos`, que sí habilita ramas/commits/PRs sin supervisión (Inv 3).
+
 ---
 
 ## Paso 2 — Leer el journal

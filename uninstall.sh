@@ -119,7 +119,7 @@ else
 fi
 
 # De-enrollar ESTE repo de autonomous-repos, dejando el resto de las entradas
-# intactas. Mismo idioma dedup que devlead-active.sh `off` (grep -vxF + mktemp +
+# intactas. Mismo idioma dedup que devlead-session.sh `off` (grep -vxF + mktemp +
 # mv). La resolución de root DEBE coincidir con la que _do_optin usó al escribir
 # la línea: `git rev-parse --show-toplevel 2>/dev/null || pwd` (envelope.sh:15).
 _repos_file="$DEVLEAD_DIR/autonomous-repos"
