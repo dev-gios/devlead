@@ -69,6 +69,9 @@
 #                           invoked, so there is no output to scan)
 #   DEVLEAD_LOOP_MAX        default iteration cap (default 10; --max-iterations wins)
 #   DEVLEAD_LOOP_SLEEP      seconds between iterations (default 5)
+#   DEVLEAD_LOOP_STALL      consecutive no-change iterations tolerated before
+#                           the loop declares convergence and stops (default 2;
+#                           0 disables the check and restores cap-only bounding)
 #   DEVLEAD_CLAUDE_BIN      claude binary (default: claude)
 #   DEVLEAD_LOOP_REPO       target repo path to cd into before running; --repo wins
 #                           when both are given (see FIX 7: the systemd unit has no
@@ -129,6 +132,11 @@ RUN_STATE="$_SCRIPT_DIR/run-state.sh"
 CLAUDE_BIN="${DEVLEAD_CLAUDE_BIN:-claude}"
 MAX_ITER="${DEVLEAD_LOOP_MAX:-10}"
 SLEEP_SECS="${DEVLEAD_LOOP_SLEEP:-5}"
+# Consecutive no-change iterations tolerated before the loop declares it has
+# converged. 1 stops at the first repeat; 0 disables the check and restores the
+# old cap-only behaviour. Default 2, so one repeat is treated as a possible
+# flake and two as a pattern.
+STALL_LIMIT="${DEVLEAD_LOOP_STALL:-2}"
 DRYRUN="${DEVLEAD_LOOP_DRYRUN:-0}"
 PLAN_FILE=""
 REPO_DIR="${DEVLEAD_LOOP_REPO:-}"
@@ -404,6 +412,37 @@ _plan_settled() {
   [[ "$_total" -gt 0 && "$_done" -eq "$_total" ]]
 }
 
+# --- Convergence detection --------------------------------------------------
+# The cap above bounds the loop; it does not detect that the loop has stopped
+# learning. Those are different jobs, and only the first one was being done: a
+# plan whose tasks all park for the same reason re-invokes until the cap, each
+# iteration paying a full `claude -p` to reproduce the previous verdict. That
+# is not hypothetical — the first unattended run on this repo burned ten
+# identical iterations, 3h09m wall, to park the same three tasks on the same
+# root cause every time.
+#
+# The signal is the run-state itself: task, status and park reason. A reason
+# that CHANGES means the agent learned something and the next iteration is
+# worth paying for, even when the status stays `parked`. A snapshot identical
+# to the previous one means it did not.
+_run_snapshot() {
+  [[ -n "$PLAN_FILE" ]] || return 0
+  command -v yq &>/dev/null || return 0
+  [[ -x "$RUN_STATE" || -f "$RUN_STATE" ]] || return 0
+
+  local _task _status _reason
+  while IFS= read -r _task; do
+    [[ -n "$_task" ]] || continue
+    if bash "$RUN_STATE" is-done "$RUN_ID" "$_task" 2>/dev/null; then
+      _status="done"
+    else
+      _status="pending"
+    fi
+    _reason="$(bash "$RUN_STATE" reason "$RUN_ID" "$_task" 2>/dev/null)"
+    printf '%s\t%s\t%s\n' "$_task" "$_status" "$_reason"
+  done < <(yq e '.tasks[].id' "$PLAN_FILE" 2>/dev/null)
+}
+
 # --- The prompt each iteration would run -----------------------------------
 # Built as a string, invoked through an argv array — never eval'd. A plan path
 # containing a space stays one argument instead of becoming two.
@@ -414,9 +453,45 @@ _sweep_prompt() {
   printf '%s' "$_prompt"
 }
 
+# --- Launcher-scoped environment --------------------------------------------
+# Every DEVLEAD_* knob this script consumes is launcher-only: it tells THIS
+# script where to cd, how often to iterate, which binaries to call. None of
+# them is read by sweep-execute, nor by anything sweep-execute runs
+# (gate-check.sh, envelope.sh, run-state.sh, branch.sh, the hooks).
+#
+# That matters because the systemd unit sets EnvironmentFile=, which puts these
+# in the SERVICE's environment — so every descendant inherits them, `make test`
+# included. Not hypothetical: DEVLEAD_LOOP_REPO reached the sandbox of
+# test/unit-sweep-loop.sh and made its 21 "outside a git work tree" guard tests
+# fail, turning the gate red on ten consecutive runs while the task work in the
+# branches was already complete. The gate was right to fail — the environment
+# lied to it about where the repo was.
+#
+# Stripping at the invocation boundary fixes the class. Unsetting the variable
+# inside the one test that happened to notice would leave every other child
+# process still reading the launcher's private configuration.
+_LAUNCHER_ONLY_VARS=(
+  DEVLEAD_LOOP_DRYRUN
+  DEVLEAD_LOOP_MAX
+  DEVLEAD_LOOP_SLEEP
+  DEVLEAD_LOOP_STALL
+  DEVLEAD_CLAUDE_BIN
+  DEVLEAD_LOOP_REPO
+  DEVLEAD_ALLOW_DRIFT
+  DEVLEAD_DOCTOR_BIN
+)
+_ENV_STRIP=()
+for _v in "${_LAUNCHER_ONLY_VARS[@]}"; do _ENV_STRIP+=(-u "$_v"); done
+unset _v
+
 # Readable form for the dry run: what you would type, not %q's backslash soup.
+# Renders the strip flags too — a dry run that hides them would no longer be a
+# preview of the real invocation, and this dry run is the verification tool.
 _sweep_display() {
-  printf '%s -p "%s"' "$CLAUDE_BIN" "$(_sweep_prompt)"
+  local _v
+  printf 'env'
+  for _v in "${_LAUNCHER_ONLY_VARS[@]}"; do printf ' -u %s' "$_v"; done
+  printf ' %s -p "%s"' "$CLAUDE_BIN" "$(_sweep_prompt)"
 }
 
 # --- Reactive not-a-git-repo detection --------------------------------------
@@ -438,6 +513,8 @@ fi
 
 # --- Loop ------------------------------------------------------------------
 _iter=0
+_stall=0
+_prev_snapshot=""
 while [[ "$_iter" -lt "$MAX_ITER" ]]; do
   _iter=$((_iter + 1))
 
@@ -457,7 +534,7 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
   fi
 
   echo "sweep-loop: iteration $_iter/$MAX_ITER — invoking $CLAUDE_BIN"
-  "$CLAUDE_BIN" -p "$(_sweep_prompt)" | tee "$_SWEEP_OUT"
+  env "${_ENV_STRIP[@]}" "$CLAUDE_BIN" -p "$(_sweep_prompt)" | tee "$_SWEEP_OUT"
   _rc=${PIPESTATUS[0]}
   echo "sweep-loop: iteration $_iter exited $_rc"
 
@@ -467,6 +544,25 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
     echo "sweep-loop: pass --repo <path> or set \$DEVLEAD_LOOP_REPO to the target repo instead" >&2
     echo "sweep-loop: stopping after iteration $_iter — re-invoking would repeat the same failure" >&2
     exit 1
+  fi
+
+  if [[ "$STALL_LIMIT" -gt 0 ]]; then
+    _snapshot="$(_run_snapshot)"
+    if [[ -n "$_snapshot" && "$_snapshot" == "$_prev_snapshot" ]]; then
+      _stall=$((_stall + 1))
+      echo "sweep-loop: iteration $_iter changed nothing in the run state ($_stall/$STALL_LIMIT)"
+    else
+      _stall=0
+    fi
+    _prev_snapshot="$_snapshot"
+
+    if [[ "$_stall" -ge "$STALL_LIMIT" ]]; then
+      echo "sweep-loop: converged — $((_stall + 1)) consecutive iterations left the run state identical"
+      echo "sweep-loop: stopping at iteration $_iter of $MAX_ITER; re-invoking would reproduce the same verdict"
+      echo "sweep-loop: outstanding work and why it is stuck:"
+      printf '%s\n' "$_snapshot" | sed 's/^/  /'
+      exit 0
+    fi
   fi
 
   if [[ "$_iter" -lt "$MAX_ITER" ]]; then
