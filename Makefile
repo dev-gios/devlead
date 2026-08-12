@@ -23,5 +23,6 @@ test:
 	bash test/unit-config-menu.sh
 	bash test/unit-sweep-loop.sh
 	bash test/unit-loop-units.sh
+	bash test/unit-registry-separation.sh
 	bash test/smoke-outcomes.sh
 	bash test/smoke-pinned-release.sh
