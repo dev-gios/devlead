@@ -21,9 +21,10 @@ read of the session registry (`active-repos` literal, its future `session-repos`
 the `ACTIVE_FILE` canonical variable name matched with word boundaries, or a real
 invocation of `devlead-active.sh` — including the two-line idiom where the script path is
 composed into a variable on one line and invoked via that variable on a later line).
-The autonomous path is scanned as a blanket set: every `*.sh` file directly under
-`.devlead/scripts/` and `.claude/hooks/`, except the declared session-side set
-(`post-edit.sh`, `gate-check.sh`, `devlead-active.sh`), plus `.claude/commands/sweep-execute.md`
+The autonomous path is scanned as a blanket set: every `*.sh` file under
+`.devlead/scripts/` and `.claude/hooks/`, recursively (at any depth, not just the top
+level of each root), except the declared session-side set (`post-edit.sh`,
+`gate-check.sh`, `devlead-active.sh`), plus `.claude/commands/sweep-execute.md`
 in the string-search net. This scan universe is independent of the transitive-closure
 derivation in REQ-8 — a script reachable only through a string-scanned surface, or through
 call-site-composed indirection that produces no literal `NAME.sh` token, is still covered
@@ -67,13 +68,22 @@ scan set: scanned when it exists on disk, skipped without failing when it does n
 ### Requirement: REQ-3 — File:Line Failure Reporting
 
 On any detected violation, the system MUST report the exact source `FILE:LINE` plus the
-trimmed offending source line, in the form `FAIL <file>:<line>: <trimmed source>`.
+trimmed offending source line. In the actual harness this is not a standalone message —
+the shared `check`/`contains` harness (borrowed from `test/unit-doctor.sh`) prints a
+`FAIL <check-name>` header line for the failing assertion, followed by an `actual: [...]`
+line whose contents are the scanner's own output: zero or more `<file>:<line>: <trimmed
+source>` entries, one per violation, produced by `scan_file`. The `<file>:<line>: <trimmed
+source>` shape itself — and the guarantee that it identifies the exact offending location —
+is unchanged; only the literal `FAIL <file>:<line>: ...` string form described previously
+was inaccurate.
 
 #### Scenario: Violation output identifies exact location
 
 - GIVEN a fixture file with a planted violation on a known line number
 - WHEN the guard detects the violation
-- THEN the failure message contains that file's path and that exact line number
+- THEN the check reports a `FAIL <check-name>` header, and its `actual: [...]` line
+  contains that file's path and that exact line number in `<file>:<line>: <trimmed
+  source>` form
 
 ### Requirement: REQ-4 — Prose-Mention Exemption
 
@@ -220,3 +230,30 @@ it, since a missing file degrades to an empty (and therefore "clean") scan resul
 - Runtime/hook enforcement — this is a static test, not a gate.
 - Migrating existing tests' hardcoded registry literals (test/unit-gate-check.sh,
   test/smoke-outcomes.sh, test/smoke-pinned-release.sh).
+
+## Residual Risks (accepted limitations, disclosed honestly)
+
+This guard is a `grep -nE` static line scanner, not a shell interpreter or data-flow
+analyzer. Two limitations follow directly from that design and are accepted rather than
+solved here:
+
+- **Dynamic string composition defeats literal-substring matching.** A registry literal
+  or canonical variable name built at runtime — e.g. `_a="active-"; _b="repos"` and later
+  concatenated, a literal split across continuation lines, or a name assembled by string
+  concatenation of a base name plus an extension — never appears as a single matchable
+  token on any one line, so this scanner cannot see it. This is an accepted limitation of
+  any grep-based scanner, not a gap specific to this implementation. The compensating
+  controls are the REQ-8 transitive-closure drift lock (which would still flag an
+  undeclared new script appearing in the call graph) and ordinary code review — neither of
+  which depends on literal-substring matching.
+- **The leading-`#` prose exemption is shell-comment semantics applied uniformly, not a
+  targeted allowlist.** `scan_file` skips any line whose first non-blank character is `#`,
+  on every scanned file, including `.claude/commands/sweep-execute.md` (a markdown file).
+  This means: (1) heredoc/usage-text bodies inside scripts that are not prefixed with `#`
+  are NOT exempt and will fail the guard if they happen to mention a guarded literal, and
+  (2) non-`#` markdown prose in `sweep-execute.md` mentioning `active-repos`,
+  `autonomous-repos`, or a canonical variable name will also fail the guard. In both
+  cases the failure mode is CLOSED, never silently OPEN: an unexpected match always
+  produces a visible FAIL that requires human triage (adding a `#`-prefixed exemption or
+  rephrasing the prose), never a silent pass-through. The guard is deliberately biased
+  toward false positives over false negatives on this axis.

@@ -96,7 +96,7 @@ SESSION_PATH_SET=( .claude/hooks/post-edit.sh .claude/hooks/gate-check.sh
 # it by convention when one is added.
 REVERSE_OPTIONAL=( .devlead/lint.sh )
 # FORWARD_SCAN_ROOTS (FIX-1): the REQ-1 blanket scan universe — every *.sh
-# file directly under these dirs, minus SESSION_PATH_SET.
+# file under these dirs AT ANY DEPTH (recursive), minus SESSION_PATH_SET.
 # shellcheck disable=SC2034 # read through _forward_scan_set's nameref (arg $2)
 FORWARD_SCAN_ROOTS=( .devlead/scripts .claude/hooks )
 # shellcheck disable=SC2034 # read through _closure_walk's nameref (arg $3)
@@ -215,8 +215,10 @@ _exists_flag() {
 
 # ---------------------------------------------------------------------------
 # _forward_scan_set <base-dir> <roots-array-name> <exempt-array-name>
-# Populates the global FORWARD_SET with every *.sh file directly under each
-# root dir (no recursion — CLOSURE_DIRS/FORWARD_SCAN_ROOTS are flat today),
+# Populates the global FORWARD_SET with every *.sh file under each root dir
+# AT ANY DEPTH (recursive — a violation nested under e.g.
+# .devlead/scripts/lib/ is just as much on the autonomous path as one at the
+# root, and a non-recursive scan would leave it permanently invisible),
 # minus paths present in the exempt set. This is the FIX-1 blanket universe:
 # independent of _closure_walk's derived reachability, so it also covers
 # scripts reachable only through a string-scanned surface or through
@@ -238,7 +240,7 @@ _forward_scan_set() {
       done
       [[ "$skip" -eq 1 ]] && continue
       FORWARD_SET+=( "$rel" )
-    done < <(find "$base_dir/$dir" -maxdepth 1 -type f -name '*.sh' 2>/dev/null | sort)
+    done < <(find "$base_dir/$dir" -type f -name '*.sh' 2>/dev/null | sort)
   done
 }
 
@@ -609,6 +611,29 @@ contains "fixture word-boundary: exact ACTIVE_FILE usage still fires" "$out" "fi
 #     passes a present one.
 check "fixture existence guard: missing declared file flagged (REQ-12)" "$(_exists_flag "$FIXTURES/does-not-exist.sh")" "no"
 check "fixture existence guard: present declared file passes (REQ-12)" "$(_exists_flag "$FIX_FORWARD")" "yes"
+
+# --- Fixture 14 (FIX-A round 2): recursive forward scan catches a violation
+#     nested below a root's top level — a stand-in for the real gap where a
+#     script under .devlead/scripts/lib/ was invisible to a -maxdepth 1 scan.
+FIX14_ROOT="$FIXTURES/forward14"
+mkdir -p "$FIX14_ROOT/scripts/lib"
+cat > "$FIX14_ROOT/scripts/lib/nested.sh" <<'EOF'
+#!/usr/bin/env bash
+_x="$HOME/.devlead/active-repos"
+EOF
+# shellcheck disable=SC2034 # read through _forward_scan_set's nameref (arg $2)
+FIX14_ROOTS=( scripts )
+# shellcheck disable=SC2034 # read through _forward_scan_set's nameref (arg $3)
+FIX14_EXEMPT=()
+_forward_scan_set "$FIX14_ROOT" FIX14_ROOTS FIX14_EXEMPT
+_fix14_set="${FORWARD_SET[*]}"
+contains "fixture nested: FORWARD_SET includes a file nested below a root's top level (FIX-A)" "$_fix14_set" "scripts/lib/nested.sh"
+_fix14_out=""
+for _rel in "${FORWARD_SET[@]}"; do
+  _fix14_out+="$(scan_file "$FIX14_ROOT/$_rel" "$_rel" "$SESSION_RE")"$'\n'
+done
+_fix14_out="$(printf '%s' "$_fix14_out" | sed '/^$/d')"
+contains "fixture nested: recursive scan fires on the nested violation, naming file:line (FIX-A)" "$_fix14_out" "scripts/lib/nested.sh:2:"
 
 # ===========================================================================
 # Trailer
