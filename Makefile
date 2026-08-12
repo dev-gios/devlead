@@ -22,6 +22,7 @@ test:
 	bash test/unit-discover-command.sh
 	bash test/unit-doctor.sh
 	bash test/unit-config-menu.sh
+	bash test/unit-sweep-report.sh
 	bash test/unit-sweep-loop.sh
 	bash test/unit-loop-units.sh
 	bash test/unit-registry-separation.sh
