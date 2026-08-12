@@ -619,6 +619,22 @@ _current_value() {
   esac
 }
 
+# _raw_value <field> — scalar-only counterpart to _current_value: returns the
+# RAW stored value (empty string on unset/null), never the DECORATED label
+# _current_value produces (e.g. "(unset — default: 3)"). Used exclusively to
+# prefill a gum widget — prefilling the decorated label would be a bug (D2).
+_raw_value() {
+  local field="$1"
+  local path=".${field}"
+  local t
+  t="$(yq e "${path} | type" "$ENV_FILE" 2>/dev/null)"
+  if [[ "$t" == "!!null" || -z "$t" ]]; then
+    printf ''
+  else
+    yq e "${path}" "$ENV_FILE" 2>/dev/null
+  fi
+}
+
 # _ensure_parent_path field file — makes sure every ancestor map of a dotted
 # path exists (as an empty map) in the given file before a leaf assignment
 # runs. Derived purely from the dotted path string handed in at runtime —
@@ -724,11 +740,13 @@ _edit_list_of_objects() {
   local path_help="" path_conseq="" spec_help="" spec_conseq=""
   _schema_lookup "${field}[].path" path_help path_conseq
   _schema_lookup "${field}[].spec" spec_help spec_conseq
-  echo "Enter entries one at a time. Leave the path prompt blank to finish."
-  [[ -n "$path_help" ]] && echo "  path: $path_help"
-  [[ -n "$path_conseq" ]] && echo "        CONSEQUENCE: $path_conseq"
-  [[ -n "$spec_help" ]] && echo "  spec: $spec_help"
-  [[ -n "$spec_conseq" ]] && echo "        CONSEQUENCE: $spec_conseq"
+  {
+    echo "Enter entries one at a time. Leave the path prompt blank to finish."
+    [[ -n "$path_help" ]] && echo "  path: $path_help"
+    [[ -n "$path_conseq" ]] && echo "        CONSEQUENCE: $path_conseq"
+    [[ -n "$spec_help" ]] && echo "  spec: $spec_help"
+    [[ -n "$spec_conseq" ]] && echo "        CONSEQUENCE: $spec_conseq"
+  } >&2
 
   local json="[" first=true count=0 p s
   while true; do
@@ -745,7 +763,7 @@ _edit_list_of_objects() {
     if _confirm "No entries entered — set $field to an empty list?"; then
       _commit_change "$field" ".${field} = []"
     else
-      echo "config: cancelled"
+      echo "config: cancelled" >&2
     fi
     return 0
   fi
@@ -753,84 +771,99 @@ _edit_list_of_objects() {
   if _confirm "Save $count entries for $field?"; then
     NEW_MODS_JSON="$json" _commit_change "$field" ".${field} = (strenv(NEW_MODS_JSON) | from_json)"
   else
-    echo "config: cancelled"
+    echo "config: cancelled" >&2
   fi
 }
 
 _edit_field() {
   local field="$1" type="$2" required="$3" help="$4" consequence="$5"
-  echo ""
-  echo "--- $field ($type) ---"
-  [[ -n "$help" ]] && echo "$help"
-  if [[ -n "$consequence" ]]; then
+  {
     echo ""
-    echo "CONSEQUENCE: $consequence"
-  fi
-  echo ""
+    echo "--- $field ($type) ---"
+    [[ -n "$help" ]] && echo "$help"
+    if [[ -n "$consequence" ]]; then
+      echo ""
+      echo "CONSEQUENCE: $consequence"
+    fi
+    echo ""
+  } >&2
 
   case "$type" in
     bool)
       local ans
-      read -r -p "New value for $field — yes/no (blank = cancel): " ans || ans=""
+      # Two-option gum choose with the literal true/false labels (D4) — NOT
+      # routed through _menu, whose fallback would render a NUMBERED list and
+      # turn a plain "no" answer into __invalid__no under DEVLEAD_NO_GUM=1.
+      if _has_gum; then
+        ans="$(printf '%s\n' true false \
+          | gum choose --header "New value for $field" 2>/dev/null)" || ans=""
+      else
+        read -r -p "New value for $field — yes/no (blank = cancel): " ans || ans=""
+      fi
       case "${ans,,}" in
-        y|yes|si|sí)
-          if _confirm "Set $field = true?"; then _commit_change "$field" ".${field} = true"; else echo "config: cancelled"; fi
+        y|yes|si|sí|true)
+          if _confirm "Set $field = true?"; then _commit_change "$field" ".${field} = true"; else echo "config: cancelled" >&2; fi
           ;;
-        n|no)
-          if _confirm "Set $field = false?"; then _commit_change "$field" ".${field} = false"; else echo "config: cancelled"; fi
+        n|no|false)
+          if _confirm "Set $field = false?"; then _commit_change "$field" ".${field} = false"; else echo "config: cancelled" >&2; fi
           ;;
-        "") echo "config: cancelled" ;;
-        *) echo "config: '$ans' is not yes/no — cancelled" ;;
+        "") echo "config: cancelled" >&2 ;;
+        *) echo "config: '$ans' is not yes/no — cancelled" >&2 ;;
       esac
       ;;
     int)
       local v
-      read -r -p "New integer value for $field (blank = cancel): " v || v=""
+      v="$(_input "New integer value for $field (blank = cancel): " "$(_raw_value "$field")")" || v=""
       if [[ -z "$v" ]]; then
-        echo "config: cancelled"
+        echo "config: cancelled" >&2
       elif [[ "$v" =~ ^[0-9]+$ ]]; then
-        if _confirm "Set $field = $v?"; then _commit_change "$field" ".${field} = ${v}"; else echo "config: cancelled"; fi
+        if _confirm "Set $field = $v?"; then _commit_change "$field" ".${field} = ${v}"; else echo "config: cancelled" >&2; fi
       else
-        echo "config: '$v' is not a non-negative integer — cancelled"
+        echo "config: '$v' is not a non-negative integer — cancelled" >&2
       fi
       ;;
     "string (nullable HH:MM)")
       local v
-      read -r -p "New value HH:MM, or blank to clear: " v || v=""
+      v="$(_input "New value HH:MM, or blank to clear: " "$(_raw_value "$field")")" || v=""
       if [[ -z "$v" ]]; then
-        if _confirm "Clear $field?"; then _commit_change "$field" ".${field} = null"; else echo "config: cancelled"; fi
+        # Esc-on-blank under gum collapses to the same v="" as a blank Enter
+        # under the no-gum fallback (_input's non-zero return either way), so
+        # this confirm-then-null path is the ONLY clear affordance for both
+        # presentations — a deliberate gum-only route that stays C7-compliant
+        # (no new "Clear" UI is introduced).
+        if _confirm "Clear $field?"; then _commit_change "$field" ".${field} = null"; else echo "config: cancelled" >&2; fi
       elif [[ "$v" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]]; then
         if _confirm "Set $field = $v?"; then
           NEW_STR_VAL="$v" _commit_change "$field" ".${field} = strenv(NEW_STR_VAL)"
         else
-          echo "config: cancelled"
+          echo "config: cancelled" >&2
         fi
       else
-        echo "config: '$v' is not HH:MM — cancelled"
+        echo "config: '$v' is not HH:MM — cancelled" >&2
       fi
       ;;
     string)
       local v
-      read -r -p "New value for $field (blank = cancel): " v || v=""
+      v="$(_input "New value for $field (blank = cancel): " "$(_raw_value "$field")")" || v=""
       if [[ -z "$v" ]]; then
-        echo "config: cancelled"
+        echo "config: cancelled" >&2
       elif _confirm "Set $field = '$v'?"; then
         NEW_STR_VAL="$v" _commit_change "$field" ".${field} = strenv(NEW_STR_VAL)"
       else
-        echo "config: cancelled"
+        echo "config: cancelled" >&2
       fi
       ;;
     list)
       local v json
       read -r -p "New comma-separated values for $field (blank = $( [[ "$required" == "true" ]] && echo "empty list" || echo "clear" )): " v || v=""
       if [[ -z "$v" && "$required" != "true" ]]; then
-        if _confirm "Clear $field?"; then _commit_change "$field" ".${field} = null"; else echo "config: cancelled"; fi
+        if _confirm "Clear $field?"; then _commit_change "$field" ".${field} = null"; else echo "config: cancelled" >&2; fi
       else
         json="$(_csv_to_json_array "$v")"
         if _confirm "Set $field = $json?"; then
           NEW_LIST_JSON="$json" _commit_change "$field" ".${field} = (strenv(NEW_LIST_JSON) | from_json)"
         else
-          echo "config: cancelled"
+          echo "config: cancelled" >&2
         fi
       fi
       ;;
@@ -838,7 +871,7 @@ _edit_field() {
       _edit_list_of_objects "$field"
       ;;
     *)
-      echo "config: '$field' has no directly settable value here"
+      echo "config: '$field' has no directly settable value here" >&2
       ;;
   esac
 }

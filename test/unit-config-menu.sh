@@ -523,6 +523,107 @@ t10c_dotted_name_unknown_option() {
     "$out" "__invalid__no.such.field"
 }
 
+# ===========================================================================
+# T11 — gum branch: envelope dispatch + bool field editor. A stub gum
+# buffers each call's piped stdin (the "options"), logs it, and picks by
+# LABEL: call 1 picks "Envelope (" from the main menu, call 2 picks the
+# padded "enabled" field-list row, every later call answers "Back" (the
+# T7/T9 self-terminating idiom). `confirm` always declines, so nothing is
+# ever committed — envelope.yml must stay byte-identical.
+# ===========================================================================
+t11_gum_envelope_dispatch_and_bool() {
+  local dir home
+  read -r dir home < <(_new_sandbox t11)
+
+  local stubdir="$SANDBOX/t11/bin"
+  mkdir -p "$stubdir"
+  cat > "$stubdir/gum" <<'STUB'
+#!/usr/bin/env bash
+echo "gum called: $*" >> "$GUM_CALLS"
+case "${1:-}" in
+  choose)
+    stub_opts="$(cat)"
+    echo "gum options: $stub_opts" >> "$GUM_CALLS"
+    n=$(cat "$GUM_CALLS.n" 2>/dev/null || echo 0)
+    n=$((n + 1)); echo "$n" > "$GUM_CALLS.n"
+    if [[ "$n" -eq 1 ]]; then
+      printf '%s\n' "$stub_opts" | grep -F "Envelope ("
+    elif [[ "$n" -eq 2 ]]; then
+      printf '%s\n' "$stub_opts" | grep -E "^enabled +"
+    else
+      echo "Back"
+    fi
+    ;;
+  confirm) exit 1 ;;     # decline everywhere — this stub never writes anything
+  *) exit 0 ;;
+esac
+STUB
+  chmod +x "$stubdir/gum"
+
+  local calls="$SANDBOX/t11/gum-calls"; : > "$calls"
+  local before after
+  before="$(cat "$dir/.devlead/envelope.yml")"
+  ( cd "$dir" && HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" \
+      DEVLEAD_NO_GUM=0 script -qec "bash .devlead/scripts/config.sh" /dev/null ) >/dev/null 2>&1
+  after="$(cat "$dir/.devlead/envelope.yml")"
+
+  contains "T11: envelope dispatch is rendered via gum choose with the Envelope header" \
+    "$(cat "$calls")" "choose --header Envelope ("
+  contains "T11: the bool field editor is rendered via its own gum choose header" \
+    "$(cat "$calls")" "choose --header New value for enabled"
+  contains "T11: bool options include the literal 'true' label" "$(cat "$calls")" "true"
+  contains "T11: bool options include the literal 'false' label" "$(cat "$calls")" "false"
+  check_eq "T11: envelope.yml is byte-identical (confirm always declines)" "$after" "$before"
+}
+
+# ===========================================================================
+# T12 — gum branch: int field prefill. The stub adds an `input)` arm (for
+# `gum input`, invoked by `_input`) that logs its arguments and echoes a
+# fixed new value, proving the widget is actually invoked with the current
+# stored value as --value. `confirm` declines, so nothing is committed.
+# ===========================================================================
+t12_gum_input_prefill() {
+  local dir home
+  read -r dir home < <(_new_sandbox t12)
+
+  local stubdir="$SANDBOX/t12/bin"
+  mkdir -p "$stubdir"
+  cat > "$stubdir/gum" <<'STUB'
+#!/usr/bin/env bash
+echo "gum called: $*" >> "$GUM_CALLS"
+case "${1:-}" in
+  choose)
+    stub_opts="$(cat)"
+    echo "gum options: $stub_opts" >> "$GUM_CALLS"
+    n=$(cat "$GUM_CALLS.n" 2>/dev/null || echo 0)
+    n=$((n + 1)); echo "$n" > "$GUM_CALLS.n"
+    if [[ "$n" -eq 1 ]]; then
+      printf '%s\n' "$stub_opts" | grep -F "Envelope ("
+    elif [[ "$n" -eq 2 ]]; then
+      printf '%s\n' "$stub_opts" | grep -E "^budget.max_issues +"
+    else
+      echo "Back"
+    fi
+    ;;
+  input) echo "7" ;;
+  confirm) exit 1 ;;     # decline — this stub never writes anything
+  *) exit 0 ;;
+esac
+STUB
+  chmod +x "$stubdir/gum"
+
+  local calls="$SANDBOX/t12/gum-calls"; : > "$calls"
+  local before after
+  before="$(cat "$dir/.devlead/envelope.yml")"
+  ( cd "$dir" && HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" \
+      DEVLEAD_NO_GUM=0 script -qec "bash .devlead/scripts/config.sh" /dev/null ) >/dev/null 2>&1
+  after="$(cat "$dir/.devlead/envelope.yml")"
+
+  contains "T12: gum input is invoked prefilled with the current stored value" \
+    "$(cat "$calls")" "--value 3"
+  check_eq "T12: envelope.yml is byte-identical (confirm declines)" "$after" "$before"
+}
+
 main() {
   t1_tty_gate
   t2_no_hardcoded_field_list
@@ -536,6 +637,8 @@ main() {
   t10_envelope_dispatch_via_menu
   t10b_envelope_helpers_stay_private
   t10c_dotted_name_unknown_option
+  t11_gum_envelope_dispatch_and_bool
+  t12_gum_input_prefill
 
   echo ""
   echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
