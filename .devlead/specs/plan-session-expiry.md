@@ -17,6 +17,8 @@ Each entry MUST be `path<TAB>epoch` (`date -u +%s`), tab-delimited, one line per
 ### REQ-2: In-place refresh, one entry per path
 `on` MUST remove any existing line (timestamped or legacy bare) whose path field matches the current root, then append a fresh entry. Exactly one entry per path MUST exist after `on`.
 
+`on` MUST serialize its read-rewrite-replace critical section against concurrent invocations using an exclusive `flock` on a dedicated lockfile (`${ACTIVE_FILE}.lock`, never the registry file itself — the rewrite replaces the registry's inode via `mv`, so locking that file directly would not serialize anything). A lock that cannot be acquired within a few seconds MUST fail loudly (stderr message, exit 1) rather than block forever. Any failure while creating the directory, the registry file, the lock, the temp file, or replacing the registry (e.g. a read-only `~/.devlead`) MUST be reported as a nonzero exit with a stderr message — `on` MUST NOT print its success banner or exit 0 unless the write actually landed. `on` MUST reject (stderr message, nonzero exit, nothing written) a current root containing a TAB or NEWLINE byte, since either would corrupt the tab-delimited registry format or let a crafted repo path inject an extra, attacker-controlled line.
+
 #### Scenario: refresh replaces stale entry
 - GIVEN `/repo/a<TAB>{old_epoch}` exists
 - WHEN `on` runs again for `/repo/a`
@@ -26,6 +28,21 @@ Each entry MUST be `path<TAB>epoch` (`date -u +%s`), tab-delimited, one line per
 - GIVEN a legacy bare line `/repo/a` (no timestamp) exists
 - WHEN `on` runs for `/repo/a`
 - THEN the bare line is replaced by `/repo/a<TAB>{epoch}`, no duplicate remains
+
+#### Scenario: concurrent `on` never loses an update
+- GIVEN N distinct repo paths
+- WHEN `on` runs concurrently for all N
+- THEN exactly N entries survive (no update lost to an unlocked race)
+
+#### Scenario: write failure reported, not swallowed
+- GIVEN `~/.devlead` is not writable
+- WHEN `on` runs
+- THEN it exits nonzero, prints an error to stderr, prints no success banner, and the registry is unchanged
+
+#### Scenario: unsafe path rejected
+- GIVEN the current root contains a TAB or a NEWLINE byte
+- WHEN `on` runs
+- THEN it exits nonzero, prints an error to stderr, and nothing is written (no spoofed or corrupt entry lands)
 
 ### REQ-3: check never mutates the file
 `check` MUST only read and return an exit status; it MUST NOT delete, rewrite, or reorder any line.
@@ -96,10 +113,17 @@ TTL MUST be validated against `^[1-9][0-9]*$` (mirrors `envelope.sh`'s `DEVLEAD_
 ### REQ-9: off removes explicitly, field-based
 `off` MUST remove every line (timestamped or legacy bare) whose path field matches the current root, using field matching instead of whole-line matching. Semantics for callers are unchanged: `off` always removes regardless of TTL state.
 
+`off` MUST use the same lock-serialized critical section, write-failure reporting, and current-root TAB/NEWLINE validation guarantees described in REQ-2.
+
 #### Scenario: off removes both formats
 - GIVEN `/repo/a<TAB>{epoch}` OR a bare `/repo/a` line
 - WHEN `off` runs for `/repo/a`
 - THEN no entry for `/repo/a` remains in the file
+
+#### Scenario: concurrent off never leaves stale entries
+- GIVEN N distinct repo paths each with an active entry
+- WHEN `off` runs concurrently for all N
+- THEN 0 entries remain (no update lost to an unlocked race)
 
 ### REQ-10: No autonomous-repos coupling
 The implementation MUST NOT read or write any `autonomous-repos` file, and MUST NOT introduce a shared registry abstraction linking the two files.
@@ -110,7 +134,7 @@ The implementation MUST NOT read or write any `autonomous-repos` file, and MUST 
 - THEN zero matches are found
 
 ### REQ-11: Test coverage and lint
-`test/unit-devlead-active.sh` MUST cover: fresh (active), expired (inert, line retained), missing timestamp (inert), future timestamp (inert), invalid TTL (fallback + warning), and the pinned default. `test/unit-gate-check.sh:activate_devlead()` MUST write the new `path<TAB>epoch` format. The new suite MUST be wired into the Makefile test target. `shellcheck` MUST be clean on `devlead-active.sh` and the new test file.
+`test/unit-devlead-active.sh` MUST cover: fresh (active), expired (inert, line retained), missing timestamp (inert), future timestamp (inert), invalid TTL (fallback + warning), the pinned default, concurrent `on`/`off` (no lost updates), write failures on `on`/`off` (nonzero exit, no false success, registry unchanged), and TAB/NEWLINE root rejection on `on`/`off` (nonzero exit, nothing written). `test/unit-gate-check.sh:activate_devlead()` MUST write the new `path<TAB>epoch` format. The new suite MUST be wired into the Makefile test target. `shellcheck` MUST be clean on `devlead-active.sh` and the new test file.
 
 #### Scenario: default-pin test fails on drift
 - GIVEN `_TTL_DEFAULT_HOURS=16` in the script

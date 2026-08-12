@@ -16,7 +16,7 @@ Cuando arrancás el día con `/arranquemos`, DevLead:
 
 DevLead se **enciende** con `/arranquemos` y se **apaga** con `/cerremos` (DEVLEAD.md §2, decisión 7). Los hooks (`post-edit.sh`, `gate-check.sh`) están registrados globalmente en `~/.claude/settings.json`, pero quedan **inertes** salvo que el repo actual esté marcado como activo.
 
-Mecanismo: `devlead-active.sh` mantiene la lista `~/.devlead/active-repos`. `/arranquemos` corre `devlead-active.sh on`; `/cerremos` corre `devlead-active.sh off`. Cada hook hace `devlead-active.sh check` al inicio y sale 0 (no-op) si el repo no está activo. Así los gates nunca bloquean sesiones en otros repos.
+Mecanismo: `devlead-active.sh` mantiene la lista `~/.devlead/active-repos`. `/arranquemos` corre `devlead-active.sh on`; `/cerremos` corre `devlead-active.sh off`. Cada hook hace `devlead-active.sh check` al inicio y sale 0 (no-op) si el repo no está activo. Así los gates nunca bloquean sesiones en otros repos. Las entradas también expiran: `check` trata como inertes las entradas más viejas que el TTL (16h por defecto, `DEVLEAD_SESSION_TTL_HOURS`) sin borrarlas.
 
 ---
 

@@ -18,6 +18,12 @@
 # only explicit-removal path. Legacy bare lines (no timestamp, from before
 # this format existed) are always inert but stay matchable/removable by `on`
 # and `off` via field-based (not whole-line) matching.
+# `on`/`off` serialize their read-rewrite-replace critical section with an
+# flock on a dedicated lockfile so concurrent invocations never lose an
+# update; any write failure (permissions, disk) is reported on stderr with a
+# nonzero exit instead of a false success banner; and a repo path containing
+# a TAB or NEWLINE byte is rejected outright (nothing written) since either
+# would corrupt the registry format or inject a spoofed entry.
 # It is local machine state — never committed, never a source of truth on the "qué".
 
 set -uo pipefail
@@ -56,23 +62,72 @@ _drop_root() {
   done
 }
 
+# _validate_root — fails closed (stderr + exit 1, nothing written) if $_root
+# contains a TAB or NEWLINE byte. A TAB would land inside the path field and
+# corrupt the tab-delimited format (breaks dedup/freshness matching); a
+# NEWLINE would let a crafted repo path inject an extra, attacker-controlled
+# line into the registry. Called by on/off before any write; `check` is
+# read-only and does not need it.
+_validate_root() {
+  if [[ "$_root" == *$'\t'* || "$_root" == *$'\n'* ]]; then
+    echo "devlead-active: repo path contains a TAB or NEWLINE byte — refusing to write (would corrupt the registry or inject a spoofed entry)" >&2
+    exit 1
+  fi
+}
+
+# _acquire_lock — opens fd 9 on "${ACTIVE_FILE}.lock" (a dedicated lockfile,
+# never the registry file itself — the rewrite path replaces the registry's
+# inode via `mv`, so locking that file directly would not serialize anything)
+# and takes an exclusive flock, waiting up to a few seconds. Exits 1 with a
+# stderr message on any failure — opening the lockfile or acquiring the lock
+# — so on/off never proceed with an unlocked read-rewrite-replace. `check`
+# stays read-only and lock-free; it never calls this.
+_acquire_lock() {
+  local _lock="${ACTIVE_FILE}.lock"
+  exec 9>"$_lock" || { echo "devlead-active: cannot open lock file $_lock" >&2; exit 1; }
+  if ! flock -w 5 9; then
+    echo "devlead-active: could not acquire lock on $_lock within 5s" >&2
+    exit 1
+  fi
+}
+
 _cmd="${1:-check}"
 _root="$(_repo_root)"
 
 case "$_cmd" in
   on)
-    mkdir -p "$(dirname "$ACTIVE_FILE")"
-    touch "$ACTIVE_FILE"
-    _tmp="$(mktemp "${ACTIVE_FILE}.XXXXXX")"
-    { _drop_root < "$ACTIVE_FILE"; printf '%s\t%s\n' "$_root" "$(date -u +%s)"; } > "$_tmp"
-    mv "$_tmp" "$ACTIVE_FILE"
+    _validate_root
+    mkdir -p "$(dirname "$ACTIVE_FILE")" || { echo "devlead-active: cannot create $(dirname "$ACTIVE_FILE")" >&2; exit 1; }
+    touch "$ACTIVE_FILE" || { echo "devlead-active: cannot write $ACTIVE_FILE" >&2; exit 1; }
+    _acquire_lock
+    _tmp="$(mktemp "${ACTIVE_FILE}.XXXXXX")" || { echo "devlead-active: mktemp failed for $ACTIVE_FILE" >&2; exit 1; }
+    if ! { _drop_root < "$ACTIVE_FILE"; printf '%s\t%s\n' "$_root" "$(date -u +%s)"; } > "$_tmp"; then
+      echo "devlead-active: failed writing $_tmp" >&2
+      rm -f "$_tmp"
+      exit 1
+    fi
+    if ! mv "$_tmp" "$ACTIVE_FILE"; then
+      echo "devlead-active: failed to replace $ACTIVE_FILE" >&2
+      rm -f "$_tmp"
+      exit 1
+    fi
     echo "DevLead activo en: $_root"
     ;;
   off)
+    _validate_root
     if [[ -f "$ACTIVE_FILE" ]]; then
-      _tmp="$(mktemp "${ACTIVE_FILE}.XXXXXX")"
-      _drop_root < "$ACTIVE_FILE" > "$_tmp"
-      mv "$_tmp" "$ACTIVE_FILE"
+      _acquire_lock
+      _tmp="$(mktemp "${ACTIVE_FILE}.XXXXXX")" || { echo "devlead-active: mktemp failed for $ACTIVE_FILE" >&2; exit 1; }
+      if ! _drop_root < "$ACTIVE_FILE" > "$_tmp"; then
+        echo "devlead-active: failed writing $_tmp" >&2
+        rm -f "$_tmp"
+        exit 1
+      fi
+      if ! mv "$_tmp" "$ACTIVE_FILE"; then
+        echo "devlead-active: failed to replace $ACTIVE_FILE" >&2
+        rm -f "$_tmp"
+        exit 1
+      fi
     fi
     echo "DevLead inactivo en: $_root"
     ;;

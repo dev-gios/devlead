@@ -410,6 +410,123 @@ run_cmd "$f7_home" "$f7_root" off DEVLEAD_SESSION_TTL_HOURS=garbage
 check "off: no stderr on garbage TTL (validation is check-only)" "$RUN_ERR" ""
 
 # ===========================================================================
+# Concurrency (FIX 1): unlocked read-modify-write loses concurrent writers.
+# N concurrent `on` for N distinct repos -> exactly N entries survive.
+# N concurrent `off` on the same N repos -> 0 entries remain.
+# ===========================================================================
+CONC_N=12
+cc_home="$(mkhome)"
+cc_roots=()
+for _i in $(seq 1 "$CONC_N"); do
+  cc_roots+=("$(mkroot)")
+done
+
+cc_pids=()
+for cc_r in "${cc_roots[@]}"; do
+  ( cd "$cc_r" && HOME="$cc_home" GIT_CEILING_DIRECTORIES="$SANDBOX" bash "$SCRIPT" on >/dev/null 2>&1 ) &
+  cc_pids+=("$!")
+done
+for cc_pid in "${cc_pids[@]}"; do
+  wait "$cc_pid"
+done
+
+cc_total=0
+for cc_r in "${cc_roots[@]}"; do
+  cc_total=$((cc_total + $(count_for "$cc_home/.devlead/active-repos" "$cc_r")))
+done
+check "concurrency: $CONC_N concurrent 'on' for $CONC_N distinct repos -> exactly $CONC_N entries survive" "$cc_total" "$CONC_N"
+
+cc_off_pids=()
+for cc_r in "${cc_roots[@]}"; do
+  ( cd "$cc_r" && HOME="$cc_home" GIT_CEILING_DIRECTORIES="$SANDBOX" bash "$SCRIPT" off >/dev/null 2>&1 ) &
+  cc_off_pids+=("$!")
+done
+for cc_pid in "${cc_off_pids[@]}"; do
+  wait "$cc_pid"
+done
+
+cc_off_total=0
+for cc_r in "${cc_roots[@]}"; do
+  cc_off_total=$((cc_off_total + $(count_for "$cc_home/.devlead/active-repos" "$cc_r")))
+done
+check "concurrency: $CONC_N concurrent 'off' for the same $CONC_N repos -> 0 entries remain" "$cc_off_total" "0"
+
+# ===========================================================================
+# Write-failure handling (FIX 2): a read-only .devlead directory must not be
+# reported as a false success — no banner, nonzero exit, registry unchanged.
+# ===========================================================================
+wf1_home="$(mkhome)"; wf1_root="$(mkroot)"
+mkdir -p "$wf1_home/.devlead"
+printf '%s\t%s\n' "$wf1_root" "$((NOW - 999999))" > "$wf1_home/.devlead/active-repos"
+wf1_before="$(< "$wf1_home/.devlead/active-repos")"
+chmod 500 "$wf1_home/.devlead"
+run_cmd "$wf1_home" "$wf1_root" on
+chmod 700 "$wf1_home/.devlead"
+check "write-failure: on exits nonzero on read-only .devlead" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
+check "write-failure: on prints no success banner on failure" "$([[ "$RUN_OUT" == *"DevLead activo en:"* ]] && echo yes || echo no)" "no"
+check "write-failure: on prints an error to stderr" "$([[ -n "$RUN_ERR" ]] && echo yes || echo no)" "yes"
+wf1_after="$(< "$wf1_home/.devlead/active-repos")"
+check "write-failure: on leaves registry unchanged" "$wf1_after" "$wf1_before"
+
+wf2_home="$(mkhome)"; wf2_root="$(mkroot)"
+mkdir -p "$wf2_home/.devlead"
+printf '%s\t%s\n' "$wf2_root" "$NOW" > "$wf2_home/.devlead/active-repos"
+wf2_before="$(< "$wf2_home/.devlead/active-repos")"
+chmod 500 "$wf2_home/.devlead"
+run_cmd "$wf2_home" "$wf2_root" off
+chmod 700 "$wf2_home/.devlead"
+check "write-failure: off exits nonzero on read-only .devlead" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
+check "write-failure: off prints no success banner on failure" "$([[ "$RUN_OUT" == *"DevLead inactivo en:"* ]] && echo yes || echo no)" "no"
+check "write-failure: off prints an error to stderr" "$([[ -n "$RUN_ERR" ]] && echo yes || echo no)" "yes"
+wf2_after="$(< "$wf2_home/.devlead/active-repos")"
+check "write-failure: off leaves registry unchanged" "$wf2_after" "$wf2_before"
+
+# ===========================================================================
+# Path validation (FIX 3): a repo root containing a TAB or NEWLINE byte must
+# never reach the registry — TAB corrupts the tab-delimited field format
+# (breaks dedup/freshness); NEWLINE lets a crafted path inject an extra,
+# attacker-controlled line. Both MUST be rejected: nonzero exit, stderr
+# message, nothing written.
+# ===========================================================================
+pv1_home="$(mkhome)"
+pv1_evil_dir="$SANDBOX/$(printf 'evil\nvictim')"
+mkdir -p "$pv1_evil_dir"
+run_cmd "$pv1_home" "$pv1_evil_dir" on
+check "path validation: on rejects a root containing a NEWLINE byte" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
+contains "path validation: on's NEWLINE rejection reports an error on stderr" "$RUN_ERR" "TAB or NEWLINE"
+check "path validation: on writes nothing for a NEWLINE root" "$([[ -e "$pv1_home/.devlead/active-repos" ]] && echo yes || echo no)" "no"
+
+pv2_home="$(mkhome)"
+pv2_tab_dir="$SANDBOX/$(printf 'ev\til')"
+mkdir -p "$pv2_tab_dir"
+run_cmd "$pv2_home" "$pv2_tab_dir" on
+check "path validation: on rejects a root containing a TAB byte" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
+contains "path validation: on's TAB rejection reports an error on stderr" "$RUN_ERR" "TAB or NEWLINE"
+check "path validation: on writes nothing for a TAB root" "$([[ -e "$pv2_home/.devlead/active-repos" ]] && echo yes || echo no)" "no"
+
+pv3_home="$(mkhome)"
+pv3_evil_dir="$SANDBOX/$(printf 'evil3\nvictim3')"
+mkdir -p "$pv3_evil_dir"
+mkdir -p "$pv3_home/.devlead"
+printf 'sentinel\t%s\n' "$NOW" > "$pv3_home/.devlead/active-repos"
+pv3_before="$(< "$pv3_home/.devlead/active-repos")"
+run_cmd "$pv3_home" "$pv3_evil_dir" off
+check "path validation: off rejects a root containing a NEWLINE byte" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
+pv3_after="$(< "$pv3_home/.devlead/active-repos")"
+check "path validation: off's NEWLINE rejection leaves registry unchanged" "$pv3_after" "$pv3_before"
+
+pv4_home="$(mkhome)"
+pv4_tab_dir="$SANDBOX/$(printf 'ev4\til4')"
+mkdir -p "$pv4_tab_dir"
+mkdir -p "$pv4_home/.devlead"
+printf 'sentinel\t%s\n' "$NOW" > "$pv4_home/.devlead/active-repos"
+pv4_before="$(< "$pv4_home/.devlead/active-repos")"
+run_cmd "$pv4_home" "$pv4_tab_dir" off
+check "path validation: off rejects a root containing a TAB byte" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
+pv4_after="$(< "$pv4_home/.devlead/active-repos")"
+check "path validation: off's TAB rejection leaves registry unchanged" "$pv4_after" "$pv4_before"
+
+# ===========================================================================
 # CLI (usage / defaults / hook-guard invocation form)
 # ===========================================================================
 c1_home="$(mkhome)"; c1_root="$(mkroot)"
