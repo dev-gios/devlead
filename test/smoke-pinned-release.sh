@@ -384,6 +384,37 @@ s6b_migration_via_init() {
 }
 
 # ===========================================================================
+# S6c — plan-registry-rename REQ-5: bootstrap prunes the orphaned legacy
+# devlead-active.sh (single hardcoded path, idempotent, silent when absent).
+# ===========================================================================
+s6c_prunes_orphaned_legacy_script() {
+  local src; src="$(fresh_src_copy s6c)"
+  local home; home="$(fresh_home s6c)"
+  seed_source_repo "$home" "$src"
+
+  mkdir -p "$home/.devlead/scripts"
+  printf '#!/usr/bin/env bash\necho orphan\n' > "$home/.devlead/scripts/devlead-active.sh"
+  chmod +x "$home/.devlead/scripts/devlead-active.sh"
+
+  envelope "$home" "$src" upgrade >/dev/null
+
+  [[ ! -e "$home/.devlead/scripts/devlead-active.sh" ]] \
+    && pass "S6c REQ-05: orphaned devlead-active.sh is gone after publish" \
+    || fail "S6c REQ-05: orphaned devlead-active.sh still present after publish"
+  [[ -f "$home/.devlead/scripts/devlead-session.sh" ]] \
+    && pass "S6c REQ-05: devlead-session.sh published alongside the prune" \
+    || fail "S6c REQ-05: devlead-session.sh missing after publish"
+
+  local out2 rc2
+  out2="$(envelope "$home" "$src" upgrade)"; rc2=$?
+  [[ $rc2 -eq 0 ]] && pass "S6c REQ-05: second publish (nothing to prune) exits 0" \
+    || fail "S6c REQ-05: second publish exited $rc2"
+  [[ ! -e "$home/.devlead/scripts/devlead-active.sh" ]] \
+    && pass "S6c REQ-05: idempotent — legacy script still absent on second publish" \
+    || fail "S6c REQ-05: legacy script reappeared on second publish"
+}
+
+# ===========================================================================
 # S7 — REQ-09 [CARDINAL]: gh-token/autonomous-repos/repo-envelope.yml
 # untouched by upgrade AND init (byte-for-byte + mtime).
 # ===========================================================================
@@ -530,6 +561,7 @@ main() {
   s5_init_first_time_and_versioned
   s6a_migration_via_upgrade
   s6b_migration_via_init
+  s6c_prunes_orphaned_legacy_script
   s7_out_of_scope_guard
   s8_no_tag_fallback
   s9_fault_injection_heal_on_rerun

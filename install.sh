@@ -58,7 +58,7 @@ bootstrap_symlinks "$REPO_DIR"
 # check can miss failures on every OTHER file in the publish set.
 _scripts_ok=false
 if [[ ${#BOOTSTRAP_SYMLINKS_FAILED[@]} -eq 0 ]]; then
-  _ok "~/.devlead/scripts/*.sh → publicado (state, branch, ref-resolver, forbidden-check, devlead-session, envelope, envelope-auth, sweep)"
+  _ok "~/.devlead/scripts/*.sh → publicado (state, branch, ref-resolver, forbidden-check, devlead-active, envelope, envelope-auth, sweep)"
   _scripts_ok=true
 else
   _warn "publish de scripts incompleto — archivos que fallaron:"
