@@ -255,7 +255,14 @@ bootstrap_symlinks() {
   # executable would still write ~/.devlead/active-repos if invoked, pushing
   # the machine into the permanent both-exist abort in _migrate_registry.
   local _legacy="$devlead_dir/scripts/devlead-active.sh"
-  [[ -e "$_legacy" || -L "$_legacy" ]] && { rm -f "$_legacy" && echo "bootstrap: removed legacy $_legacy (renamed to devlead-session.sh)" >&2; }
+  if [[ -e "$_legacy" || -L "$_legacy" ]]; then
+    if rm -f "$_legacy"; then
+      echo "bootstrap: removed legacy $_legacy (renamed to devlead-session.sh)" >&2
+    else
+      echo "bootstrap: WARNING: failed to prune legacy $_legacy" >&2
+      BOOTSTRAP_SYMLINKS_FAILED+=("$_legacy")
+    fi
+  fi
 
   return 0
 }

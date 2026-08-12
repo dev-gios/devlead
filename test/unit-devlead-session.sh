@@ -473,6 +473,7 @@ mb1_legacy_before="$(< "$mb1_home/.devlead/active-repos")"
 mb1_new_before="$(< "$mb1_home/.devlead/session-repos")"
 run_cmd "$mb1_home" "$mb1_root" on
 check "migration on both-exist: exits nonzero" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
+check "migration on both-exist: stdout empty (no success banner on abort)" "$RUN_OUT" ""
 contains "migration on both-exist: stderr names the legacy path" "$RUN_ERR" "active-repos"
 contains "migration on both-exist: stderr names the new path" "$RUN_ERR" "session-repos"
 mb1_legacy_after="$(< "$mb1_home/.devlead/active-repos")"
@@ -488,12 +489,52 @@ mb2_legacy_before="$(< "$mb2_home/.devlead/active-repos")"
 mb2_new_before="$(< "$mb2_home/.devlead/session-repos")"
 run_cmd "$mb2_home" "$mb2_root" off
 check "migration off both-exist: exits nonzero" "$([[ "$RUN_RC" -ne 0 ]] && echo yes || echo no)" "yes"
+check "migration off both-exist: stdout empty (no success banner on abort)" "$RUN_OUT" ""
 contains "migration off both-exist: stderr names the legacy path" "$RUN_ERR" "active-repos"
 contains "migration off both-exist: stderr names the new path" "$RUN_ERR" "session-repos"
 mb2_legacy_after="$(< "$mb2_home/.devlead/active-repos")"
 mb2_new_after="$(< "$mb2_home/.devlead/session-repos")"
 check "migration off both-exist: legacy file byte-identical after abort" "$mb2_legacy_after" "$mb2_legacy_before"
 check "migration off both-exist: new file byte-identical after abort" "$mb2_new_after" "$mb2_new_before"
+
+# ===========================================================================
+# Migration race (registry-rename REQ-2): N concurrent 'on' calls against an
+# old-only registry migrate exactly once — the first invocation to grab the
+# flock does the mv and prints the notice, the rest see an already-migrated
+# file under the same lock and stay silent, but all N still land their own
+# entry in the new registry (flock serializes, nobody's write is lost).
+# ===========================================================================
+MIGRATE_N=6
+mr_home="$(mkhome)"
+mr_foreign="$(mkroot)"
+write_legacy_file "$mr_home" "$(entry "$mr_foreign" "$NOW")"
+
+mr_roots=()
+for _i in $(seq 1 "$MIGRATE_N"); do
+  mr_roots+=("$(mkroot)")
+done
+
+mr_errdir="$(mktemp -d "$SANDBOX/mr-err.XXXXXX")"
+mr_pids=()
+mr_i=0
+for mr_r in "${mr_roots[@]}"; do
+  mr_i=$((mr_i + 1))
+  ( cd "$mr_r" && HOME="$mr_home" GIT_CEILING_DIRECTORIES="$SANDBOX" bash "$SCRIPT" on >/dev/null 2>"$mr_errdir/$mr_i" ) &
+  mr_pids+=("$!")
+done
+for mr_pid in "${mr_pids[@]}"; do
+  wait "$mr_pid"
+done
+
+mr_notice_count="$(cat "$mr_errdir"/* 2>/dev/null | grep -c "migrated")"
+check "migration race: exactly one migration notice across $MIGRATE_N concurrent 'on' calls" "$mr_notice_count" "1"
+
+mr_total=0
+for mr_r in "${mr_roots[@]}"; do
+  mr_total=$((mr_total + $(count_for "$mr_home/.devlead/session-repos" "$mr_r")))
+done
+check "migration race: all $MIGRATE_N entries survive in session-repos after the race" "$mr_total" "$MIGRATE_N"
+check "migration race: legacy file gone after the race" "$([[ -e "$mr_home/.devlead/active-repos" ]] && echo yes || echo no)" "no"
 
 # ===========================================================================
 # check's read-only legacy fallback (registry-rename REQ-3)

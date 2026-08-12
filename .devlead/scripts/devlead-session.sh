@@ -159,6 +159,19 @@ case "$_cmd" in
     echo "DevLead inactivo en: $_root"
     ;;
   check)
+    # Accepted TOCTOU: these two -f probes are not atomic with an on/off
+    # migration running concurrently under _acquire_lock. On a legacy-only
+    # machine, a migration mv landing exactly between the two probes can
+    # make both `-f` tests miss (SESSION_FILE not there yet when probed,
+    # LEGACY_SESSION_FILE already gone by the time we fall back to it) — this
+    # can happen at most once per machine, the first time on/off and check
+    # race each other post-rename. Direction is fail-closed: the lost race
+    # yields INERT for this one call, never a false ACTIVE, and the very
+    # next invocation reads SESSION_FILE correctly since the mv already
+    # landed. This is accepted by design — check stays deliberately
+    # lock-free (it runs on every hook invocation; taking the flock here
+    # would add real contention for a one-turn, self-healing blip). Do not
+    # "fix" this into reading stale data or taking the lock.
     _read="$SESSION_FILE"
     [[ -f "$_read" ]] || _read="$LEGACY_SESSION_FILE"
     [[ -f "$_read" ]] || exit 1

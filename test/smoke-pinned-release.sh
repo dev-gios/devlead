@@ -412,6 +412,27 @@ s6c_prunes_orphaned_legacy_script() {
   [[ ! -e "$home/.devlead/scripts/devlead-active.sh" ]] \
     && pass "S6c REQ-05: idempotent — legacy script still absent on second publish" \
     || fail "S6c REQ-05: legacy script reappeared on second publish"
+
+  # Dangling-symlink sub-case: the guard is `-e || -L` precisely because a
+  # broken symlink fails `-e` (it stats the target, not the link itself) —
+  # only `-L` catches it. Cover that half explicitly.
+  local src_dangling; src_dangling="$(fresh_src_copy s6c_dangling)"
+  local home_dangling; home_dangling="$(fresh_home s6c_dangling)"
+  seed_source_repo "$home_dangling" "$src_dangling"
+
+  mkdir -p "$home_dangling/.devlead/scripts"
+  ln -s "$home_dangling/.devlead/scripts/nonexistent-target" \
+    "$home_dangling/.devlead/scripts/devlead-active.sh"
+
+  envelope "$home_dangling" "$src_dangling" upgrade >/dev/null
+
+  [[ ! -e "$home_dangling/.devlead/scripts/devlead-active.sh" \
+     && ! -L "$home_dangling/.devlead/scripts/devlead-active.sh" ]] \
+    && pass "S6c REQ-05: dangling-symlink devlead-active.sh is pruned after publish" \
+    || fail "S6c REQ-05: dangling-symlink devlead-active.sh still present after publish"
+  [[ -f "$home_dangling/.devlead/scripts/devlead-session.sh" ]] \
+    && pass "S6c REQ-05: devlead-session.sh published alongside the dangling-symlink prune" \
+    || fail "S6c REQ-05: devlead-session.sh missing after dangling-symlink prune"
 }
 
 # ===========================================================================
