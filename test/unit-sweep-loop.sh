@@ -8,6 +8,21 @@
 # the real ~/.devlead tree is never read or written.
 set -uo pipefail
 
+# HERMETIC ENVIRONMENT. Every knob below is an input to the script under test,
+# so inheriting one from the caller's shell silently rewrites what these
+# scenarios assert. That is not theoretical: with DEVLEAD_LOOP_REPO exported,
+# the loop resolves a repo before the "outside a git work tree" scenarios can
+# observe it failing to, and 21 of them fail for a reason that has nothing to
+# do with the code. Each scenario sets what it needs as a command prefix; the
+# ambient shell gets no vote.
+#
+# sweep-loop.sh strips these same variables from the child it invokes, which is
+# what keeps the unattended path clean. This unset is the other half: it keeps
+# the suite honest no matter who runs it, or with what exported.
+unset DEVLEAD_LOOP_DRYRUN DEVLEAD_LOOP_MAX DEVLEAD_LOOP_SLEEP \
+      DEVLEAD_CLAUDE_BIN DEVLEAD_LOOP_REPO DEVLEAD_ALLOW_DRIFT \
+      DEVLEAD_DOCTOR_BIN
+
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 LOOP="$REPO_ROOT/.devlead/scripts/sweep-loop.sh"
 RUN_STATE="$REPO_ROOT/.devlead/scripts/run-state.sh"
@@ -506,6 +521,154 @@ rc=$?
 check "ok-and-trunk: exits 0" "$rc" "0"
 not_contains "ok-and-trunk: no provenance block message" "$out" "provenance"
 check "ok-and-trunk: claude WAS invoked" "$([[ -f "$MARKER_FILE" ]] && echo yes || echo no)" "yes"
+
+# --- The launcher does not leak its own configuration to the child ---------
+# REGRESSION. The systemd unit sets EnvironmentFile=, so DEVLEAD_LOOP_REPO and
+# its siblings live in the SERVICE environment and every descendant inherits
+# them — `claude`, then /sweep-execute, then `make test`. DEVLEAD_LOOP_REPO
+# reaching this very file's sandbox made the 21 "outside a git work tree" guard
+# tests fail and turned the gate red on ten consecutive unattended runs, while
+# the task work in the branches was already complete. The gate was right to
+# fail: the environment had lied to it about where the repo was.
+#
+# The assertion is on the CHILD's environment, not on the launcher's output,
+# because that is where the damage happened.
+ENV_DUMP="$SANDBOX/child-env-dump"
+FAKE_CLAUDE_ENVDUMP="$SANDBOX/fake-claude-envdump"
+cat > "$FAKE_CLAUDE_ENVDUMP" <<FAKE
+#!/usr/bin/env bash
+env | grep '^DEVLEAD_' | sort > "$ENV_DUMP"
+echo "sweep-execute: ran"
+exit 0
+FAKE
+chmod +x "$FAKE_CLAUDE_ENVDUMP"
+
+ENVLEAK_PLAN="$SANDBOX/plan-envleak.yml"
+cat > "$ENVLEAK_PLAN" <<'YML'
+version: 1
+tasks:
+  - id: gamma
+    title: "Unsettled on purpose"
+    type: feat
+YML
+
+rm -f "$ENV_DUMP"
+DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" \
+DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ENVDUMP" \
+DEVLEAD_LOOP_REPO="$REPO_ROOT" \
+DEVLEAD_LOOP_MAX=9 \
+DEVLEAD_LOOP_SLEEP=0 \
+DEVLEAD_ALLOW_DRIFT=1 \
+  bash "$LOOP" --plan "$ENVLEAK_PLAN" --max-iterations 1 >/dev/null 2>&1
+child_env="$(cat "$ENV_DUMP" 2>/dev/null || echo "<no dump: child never ran>")"
+
+check "env-leak: the child actually ran and dumped its environment" \
+  "$([[ -s "$ENV_DUMP" ]] && echo yes || echo no)" "yes"
+
+for _leaky in DEVLEAD_LOOP_REPO DEVLEAD_LOOP_MAX DEVLEAD_LOOP_SLEEP \
+              DEVLEAD_CLAUDE_BIN DEVLEAD_ALLOW_DRIFT DEVLEAD_DOCTOR_BIN \
+              DEVLEAD_LOOP_DRYRUN; do
+  not_contains "env-leak: $_leaky does not reach the child" "$child_env" "$_leaky="
+done
+unset _leaky
+
+# Over-stripping is the opposite failure and just as real: run-state.sh runs
+# INSIDE the child and needs its sandbox root, so this one must survive.
+contains "env-leak: DEVLEAD_RUN_STATE_DIR still reaches the child" \
+  "$child_env" "DEVLEAD_RUN_STATE_DIR="
+
+# The dry run is how this invocation gets verified before it is trusted, so it
+# has to show the strip flags rather than a prettier command than the real one.
+envstrip_out="$(DEVLEAD_LOOP_DRYRUN=1 bash "$LOOP" --plan "$PLAN" --max-iterations 1 2>&1)"
+contains "env-leak: dry run renders the strip flags" \
+  "$envstrip_out" "env -u DEVLEAD_LOOP_DRYRUN"
+contains "env-leak: dry run still shows the claude invocation" \
+  "$envstrip_out" "-u DEVLEAD_DOCTOR_BIN claude -p"
+
+# --- The loop stops when it stops learning ---------------------------------
+# REGRESSION. The cap bounds the loop; it does not notice the loop has stopped
+# making progress. The first unattended run on this repo spent ten iterations
+# and 3h09m re-deriving the same three parked tasks from the same root cause.
+# A task that parks is retried on purpose (PARK is not a pass, GOVERNANCE.md
+# §A4) — but retrying it against an unchanged world buys nothing.
+STALL_PLAN="$SANDBOX/plan-stall.yml"
+cat > "$STALL_PLAN" <<'YML'
+version: 1
+tasks:
+  - id: delta
+    title: "Parks forever"
+    type: feat
+YML
+STALL_RUN_ID="plan-$(sha256sum "$STALL_PLAN" | cut -c1-16)"
+
+# A child that never settles anything: the run state is identical after every
+# iteration, which is exactly the shape of the ten-run night.
+FAKE_CLAUDE_NOOP="$SANDBOX/fake-claude-noop"
+cat > "$FAKE_CLAUDE_NOOP" <<'FAKE'
+#!/usr/bin/env bash
+echo "sweep-execute: parked delta, same reason as last time"
+exit 0
+FAKE
+chmod +x "$FAKE_CLAUDE_NOOP"
+
+bash "$RUN_STATE" mark "$STALL_RUN_ID" delta "parked" "gate red: identical every run"
+stall_out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOOP" \
+  DEVLEAD_LOOP_SLEEP=0 DEVLEAD_ALLOW_DRIFT=1 \
+  bash "$LOOP" --plan "$STALL_PLAN" --max-iterations 10 2>&1)"
+
+contains "stall: announces convergence rather than running out the cap" \
+  "$stall_out" "converged"
+contains "stall: names the park reason so the journal is actionable" \
+  "$stall_out" "identical every run"
+not_contains "stall: never reaches the iteration cap" \
+  "$stall_out" "iteration 10/10"
+# Anchored on the iteration announcement, not on the bare word: the
+# convergence message itself says "re-invoking would reproduce...", and a
+# looser pattern counts that line too.
+check "stall: stops on iteration 3 with the default limit of 2" \
+  "$(printf '%s\n' "$stall_out" | grep -cE '^sweep-loop: iteration [0-9]+/[0-9]+ . invoking')" "3"
+check "stall: converging is a normal outcome, exit 0" \
+  "$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOOP" \
+     DEVLEAD_LOOP_SLEEP=0 DEVLEAD_ALLOW_DRIFT=1 \
+     bash "$LOOP" --plan "$STALL_PLAN" --max-iterations 10 >/dev/null 2>&1; echo $?)" "0"
+
+# Opting out has to keep working: an operator who wants the old cap-only
+# bounding must be able to ask for it.
+nostall_out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOOP" \
+  DEVLEAD_LOOP_SLEEP=0 DEVLEAD_ALLOW_DRIFT=1 DEVLEAD_LOOP_STALL=0 \
+  bash "$LOOP" --plan "$STALL_PLAN" --max-iterations 3 2>&1)"
+not_contains "stall: DEVLEAD_LOOP_STALL=0 disables the check" "$nostall_out" "converged"
+contains "stall: disabled means the cap bounds it as before" "$nostall_out" "iteration cap (3) reached"
+
+# A reason that CHANGES is progress, even while the status stays parked — the
+# agent learned something, so the next iteration is worth paying for.
+PROGRESS_PLAN="$SANDBOX/plan-progress.yml"
+cat > "$PROGRESS_PLAN" <<'YML'
+version: 1
+tasks:
+  - id: epsilon
+    title: "Parks with a new reason each time"
+    type: feat
+YML
+PROGRESS_RUN_ID="plan-$(sha256sum "$PROGRESS_PLAN" | cut -c1-16)"
+FAKE_CLAUDE_PROGRESS="$SANDBOX/fake-claude-progress"
+cat > "$FAKE_CLAUDE_PROGRESS" <<FAKE
+#!/usr/bin/env bash
+n=\$(cat "$SANDBOX/progress-count" 2>/dev/null || echo 0)
+n=\$((n + 1)); echo "\$n" > "$SANDBOX/progress-count"
+bash "$RUN_STATE" mark "$PROGRESS_RUN_ID" epsilon "parked" "attempt \$n: a different wall"
+echo "sweep-execute: parked epsilon"
+exit 0
+FAKE
+chmod +x "$FAKE_CLAUDE_PROGRESS"
+
+rm -f "$SANDBOX/progress-count"
+progress_out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_PROGRESS" \
+  DEVLEAD_LOOP_SLEEP=0 DEVLEAD_ALLOW_DRIFT=1 \
+  bash "$LOOP" --plan "$PROGRESS_PLAN" --max-iterations 4 2>&1)"
+not_contains "stall: a changing park reason is progress, not convergence" \
+  "$progress_out" "converged"
+contains "stall: changing reasons run to the cap" "$progress_out" "iteration cap (4) reached"
 
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
