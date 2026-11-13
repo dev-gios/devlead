@@ -53,7 +53,7 @@ _section "Scripts"
 
 # devlead-active.sh: pre-rename name, kept so a machine at any migration
 # stage is fully cleaned (REQ-6) — devlead-session.sh is the current name.
-for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh open-pr.sh merge.sh notify.sh journal.sh learn.sh agenda.sh discover-fleet.sh devlead-active.sh devlead-session.sh envelope.sh envelope-auth.sh sweep.sh; do
+for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh open-pr.sh merge.sh notify.sh journal.sh learn.sh profile.sh decisions.sh agenda.sh discover-fleet.sh devlead-active.sh devlead-session.sh envelope.sh envelope-auth.sh sweep.sh; do
   _remove_devlead_link "$DEVLEAD_DIR/scripts/$_name" "$REPO_DIR/.devlead/scripts/$_name"
 done
 
@@ -75,7 +75,7 @@ _remove_devlead_link "$LOCAL_BIN/devlead" "$REPO_DIR/.devlead/bin/devlead"
 # ---------------------------------------------------------------------------
 _section "Hooks"
 
-for _name in post-edit.sh gate-check.sh; do
+for _name in guard.sh post-edit.sh gate-check.sh; do
   _remove_devlead_link "$DEVLEAD_DIR/hooks/$_name" "$REPO_DIR/.claude/hooks/$_name"
 done
 
@@ -156,7 +156,7 @@ fi
 # ---------------------------------------------------------------------------
 _section "Slash commands"
 
-for _name in arranquemos.md cerremos.md batch.md; do
+for _name in devlead.md arranquemos.md cerremos.md batch.md; do
   _remove_devlead_link "$CLAUDE_COMMANDS_DIR/$_name" "$REPO_DIR/.claude/commands/$_name"
 done
 
@@ -168,6 +168,7 @@ _section "Claude settings"
 GLOBAL_SETTINGS="$HOME/.claude/settings.json"
 POST_EDIT_CMD="bash ~/.devlead/hooks/post-edit.sh"
 GATE_CHECK_CMD="bash ~/.devlead/hooks/gate-check.sh"
+GUARD_CMD="bash ~/.devlead/hooks/guard.sh"
 
 # Programa jq que saca SOLO las entradas devlead identificadas por su command:
 # - De cada grupo de PostToolUse/Stop filtra los hooks cuyo command sea el
@@ -179,6 +180,10 @@ JQ_PRUNE_PROGRAM='
     map( .hooks |= map(select(.command != $cmd)) )
     | map(select((.hooks | length) > 0)) ;
   if (.hooks | type) == "object" then
+    ( if (.hooks.PreToolUse | type) == "array"
+        then .hooks.PreToolUse |= prune($gd) else . end ) |
+    ( if (.hooks.PreToolUse? | type) == "array" and (.hooks.PreToolUse | length) == 0
+        then del(.hooks.PreToolUse) else . end ) |
     ( if (.hooks.PostToolUse | type) == "array"
         then .hooks.PostToolUse |= prune($pe) else . end ) |
     ( if (.hooks.Stop | type) == "array"
@@ -194,7 +199,7 @@ JQ_PRUNE_PROGRAM='
 if [[ -f "$GLOBAL_SETTINGS" ]]; then
   if command -v jq &>/dev/null; then
     _tmp=$(mktemp)
-    if jq --arg pe "$POST_EDIT_CMD" --arg gc "$GATE_CHECK_CMD" "$JQ_PRUNE_PROGRAM" "$GLOBAL_SETTINGS" > "$_tmp"; then
+    if jq --arg pe "$POST_EDIT_CMD" --arg gc "$GATE_CHECK_CMD" --arg gd "$GUARD_CMD" "$JQ_PRUNE_PROGRAM" "$GLOBAL_SETTINGS" > "$_tmp"; then
       mv "$_tmp" "$GLOBAL_SETTINGS"
       _ok "Hooks devlead removidos de ~/.claude/settings.json (otros hooks intactos)"
     else

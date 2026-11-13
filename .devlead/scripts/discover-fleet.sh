@@ -127,7 +127,7 @@ if [[ "$DRYRUN" == "1" ]]; then
   for _repo in "${_targets[@]}"; do
     echo "discover-fleet: [dry-run] in $_repo would run:"
     if [[ ${#_CLAUDE_ARGS[@]} -gt 0 ]]; then
-      echo "  $CLAUDE_BIN -p \"/sweep-discover\" ${_CLAUDE_ARGS[*]}"
+      echo "  DEVLEAD_GUARD=1 $CLAUDE_BIN -p \"/sweep-discover\" ${_CLAUDE_ARGS[*]}"
     else
       echo "  $CLAUDE_BIN -p \"/sweep-discover\" <no permission flags set: a real run refuses to start>"
     fi
@@ -175,7 +175,9 @@ _ran=0
 _failed=0
 for _repo in "${_targets[@]}"; do
   echo "discover-fleet: $_repo — invoking $CLAUDE_BIN"
-  ( cd "$_repo" && env "${_ENV_STRIP[@]}" "$CLAUDE_BIN" -p "/sweep-discover" "${_CLAUDE_ARGS[@]}" </dev/null )
+  # DEVLEAD_GUARD=1: the hard limits (guard.sh) are on for this session, set
+  # on the Claude Code process so the session cannot unset it.
+  ( cd "$_repo" && env "${_ENV_STRIP[@]}" DEVLEAD_GUARD=1 "$CLAUDE_BIN" -p "/sweep-discover" "${_CLAUDE_ARGS[@]}" </dev/null )
   _rc=$?
   _ran=$((_ran + 1))
   if [[ "$_rc" -ne 0 ]]; then

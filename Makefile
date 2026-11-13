@@ -18,12 +18,15 @@ test:
 	bash test/unit-envelope-schema.sh
 	bash test/unit-devlead-session.sh
 	bash test/unit-gate-check.sh
+	bash test/unit-guard.sh
 	bash test/unit-open-pr.sh
 	bash test/unit-merge-door.sh
 	bash test/unit-door-wiring.sh
 	bash test/unit-notify.sh
 	bash test/unit-journal.sh
 	bash test/unit-learn.sh
+	bash test/unit-profile.sh
+	bash test/unit-decisions.sh
 	bash test/unit-agenda.sh
 	bash test/unit-sweep-agenda.sh
 	bash test/unit-discover-fleet.sh

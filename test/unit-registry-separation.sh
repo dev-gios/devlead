@@ -94,6 +94,7 @@ AUTONOMOUS_EXPECTED=( sweep.sh sweep-loop.sh envelope.sh bootstrap-lib.sh
                       discover-fleet.sh )
 AUTONOMOUS_EXTRA=( .claude/commands/sweep-execute.md )     # string-scan only
 SESSION_PATH_SET=( .claude/hooks/post-edit.sh .claude/hooks/gate-check.sh
+                   .claude/hooks/guard.sh
                    .devlead/scripts/devlead-session.sh )
 # REVERSE_OPTIONAL (FIX-2): scanned on the reverse (session) path when
 # present, never required to exist (REQ-12 exempts it explicitly) — the
