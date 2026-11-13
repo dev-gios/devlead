@@ -358,6 +358,8 @@ o="$(learn trust)"
 check "trust: an unreadable last record gives no verdict" "$o" "STATUS: unreadable"
 printf '%s\n' '{"ts":"x","merged":"n/a","closed_sin_merge":0,"changes_requested":0}' > "$OUT_FILE"
 check "trust: a non-numeric count gives no verdict" "$(learn trust)" "STATUS: unreadable"
+{ snap 1 12 0 0; snap 2 12 0 0; snap 3 12 0 0; snap 4 12 0 0; snap 5 08 0 0; } > "$OUT_FILE"
+check "trust: a zero-padded count gives no verdict" "$(learn trust 2>&1)" "STATUS: unreadable"
 
 # A reading cannot act: the script has no way to reach a limit.
 _learn_code="$(grep -v '^[[:space:]]*#' "$REPO_ROOT/.devlead/scripts/learn.sh")"

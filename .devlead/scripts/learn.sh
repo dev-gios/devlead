@@ -330,7 +330,9 @@ _trust() {
   closed="$(_field "$last" closed_sin_merge)"
   changes="$(_field "$last" changes_requested)"
   for n in "$merged" "$closed" "$changes"; do
-    if [[ ! "$n" =~ ^[0-9]+$ ]]; then
+    # Plain decimals only: a leading zero would be read as octal below, and
+    # a count that cannot be compared must not fall through to a verdict.
+    if [[ ! "$n" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
       echo "STATUS: unreadable"
       return 0
     fi
