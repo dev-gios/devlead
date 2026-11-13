@@ -135,10 +135,12 @@ contains "fleet timer: drives the fleet service" "$ftmr_code" "Unit=devlead-flee
 # String comparison is enough: both are zero-padded HH:MM:SS.
 loop_at="$(sed -n 's/^OnCalendar=\*-\*-\* //p' "$UNITS/devlead-loop.timer")"
 fleet_at="$(sed -n 's/^OnCalendar=\*-\*-\* //p' <<<"$ftmr_code")"
+check "loop timer: its time of day is readable" "$([[ "$loop_at" =~ ^[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]] && echo yes)" "yes"
+check "fleet timer: its time of day is readable" "$([[ "$fleet_at" =~ ^[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]] && echo yes)" "yes"
 check "fleet timer: fires after the plan loop, as After= assumes" "$([[ "$fleet_at" > "$loop_at" ]] && echo later)" "later"
 
 # The dry run shows what the unit would invoke, without invoking it.
-dry="$(cd "$SANDBOX" && DEVLEAD_LOOP_DRYRUN=1 bash "$REPO_ROOT/.devlead/scripts/sweep-loop.sh" --max-iterations 1 -- --fleet 2>&1)"; rc=$?
+dry="$(cd "$SANDBOX" && env -u DEVLEAD_LOOP_REPO -u DEVLEAD_LOOP_MAX -u DEVLEAD_LOOP_CLAUDE_ARGS -u DEVLEAD_CLAUDE_BIN DEVLEAD_LOOP_DRYRUN=1 bash "$REPO_ROOT/.devlead/scripts/sweep-loop.sh" --max-iterations 1 -- --fleet 2>&1)"; rc=$?
 check "fleet dry run: exit 0 outside any repo" "$rc" "0"
 contains "fleet dry run: dispatches /sweep-execute --fleet" "$dry" '-p "/sweep-execute --fleet"'
 check "fleet dry run: a single iteration" "$(grep -c 'would run' <<<"$dry")" "1"
