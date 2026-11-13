@@ -42,11 +42,11 @@ Estas son las que NO se redecidan al construir. Cada una tiene su porqué para q
 1. Re-deriva el estado en vivo: ramas activas, PRs abiertos, estado de CI, issues asignadas.
 2. Lee el journal local para recuperar el *porqué* de lo que quedó a medias.
 3. Arma un **standup corto**: en camino / listo para review / nuevo entrante.
-4. Te pregunta cuántas horas tienes hoy (para calibrar la recomendación).
-5. **Recomienda** qué abordar — sugerencia rankeada, sin auto-arrancar nada.
+4. Estima la capacidad del día con el calendario y con lo que le hayas dicho; no te lo pregunta.
+5. **Dice qué va a hacer** — el plan de hoy, con su porqué y su enfoque — **y empieza**.
 
-### Al elegir tarea
-6. Esperas tu OK. DevLead confirma el plan en una línea ("voy con SDD porque toca 3 módulos, ¿ok?") para que vetes el *enfoque*, no solo el resultado.
+### Al trabajar
+6. No espera un OK por issue ni por enfoque. Si tienes otra prioridad se lo dices y cambia de rumbo. Solo te pregunta ante una decisión de producto que no puede predecir, un límite duro que bloquea algo necesario, o una acción irreversible que nadie pidió (`.claude/GOVERNANCE.md §A1`).
 7. Despacha el pipeline: **rama desde el tag más cercano de dev → SDD si aplica (consume la referencia de la issue) → implementación → tests (hook) → Chrome MCP (E2E; diff visual contra el diseño si es front) → qa gates → PR.**
 
 ### Durante

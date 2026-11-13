@@ -5,11 +5,11 @@ Sos DevLead. Seguí estos pasos en orden exacto. No saltees ninguno ni adelantes
      No los debilita ningún modo. Fuente de detalle: .claude/GOVERNANCE.md
      Espejo no-normativo de GOVERNANCE.md §Layer-0; si diverge, GOVERNANCE.md gana.
      ============================================================ -->
-A1 · Autorización SIEMPRE antes de ejecutar. La FORMA cambia por modo; el requisito no.
+A1 · Autorización SIEMPRE antes de ejecutar. La FORMA cambia por modo; el requisito no. Acá la forma es: el usuario te llamó en este repositorio. Eso te autoriza a elegir e iniciar trabajo en ESTE repositorio, sin pedir permiso por issue ni por enfoque.
 A2 · Estado SIEMPRE re-derivado en vivo (state.sh / branch.sh / envelope.sh plan). Nunca caché.
-A3 · NUNCA ampliar la propia autoridad de merge. En modo manual el perfil ESTRECHA a `never`: el pipeline termina en `gh pr create` sin importar el envelope.
+A3 · NUNCA ampliar la propia autoridad de merge. La concede `merge.mode` del envelope que escribe el usuario, y solo se ejerce a través de `merge.sh`. Sin envelope, o con `never`, el pipeline termina en el PR abierto.
 A4 · PARK SIEMPRE con razón exacta (verbatim, sin parafrasear). PARK ≠ pass.
-<!-- Perfil: ver .claude/GOVERNANCE.md §manual-profile. -->
+<!-- Perfil: ver .claude/GOVERNANCE.md §assistant-profile. Límites duros: §hard-limits (los aplica guard.sh). -->
 
 ---
 
@@ -335,24 +335,27 @@ Mostrá el bloque de urgencias del Paso 0 como sección separada bajo el standup
 
 ---
 
-## Paso 5 — Preguntar las horas disponibles
+## Paso 5 — Estimar la capacidad del día
 
-Hacé UNA sola pregunta y STOP. No produzcas la recomendación todavía:
+No preguntes cuántas horas tiene el usuario. Tomá el dato de lo que ya sabés:
 
-> **¿Cuántas horas tenés disponibles hoy?**
+- Si el usuario lo dijo en su mensaje ("tengo dos horas", "hoy medio día"), usá eso como `horas_declaradas`.
+- Si no dijo nada, asumí una jornada completa: `horas_declaradas = 8`.
 
-Esperá la respuesta. No continúes ni asumas nada.
+Seguí directo al Paso 6.
 
 ---
 
-## Paso 6 — Generar la recomendación (después de recibir las horas)
+## Paso 6 — Armar el plan de hoy
 
 <!-- ADR-1 application: use adjusted free hours, not raw stated hours.
      horas_efectivas = stated_hours − horas_bloqueadas
      When horas_efectivas <= 2 → restrict to quick-win or P2+ tasks only.
      When meeting_count >= 3 → note "día cargado de reuniones" in header. -->
 
-Una vez que el usuario respondió cuántas horas tiene, calculá las horas efectivas:
+Si el usuario nombró una prioridad ("hoy quiero cerrar X", "seguí con lo de ayer"), esa va primero y el resto del plan se ordena detrás. Si no nombró ninguna, el orden lo decidís vos con las reglas de abajo.
+
+Calculá las horas efectivas:
 
 **Outcomes (del Paso 2.6).** Si `learn.sh outcomes` dio `STATUS: ok`, usalo como una señal más de la recomendación, y decilo en una línea cuando cambie el orden:
 - `CHANGES_REQUESTED` > 0 → hay PRs de DevLead esperando correcciones tuyas ya pedidas: recomendá atender esos ANTES de abrir trabajo nuevo.
@@ -388,54 +391,51 @@ Usá `horas_efectivas` (no horas_declaradas) para toda la calibración de abajo.
 - 2-3h efectivas → priorizá cierres (review-ready, CHANGES_REQUESTED) antes que empezar algo nuevo
 - 4h o más efectivas → podés incluir un "nuevo entrante" si los otros están en orden
 
-**Formato de la recomendación:**
+**Formato del plan:**
 
 ```
-## Recomendación para hoy
-[Día fragmentado (Xh en reuniones) — ajustá la ambición del pick]  ← solo si tiene_dia_fragmentado
+## Plan de hoy
+[Día fragmentado (Xh en reuniones) — plan corto]  ← solo si tiene_dia_fragmentado
 
 1. [PR#num o #issue o rama] — [título]
    Por qué: [una línea clara, basada en estado + staleness + horas efectivas]
+   Cómo: [enfoque en una línea]
 
 2. [opcional, segundo ítem si hay horas efectivas suficientes]
    Por qué: [ídem]
+   Cómo: [ídem]
 
 ---
-DevLead no va a arrancar nada hasta que me digas con qué vas. ¿Qué elegís?
+Empiezo con el 1. Si tenés otra prioridad, decímela y cambio.
 ```
 
-Sin estimados de tiempo (S/M/L o horas por tarea). Sin backlog ordenado de todo. Máximo 1-2 picks con su razonamiento.
+Sin estimados de tiempo (S/M/L o horas por tarea). Sin backlog ordenado de todo. Máximo 1-2 ítems con su razonamiento.
 
 Si el usuario tiene ≤ 1h efectiva y hay un PR merge-ready aprobado con CI verde, ese es el único pick.
 
 ---
 
-## Paso 7 — Confirmar qué tarea vas a abordar
+## Paso 7 — Decir qué vas a hacer y empezar
 
-<!-- Task 3.2 — Inv 1: confirm task + lightweight plan veto before dispatch.
-     This is two distinct checkpoints:
-     (1) Task selection — user picks from the recommendation above.
-     (2) Approach veto — one-line plan, user can override method before anything runs.
-     Invariante 1 absoluto: nada se ejecuta hasta tener OK explícito en ambos. -->
+<!-- §assistant-profile: no hay checkpoint por issue ni por enfoque. El usuario
+     te llamó en este repositorio (A1). Mostrás el plan y empezás en el mismo
+     turno; lo que no podés hacer lo frena guard.sh, no una pregunta. -->
 
-Confirmá el pick en una sola línea:
-
-> "Voy con [PR#N / rama / issue #N] — [título corto]"
-
-Derivá el enfoque propuesto. Usá estas heurísticas:
+Para cada ítem del plan derivá el enfoque (la línea "Cómo:") con estas heurísticas:
 - Si la issue tiene `Spec:` o toca 3 o más módulos/archivos → "SDD porque toca N módulos"
 - Si es un bug aislado o cambio de 1-2 líneas → "fix directo porque es un cambio puntual"
 - Si es una tarea de chore/docs sin lógica → "implementación directa sin SDD"
 
-Hacé **UNA** sola pregunta:
+Mostrá el plan del Paso 6 y, **en el mismo turno, sin esperar respuesta**, seguí al Paso 8 con el ítem 1.
 
-> "¿Arrancamos con [enfoque breve]?"
+**No preguntes "¿arrancamos?".** Solo te detenés a preguntar en tres casos (GOVERNANCE.md §A1):
+1. Una decisión de producto que no podés predecir con lo que sabés del usuario. Preguntá UNA cosa y esperá.
+2. `guard.sh` bloqueó algo que la tarea necesita. Decile al usuario exactamente qué hace falta. No busques otra vía para lograr lo mismo.
+3. Una acción que no se puede deshacer y que nadie pidió.
 
-**STOP** — esperá confirmación explícita. No despacharás el pipeline hasta recibir un OK.
+**Si el usuario te redirige** en cualquier momento ("dejá eso", "primero lo otro", "así no"): cambiá de rumbo sin discutir. Dejá el trabajo en curso en un estado limpio (commit en su rama o cambios descartados, lo que corresponda) y decí en una línea cómo quedó.
 
-Si el usuario veta el enfoque: ajustá el plan y presentá un nuevo resumen de una línea. Volvé a preguntar. Repetí hasta tener OK.
-
-**Invariante 1**: hasta acá nada se ejecutó. Recién en Paso 8 arranca el pipeline. (Detalle de autorización: ver GOVERNANCE.md §manual-profile.)
+**Cada vez que decidas algo por el usuario** — qué tarea va primero, qué enfoque, cómo resolver una ambigüedad del spec — decilo en una línea con su razón. Una decisión que no quedó dicha es una falla (Inv 6).
 
 ---
 
@@ -519,7 +519,7 @@ Leé el archivo spec referenciado. Ese doc es la *intención* acordada — Inv 7
 Invocá el pipeline SDD usando `/sdd-new` con el contenido del spec como contexto de entrada.
 Si `/sdd-new` no está disponible en este contexto, coordiná la implementación en-sesión usando el spec como referencia de intención.
 
-Si en cualquier momento el spec choca con el estado real del código → **HALT**, es una divergencia (Inv 5). Mostrá el conflicto al usuario y esperá decisión.
+Si en cualquier momento el spec choca con el estado real del código → es una divergencia (Inv 5). Si podés predecir qué querría el usuario, decidí, dejalo dicho en una línea y seguí. Si no podés, mostrale el conflicto y preguntá UNA cosa.
 
 ### Step 8.3-SDD — Ciclo SDD completo por issue (si NO hay spec)
 
@@ -531,7 +531,7 @@ Si en cualquier momento el spec choca con el estado real del código → **HALT*
      referencian esta subsección POR NOMBRE (ADR-1 single-source) — no la
      reprosean. El branch "SÍ hay spec" de arriba queda intacto (Inv 7). -->
 
-`SDD_MODE` gobierna esta subsección: `attended` cuando corre desde `/arranquemos` (este archivo, invocación directa) — habilita la pausa de aprobación de 8.3-SDD.4. `autonomous` cuando corre vía `batch.md` (Delta 1: "skip Paso 7 / sin confirmación por issue") o `sweep-execute.md` (Delta 1: "skip B0 completo") — salta 8.3-SDD.4 sin pausa, el PR es el único gate de intención. No hay flag nuevo: es la misma distinción implícita attended/autonomous que ya gobierna el skip de Paso 7 en batch (D4).
+`SDD_MODE` gobierna esta subsección: `attended` cuando corre desde `/arranquemos` (este archivo, invocación directa) — el usuario está en la conversación, así que 8.3-SDD.4 le MUESTRA el spec generado, sin pausa. `autonomous` cuando corre vía `batch.md` (Delta 1: "skip Paso 7 / sin confirmación por issue") o `sweep-execute.md` (Delta 1: "skip B0 completo") — salta 8.3-SDD.4 sin pausa, el PR es el único gate de intención. No hay flag nuevo: es la misma distinción implícita attended/autonomous que ya gobierna el skip de Paso 7 en batch (D4).
 
 Si `SDD_MODE = attended`, mostrá esta línea antes de arrancar 8.3-SDD.1 (D7 — señal de costo):
 > Esta issue no tiene `Spec:` — corro un ciclo SDD completo (genero la intención). Es más caro que implementar directo.
@@ -584,19 +584,16 @@ Reenviá `strict_tdd` y `test_command` (obtenidos en 8.3-SDD.1) a los prompts in
      ({project} = repo target, no devlead) queda documentada acá mismo. No se
      tocó .claude/CLAUDE.md. -->
 
-**8.3-SDD.4 — Pausa de aprobación (SOLO si `SDD_MODE = attended`)**
+**8.3-SDD.4 — Mostrar el spec generado (SOLO si `SDD_MODE = attended`)**
 
-Si `SDD_MODE = autonomous` → SALTÁ este sub-paso completo, no hay pausa por issue (D4, Inv 1-forma-batch). Andá directo a 8.3-SDD.5.
+Si `SDD_MODE = autonomous` → SALTÁ este sub-paso completo (D4, Inv 1-forma-batch). Andá directo a 8.3-SDD.5.
 
 Si `SDD_MODE = attended`:
 
-Conteo de rondas explícito: la presentación inicial (punto 1 abajo, primera vez) es **ronda 0** y NO cuenta para el cap. Las rondas 1-3 son los ajustes tras feedback del usuario (cada vuelta al punto 1 tras un pedido de cambio). Al llegar a la ronda 3 sin aprobación: HALT y escalá (punto 5).
-
-1. Mostrale al usuario el contenido completo de `.devlead/specs/issue-{issue_num}.md` recién generado.
-2. Hacé **UNA** sola pregunta: "¿Aprobás este spec generado o querés ajustar algo?"
-3. **STOP** — esperá respuesta explícita. No avances a 8.3-SDD.5 sin ella.
-4. Si pide cambios: re-corré `sdd-spec` incorporando el feedback, volvé al punto 1. Máximo 3 rondas.
-5. Si llegan a 3 rondas sin aprobación: **HALT** — escalá al usuario (Inv 5). No avances hasta que decida explícitamente cómo seguir.
+1. Resumile al usuario en 3 a 5 líneas qué dice `.devlead/specs/issue-{issue_num}.md`: qué se va a construir, qué queda afuera, y cualquier decisión que tomaste al escribirlo.
+2. **No esperes aprobación.** Seguí a 8.3-SDD.5 en el mismo turno. El spec queda en el PR, donde el usuario lo revisa.
+3. Si el usuario pide cambios mientras trabajás: re-corré `sdd-spec` con ese feedback y retomá desde 8.3-SDD.5.
+4. Si al escribir el spec apareció una decisión de producto que no podés predecir: esa SÍ se pregunta — UNA pregunta, y esperás (GOVERNANCE.md §A1).
 
 **8.3-SDD.5 — Diseño → tareas → implementación ⇄ verificación**
 
@@ -769,12 +766,22 @@ Mostrá un resumen del pipeline:
 - Issue #{issue_num}: el merge a `dev` (no a la default branch) NO auto-cierra el `Closes #N` — la issue queda abierta hasta que la cierres manualmente
 - CI status: pendiente de GitHub Actions (revisá en unos minutos)
 
-PR abierto. El merge — incluido a `dev` — es tuyo (Inv 3). (Ver GOVERNANCE.md §A3.)
+{línea de merge — ver abajo}
 ```
 
-Hacé **UNA** sola pregunta:
+**Merge.** Intentá el merge por la puerta, nunca con `gh` directo:
+```
+bash ~/.devlead/scripts/merge.sh {PR_URL}
+```
+La puerta lee el envelope que escribió el usuario y decide en código (§A3):
+- Exit 0 → mergeado a la rama de integración. Línea de merge: `Mergeado a {integration_branch} (lo concede tu envelope).`
+- Cualquier otro exit → no se mergea. La puerta imprime la razón en líneas `PARK_REASON:`; mostrásela al usuario verbatim en la línea de merge, sin parafrasear. Con `merge.mode: never` o sin envelope eso es lo esperado, no un error: el PR queda abierto para que lo mergee el usuario.
 
-> "¿Arrancamos con otra tarea o cerramos el día?"
+Nunca reintentes un merge rechazado ni busques otra vía. La rama por defecto nunca se mergea desde acá.
 
-- Si otra tarea → volvé a Paso 7 con la nueva selección
-- Si cerramos → recordale al usuario: "Cuando quieras registrar el journal, corrés `/cerremos`"
+**Lo que sigue.** No preguntes si seguir:
+- Si quedan ítems en el plan del Paso 6 → seguí con el próximo desde el Paso 8, en el mismo turno.
+- Si un ítem quedó detenido por un gate rojo → decí la razón exacta y seguí con el próximo que no dependa de él.
+- Si no queda nada → mostrá el cierre: qué se hizo, qué PRs quedaron abiertos, qué decidiste solo y qué necesita al usuario.
+
+Al final del cierre, una línea: "Cuando quieras registrar el journal, corré `/cerremos`."

@@ -53,6 +53,27 @@ else
   report "sweep-execute.md: merges through merge.sh" "no fenced merge.sh invocation found"
 fi
 
+# The interactive command starts on its own and merges only through the door.
+if fenced_lines "$CMD_DIR/arranquemos.md" | grep -q 'scripts/merge\.sh {PR_URL}'; then
+  report "arranquemos.md: merges through merge.sh" ""
+else
+  report "arranquemos.md: merges through merge.sh" "no fenced merge.sh invocation found"
+fi
+waits="$(grep -nE 'esperá confirmación explícita|No despacharás el pipeline hasta recibir un OK|¿Cuántas horas tenés disponibles|¿Aprobás este spec' "$CMD_DIR/arranquemos.md" || true)"
+report "arranquemos.md: no step waits for a per-issue or per-approach OK" "$waits"
+if grep -q 'sin esperar respuesta' "$CMD_DIR/arranquemos.md" && grep -q 'guard.sh' "$CMD_DIR/arranquemos.md"; then
+  report "arranquemos.md: shows the plan and starts; the limits are guard.sh" ""
+else
+  report "arranquemos.md: shows the plan and starts; the limits are guard.sh" "the start rule or the guard reference is missing"
+fi
+gov="$CMD_DIR/../GOVERNANCE.md"
+stale_profile="$(grep -rn 'manual-profile' "$CMD_DIR" "$gov" "$CMD_DIR/../CLAUDE.md" || true)"
+report "no file still points at the retired manual profile" "$stale_profile"
+for anchor in '### §assistant-profile' '## §hard-limits' 'Autorizar no es aprobar cada paso'; do
+  if grep -qF "$anchor" "$gov"; then report "GOVERNANCE.md has: $anchor" ""
+  else report "GOVERNANCE.md has: $anchor" "missing"; fi
+done
+
 # The old contradiction: previews promising "never merges" while Delta 6 merges.
 stale="$(grep -n 'MERGE: NUNCA' "$CMD_DIR/sweep-execute.md" || true)"
 report "sweep-execute.md: no preview claims an unconditional 'MERGE: NUNCA'" "$stale"
