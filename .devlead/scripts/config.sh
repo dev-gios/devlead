@@ -322,7 +322,7 @@ _machine_timers() {
     fleet) _machine_toggle_timer devlead-fleet.timer \
          "This timer runs one unattended pass over EVERY repo listed in ~/.devlead/autonomous-repos whose envelope says enabled: true — it CREATES BRANCHES, COMMITS, and OPENS PRs there, working the queue each repo's envelope policy produces (the agenda the morning sweep sends you; change it with 'devlead agenda first|skip <N>'). It needs DEVLEAD_LOOP_CLAUDE_ARGS (the permission flags for the headless session) in ~/.devlead/loop.env." ;;
     discover) _machine_toggle_timer devlead-discover.timer \
-         "This timer runs /sweep-discover once a week in every repo listed in ~/.devlead/autonomous-repos whose envelope says enabled: true AND discover.enabled: true. It reads the modules that envelope declares and FILES ISSUES on GitHub carrying discover.label; it creates no branch and opens no PR, and those issues stay out of every agenda until you review them. It needs DEVLEAD_DISCOVER_CLAUDE_ARGS or DEVLEAD_LOOP_CLAUDE_ARGS in ~/.devlead/loop.env." ;;
+         "This timer runs /sweep-discover once a week in every repo listed in ~/.devlead/autonomous-repos whose envelope is enabled AND has discovery turned on. It reads the modules that envelope declares and FILES ISSUES on GitHub carrying its discovery label; it creates no branch and opens no PR, and those issues stay out of every agenda until you review them. It needs DEVLEAD_DISCOVER_CLAUDE_ARGS or DEVLEAD_LOOP_CLAUDE_ARGS in ~/.devlead/loop.env." ;;
     b) return 0 ;;
     *) echo "config: unknown option '${choice#__invalid__}'" ;;
   esac
