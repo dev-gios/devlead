@@ -20,6 +20,7 @@ test:
 	bash test/unit-gate-check.sh
 	bash test/unit-open-pr.sh
 	bash test/unit-merge-door.sh
+	bash test/unit-door-wiring.sh
 	bash test/unit-publish-manifest.sh
 	bash test/unit-discover-command.sh
 	bash test/unit-doctor.sh

@@ -463,7 +463,7 @@ bash ~/.devlead/hooks/gate-check.sh </dev/null
 
 Si algún gate falla:
 - **HALT** — mostrá exactamente qué gate falló y por qué (el script ya produce output legible)
-- No continúes a Step 8.5 hasta que el usuario resuelva el gate o use `DEVLEAD_FORCE_CLOSE=1` explícitamente
+- No continúes a Step 8.5 hasta que el usuario resuelva el gate. `DEVLEAD_FORCE_CLOSE=1` solo silencia ESTA llamada: la puerta de Step 8.5 (`open-pr.sh`) vuelve a correr el gate y no acepta esa variable. Si el usuario decide abrir el PR con un gate en rojo, lo abre él a mano — DevLead no.
 
 ### Step 8.5 — Abrir el PR
 
@@ -475,10 +475,15 @@ Si algún gate falla:
      — porque el propósito es que el reviewer la vea en el skim/preview de
      mobile sin tener que scrollear. -->
 
-Si Step 8.2 emitió `STACKED: {A-branch}`, añadí `--base {A-branch}` al comando:
+**El PR se abre SIEMPRE por la puerta `open-pr.sh`, nunca invocando `gh` directo.** La puerta vuelve a correr el gate completo y `forbidden-check.sh` sobre el diff real de la rama, y solo si ambos pasan crea el PR (para la rama en checkout — no acepta `--head` ni `--repo`). Opciones que acepta: `--base`, `--title`, `--body`, `--label` (repetible), `--draft`.
+
+- Exit 0 → stdout es la URL del PR.
+- Exit distinto de 0 → NO se abrió el PR. Stdout trae la razón exacta en líneas `PARK_REASON: ...`. **HALT**: mostrale esas líneas al usuario tal cual, sin parafrasear (§A4). No reintentes ni intentes abrir el PR por otro camino.
+
+Si Step 8.2 emitió `STACKED: {A-branch}`, usá `--base {A-branch}`:
 
 ```
-gh pr create --base {A-branch} --title "{conventional_commit_title}" --body "Closes #{issue_num}
+bash ~/.devlead/scripts/open-pr.sh --base {A-branch} --title "{conventional_commit_title}" --body "Closes #{issue_num}
 
 {si esta issue NO tenía Spec: — insertá acá la sección ## Intención completa, ver contenido exacto abajo}
 
@@ -495,10 +500,10 @@ gh pr create --base {A-branch} --title "{conventional_commit_title}" --body "Clo
 {qué se puede verificar}"
 ```
 
-Si no hubo `STACKED:` (PR raíz, no encadenado), el comando SIEMPRE incluye `--base {integration_branch}` — reusá el valor resuelto en Step 8.2, no vuelvas a leer `envelope.sh show`. Nunca dejes que `gh pr create` resuelva la base implícitamente contra el default branch del repo:
+Si no hubo `STACKED:` (PR raíz, no encadenado), el comando SIEMPRE incluye `--base {integration_branch}` — reusá el valor resuelto en Step 8.2, no vuelvas a leer `envelope.sh show`. `open-pr.sh` exige `--base` y se niega sin él, así que la base nunca se resuelve implícitamente contra el default branch del repo:
 
 ```
-gh pr create --base "{integration_branch}" --title "{conventional_commit_title}" --body "Closes #{issue_num}
+bash ~/.devlead/scripts/open-pr.sh --base "{integration_branch}" --title "{conventional_commit_title}" --body "Closes #{issue_num}
 
 {si esta issue NO tenía Spec: — insertá acá la sección ## Intención completa, ver contenido exacto abajo}
 
@@ -532,7 +537,7 @@ Resumen:
 {2-4 líneas resumiendo el alcance del spec generado}
 ```
 
-(Opcional, no bloqueante) Agregá `--label devlead-inferred-intention` al comando `gh pr create` de esta issue si el label existe en el repo target; si no existe, omitilo sin bloquear el PR.
+(Opcional, no bloqueante) Agregá `--label devlead-inferred-intention` al comando `open-pr.sh` de esta issue si el label existe en el repo target; si no existe, omitilo sin bloquear el PR.
 
 **Si esta issue SÍ tenía `Spec:`** (branch de arriba, sin cambios): NO agregues esta sección ni el placeholder — el body queda exactamente como los templates de arriba, sin la línea de placeholder (Inv 7).
 
