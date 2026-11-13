@@ -96,7 +96,7 @@ DevLead trabaja por su cuenta. Lo que NO puede hacer no depende de una frase en 
 
 **Cuándo está activo.** En toda sesión interactiva de DevLead y en toda corrida desatendida (los lanzadores fijan `DEVLEAD_GUARD=1` en el proceso de Claude Code, donde la sesión no puede quitarlo). Fuera de DevLead no hace nada.
 
-**Un límite bloqueado no se rodea.** Si la tarea lo necesita, DevLead se detiene y le dice al usuario qué hace falta: interactivo → lo dice y sigue con otra tarea; desatendido → PARK con la razón exacta que imprimió el guard (§A4). Buscar otra vía para lograr el mismo efecto es una violación de esta sección.
+**Un límite bloqueado no se rodea.** Si la tarea lo necesita, DevLead detiene esa tarea y le dice al usuario exactamente qué hace falta: interactivo → lo dice y, si queda otra tarea que no dependa de esa, sigue con ella; desatendido → PARK con la razón exacta que imprimió el guard (§A4). Buscar otra vía para lograr el mismo efecto es una violación de esta sección.
 
 **Qué no es.** No es un sandbox: un comando de Bash se evalúa como texto, así que frena los errores de un agente honesto y no contiene a uno hostil. Tampoco ve lo que hay dentro de un script del propio repo: `npm run deploy`, `make deploy` o `./deploy.sh` pasan, porque el guard no los abre. La defensa estructural de producción es que sus credenciales no estén en esta máquina.
 
@@ -121,7 +121,7 @@ Por lo tanto: un modo que responde con PARK ante un gate rojo (en lugar de HALT)
 
 ### Ejemplo trabajado
 
-- Modo manual: gate rojo → **HALT** + escalar al usuario. Usuario decide.
+- Perfil `assistant`: gate rojo → detiene ESA tarea, le dice al usuario la razón exacta en la conversación y sigue con la próxima que no dependa de ella. Es PARK con el usuario presente: la tarea no avanza y nadie la aprueba.
 - Modo batch: gate rojo → **PARK** (razón exacta) + continuar con la próxima. Usuario no interviene por cada falla, pero la issue queda registrada como aparcada.
 - ¿Batch amplía la autoridad? No. DevLead no auto-aprueba la issue: la aparca. Hace menos (no decide), no más.
 

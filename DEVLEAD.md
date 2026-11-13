@@ -7,9 +7,9 @@
 
 ## 1. Qué es DevLead (en una frase)
 
-DevLead es el **front door** del día: un orquestador con el que arrancas la jornada, que te dice qué tienes, qué quedó en camino y qué te conviene abordar, y que **despacha** el trabajo al pipeline que ya usas a diario (rama → SDD → implementación → tests → Chrome → qa gates → PR). No pica código él mismo: delega.
+DevLead es el **front door** del día: un asistente con el que arrancas la jornada, que ve qué tienes y qué quedó en camino, decide qué abordar, te lo dice y **despacha** el trabajo al pipeline que ya usas a diario (rama → SDD → implementación → tests → Chrome → qa gates → PR). No pica código él mismo: delega.
 
-La interacción objetivo: dices *"arranquemos el día"*, te da el standup + recomendación; eliges; él ejecuta.
+La interacción objetivo: dices *"arranquemos el día"*, te da el standup y el plan, y empieza; si tienes otra prioridad se lo dices y cambia.
 
 ---
 
@@ -26,9 +26,9 @@ Estas son las que NO se redecidan al construir. Cada una tiene su porqué para q
    - *El por qué* (por qué paraste ayer, qué decidiste, blockers, próximo paso mental) → **sí se guarda** en un journal local. Ese contexto no vive en ningún otro lado.
    - *La referencia / intención* (FRD, DDT, criterios de aceptación, bundles de Claude Design) → estable; se carga **por-issue y on-demand**, nunca precargada. Detalle en la sección 5.
 
-4. **Un solo checkpoint humano:** DevLead arma el plan y te lo presenta; tú confirmas *dónde arrancar*; de ahí es hands-off hasta que vuelven los PRs. El control está al inicio (apruebas el plan) y al final (revisas PRs), no por tarea.
+4. **Sin checkpoint de arranque** (revisada el 2026-11-13; antes: "un solo checkpoint humano"): DevLead arma el plan, te lo dice y empieza. El control está en los límites duros (`guard.sh`), en el envelope y en la revisión de los PRs, no en una confirmación previa.
 
-5. **El merge siempre es tuyo.** DevLead nunca hace auto-merge a `dev`. Cada issue cierra en un PR.
+5. **El merge lo concedes tú.** DevLead mergea solo lo que permita `merge.mode` de tu envelope, por `merge.sh`, y nunca a la rama por defecto. Con el valor por defecto (`never`) cada issue cierra en un PR abierto.
 
 6. **DevLead escala de vuelta cuando la realidad diverge del plan**, aunque hayas dado "arranca". Autorizas un plan, no un cheque en blanco contra sorpresas.
 
@@ -113,7 +113,7 @@ La issue **apunta a su spec por path relativo** (línea `Spec: docs/facturacion/
 
 | Componente | Tipo | Ubicación | Qué hace |
 |---|---|---|---|
-| `/arranquemos` | Slash command | `.claude/commands/` | Entry point del día: orquesta estado → journal → standup → recomendación |
+| `/arranquemos` | Slash command | `.claude/commands/` | Entry point del día: orquesta estado → journal → standup → plan → ejecución |
 | Persona DevLead | CLAUDE.md | `.claude/CLAUDE.md` | Define tono, reglas; espejos A1-A4 inline. Invariantes normativos: ver `.claude/GOVERNANCE.md` |
 | Script de ensamblado de estado | Script (bash/py) | `.devlead/scripts/` | Re-deriva el *qué* en vivo: git + GitHub |
 | Script de branching | Script | `.devlead/scripts/` | Rama desde el tag más cercano de dev (`git describe --tags`), determinista |

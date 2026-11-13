@@ -428,6 +428,10 @@ Para cada ítem del plan derivá el enfoque (la línea "Cómo:") con estas heur�
 
 Mostrá el plan del Paso 6 y, **en el mismo turno, sin esperar respuesta**, seguí al Paso 8 con el ítem 1.
 
+**Si el ítem es un PR y no una issue**, el Paso 8 no aplica (es el pipeline de una issue):
+- PR aprobado con CI verde → intentá el merge por la puerta (`merge.sh`, ver Paso 10). Si la puerta lo rechaza, el PR queda para el usuario: decilo y seguí.
+- PR con cambios pedidos → trabajá en su rama: aplicá lo pedido, corré el gate de Step 8.4 y empujá a esa misma rama. No abras un PR nuevo.
+
 **No preguntes "¿arrancamos?".** Solo te detenés a preguntar en tres casos (GOVERNANCE.md §A1):
 1. Una decisión de producto que no podés predecir con lo que sabés del usuario. Preguntá UNA cosa y esperá.
 2. `guard.sh` bloqueó algo que la tarea necesita. Decile al usuario exactamente qué hace falta. No busques otra vía para lograr lo mismo.
@@ -454,7 +458,9 @@ Mostrá el plan del Paso 6 y, **en el mismo turno, sin esperar respuesta**, segu
      If any step returns blocked/error → HALT, escalar al usuario, no continuar.
      No continúes automáticamente si alguna etapa falla. (Inv 4/5) -->
 
-Ejecutá el pipeline en este orden exacto. Cada step es un gate — si falla, **HALT** y escalá al usuario.
+Ejecutá el pipeline en este orden exacto. Cada step es un gate — si falla, **HALT**.
+
+**Qué significa HALT en este comando** (GOVERNANCE.md §assistant-profile, "Gate failure"): detenés ESTA tarea — no abrís su PR, no la das por buena, no reintentás por otra vía (A4) —, le decís al usuario la razón exacta, y **seguís con el próximo ítem del plan que no dependa de ella**. No te quedás esperando: el usuario retoma esa tarea cuando quiera. Solo esperás una respuesta en los tres casos del Paso 7. Vale para todos los HALT de acá hasta el Paso 10.
 
 ### Step 8.1 — Resolver spec de la issue
 
@@ -601,7 +607,7 @@ Antes de lanzar el primer `sdd-apply` de esta issue en esta invocación, cheque�
 
 Corré `sdd-design` → `sdd-tasks` → `sdd-apply` ⇄ `sdd-verify` (loop apply↔verify igual que `/sdd-loop`, mismos sub-agentes `sdd-*`), reenviando `strict_tdd`/`test_command` del repo target (8.3-SDD.3) en cada launch de `sdd-apply`/`sdd-verify`. Sobre `sdd-verify` FAIL: alimentá las fallas específicas como input correctivo a un nuevo ciclo de `sdd-apply` — no marques la issue como lista sin un `sdd-verify` PASS real.
 
-**SDD_BUDGET (Inv 4/5 — nunca loop infinito):** heredá el mismo BUDGET de `/sdd-loop` (`~/.claude/commands/sdd-loop.md`): máximo 8 ciclos apply→verify, y STOP después de 2 ciclos consecutivos sin progreso medible (ni tareas nuevas completadas ni cambio en las fallas de verify). Si `SDD_BUDGET` se agota sin `sdd-verify` PASS, es un **gate rojo** — mismo tratamiento que cualquier otro gate de este pipeline: `SDD_MODE = attended` → **HALT**, mostrale al usuario la última falla de verify y esperá decisión; `SDD_MODE = autonomous` → **PARK** la issue vía B2.c de `batch.md` con razón exacta `"SDD loop budget agotado (8 ciclos o 2 sin progreso) — última falla de sdd-verify: {detalle}"`, sin abrir PR, seguí con la próxima issue.
+**SDD_BUDGET (Inv 4/5 — nunca loop infinito):** heredá el mismo BUDGET de `/sdd-loop` (`~/.claude/commands/sdd-loop.md`): máximo 8 ciclos apply→verify, y STOP después de 2 ciclos consecutivos sin progreso medible (ni tareas nuevas completadas ni cambio en las fallas de verify). Si `SDD_BUDGET` se agota sin `sdd-verify` PASS, es un **gate rojo** — mismo tratamiento que cualquier otro gate de este pipeline: `SDD_MODE = attended` → **HALT**, mostrale al usuario la última falla de verify; `SDD_MODE = autonomous` → **PARK** la issue vía B2.c de `batch.md` con razón exacta `"SDD loop budget agotado (8 ciclos o 2 sin progreso) — última falla de sdd-verify: {detalle}"`, sin abrir PR, seguí con la próxima issue.
 
 **8.3-SDD.6 — judgment-day obligatorio antes de PR-ready**
 
@@ -627,7 +633,7 @@ bash ~/.devlead/hooks/gate-check.sh </dev/null
 
 Si algún gate falla:
 - **HALT** — mostrá exactamente qué gate falló y por qué (el script ya produce output legible)
-- No continúes a Step 8.5 hasta que el usuario resuelva el gate. `DEVLEAD_FORCE_CLOSE=1` solo silencia ESTA llamada: la puerta de Step 8.5 (`open-pr.sh`) vuelve a correr el gate y no acepta esa variable. Si el usuario decide abrir el PR con un gate en rojo, lo abre él a mano — DevLead no.
+- Esta tarea no llega a Step 8.5: no se abre un PR con un gate en rojo. `DEVLEAD_FORCE_CLOSE=1` solo silencia ESTA llamada: la puerta de Step 8.5 (`open-pr.sh`) vuelve a correr el gate y no acepta esa variable. Si el usuario decide abrir el PR con un gate en rojo, lo abre él a mano — DevLead no.
 
 ### Step 8.5 — Abrir el PR
 
@@ -762,7 +768,7 @@ Mostrá un resumen del pipeline:
 ## Pipeline completado
 
 - Rama: {branch_name}
-- PR: {pr_url} → abierto, listo para review
+- PR: {pr_url} → {abierto, listo para review | mergeado a {integration_branch}}
 - Issue #{issue_num}: el merge a `dev` (no a la default branch) NO auto-cierra el `Closes #N` — la issue queda abierta hasta que la cierres manualmente
 - CI status: pendiente de GitHub Actions (revisá en unos minutos)
 
