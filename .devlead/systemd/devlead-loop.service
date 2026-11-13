@@ -20,6 +20,11 @@ Type=oneshot
 # sweep-loop.sh's own cwd resolution (see its --repo flag / DEVLEAD_LOOP_REPO
 # handling). Create %h/.devlead/loop.env with a line like:
 #   DEVLEAD_LOOP_REPO=/home/you/path/to/repo
+# The same file MUST also carry the permission flags for the headless session;
+# without them sweep-loop.sh refuses to invoke claude and this unit fails:
+#   DEVLEAD_LOOP_CLAUDE_ARGS=--permission-mode acceptEdits --allowedTools Bash,Read,Edit,Write,Glob,Grep,Agent
+# And the target repo's .devlead/envelope.yml must say `enabled: true`: with
+# the kill switch off the loop prints STATUS: paused and exits 0.
 WorkingDirectory=%h/.devlead
 EnvironmentFile=-%h/.devlead/loop.env
 ExecStart=%h/.devlead/scripts/sweep-loop.sh --plan %h/.devlead/plan.local.yml

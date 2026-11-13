@@ -117,7 +117,7 @@ La issue **apunta a su spec por path relativo** (línea `Spec: docs/facturacion/
 | Persona DevLead | CLAUDE.md | `.claude/CLAUDE.md` | Define tono, reglas; espejos A1-A4 inline. Invariantes normativos: ver `.claude/GOVERNANCE.md` |
 | Script de ensamblado de estado | Script (bash/py) | `.devlead/scripts/` | Re-deriva el *qué* en vivo: git + GitHub |
 | Script de branching | Script | `.devlead/scripts/` | Rama desde el tag más cercano de dev (`git describe --tags`), determinista |
-| Journal | Estado per-repo | `~/.devlead/journals/<repo-key>.md` (per-repo, clave = git root) | Guarda solo el *porqué* y notas |
+| Journal | Estado per-repo | `~/.devlead/journals/<repo-key>.md` (entrada vigente) + `<repo-key>.history.md` (días anteriores); lo escribe `journal.sh save` | Guarda solo el *porqué* y notas. Acumulativo: cerrar el día archiva la entrada anterior, no la pisa |
 | Resolver de referencia por-issue | Lógica en el command + script | `.devlead/scripts/` | Sigue el path/link/doc-id de la issue y carga *solo ese doc* en el paso del SDD |
 | Ingesta de bundle Claude Design | Handoff / lógica | `.claude/` | Consume el bundle *Handoff to Claude Code* como input del pipeline de front |
 | Gate de diff visual (front) | Hook / paso de pipeline | `.claude/hooks/` | Chrome MCP screenshot → compara contra el diseño → bloquea/itera si diverge |
@@ -247,6 +247,105 @@ Los digests se escriben en `~/.devlead/reports/YYYY-MM-DD.md`. Cada ejecución *
 ### Por qué no se usa `devlead` en PATH bajo systemd
 
 Los units de usuario de systemd no heredan el PATH interactivo. El sweep invoca `envelope.sh` por ruta absoluta instalada (`~/.devlead/scripts/envelope.sh`) para garantizar resolución sin importar el entorno.
+
+---
+
+## Loop nocturno (`devlead-loop.timer`) — qué necesita para correr
+
+`sweep-loop.sh` re-invoca `claude -p "/sweep-execute --plan ..."` sin humano presente. Por eso exige tres cosas y se niega (o se pausa) si falta alguna:
+
+- **`DEVLEAD_LOOP_REPO`** en `~/.devlead/loop.env`: el repo destino.
+- **`DEVLEAD_LOOP_CLAUDE_ARGS`** en `~/.devlead/loop.env`: los flags de permisos de la sesión headless, separados por espacios. Sin esta variable el loop **no invoca `claude`** y sale con error: una sesión desatendida corre con permisos que alguien eligió, nunca con los que la máquina tenga por defecto. Ejemplo:
+  ```
+  DEVLEAD_LOOP_CLAUDE_ARGS=--permission-mode acceptEdits --allowedTools Bash,Read,Edit,Write,Glob,Grep,Agent
+  ```
+  `DEVLEAD_LOOP_DRYRUN=1` imprime el comando exacto, flags incluidos, sin ejecutar nada.
+- **`enabled: true`** en el `.devlead/envelope.yml` de ese repo. Es el kill-switch: sin envelope, o con `enabled: false`, el loop imprime `STATUS: paused` y sale 0 sin invocar nada. Se consulta antes de cada iteración, así que apagarlo detiene un run en curso al terminar la iteración actual. (El LOCAL-PLAN interactivo no lo exige: ahí acabás de aprobar el plan vos.)
+
+---
+
+## Run multi-repo (`devlead-fleet.timer`) — el que ejecuta la agenda
+
+El loop nocturno de arriba trabaja UN repo con UN plan local. Este timer hace la otra mitad del ciclo: una pasada desatendida de `/sweep-execute --fleet` sobre **todos** los repos de `~/.devlead/autonomous-repos` cuyo envelope diga `enabled: true`, trabajando la cola que arma la policy de cada uno — la misma lista que el sweep de las 07:00 te mandó como agenda, con tus ajustes aplicados.
+
+| Hora | Qué corre | Qué hace |
+|---|---|---|
+| 07:00 | `devlead-sweep.timer` | Arma la agenda de cada repo y te avisa. No toca ningún repo |
+| durante el día | vos | `devlead agenda first <N>` / `skip <N>` si querés otro orden |
+| 22:00 | `devlead-loop.timer` | El plan local, si hay uno |
+| 22:30 | `devlead-fleet.timer` | La agenda de cada repo enrolado: ramas, commits y PRs |
+
+- **No viene activado.** Publicarlo no lo enciende: se activa en `devlead config` → Machine setup → Timers → fleet timer.
+- **Necesita `DEVLEAD_LOOP_CLAUDE_ARGS`** en `~/.devlead/loop.env`, igual que el loop nocturno.
+- **Una sola pasada por noche.** Un run de plan sabe cuándo terminó; uno de flota no, así que cada pasada extra pagaría una sesión entera para encontrar la cola ya trabajada. Se cambia en `ExecStart=` de la unidad (`--max-iterations`).
+- **No corre a la par del loop nocturno.** Si a las 22:30 el loop sigue trabajando, este arranque espera a que termine (`After=devlead-loop.service`). Si movés los horarios, dejá este como el más tardío.
+- **No recupera noches perdidas** (`Persistent=false`): no arranca a crear ramas cuando abrís la laptop.
+- Lo que puede mergear sigue siendo lo que diga `merge.mode` de cada envelope; el timer no cambia eso.
+
+## Discover programado (`devlead-discover.timer`)
+
+`/sweep-discover` compara los módulos que declaraste en `discover.modules[]` contra su spec y archiva una issue por cada brecha. Este timer lo corre solo, una vez por semana (lunes 05:00), en cada repo enrolado cuyo envelope diga `enabled: true` **y** `discover.enabled: true` (`discover-fleet.sh`). Un repo que no lo pidió no se toca.
+
+- **Solo archiva issues.** No crea ramas ni abre PRs. Cada issue lleva `discover.label`, que la mantiene fuera de toda agenda hasta que la revises y le saques la label (el ciclo de dos noches, `GOVERNANCE.md §sweep-discover-profile`).
+- **No viene activado.** Se enciende en `devlead config` → Machine setup → Timers → discover timer.
+- **Permisos propios y más chicos.** Lee `DEVLEAD_DISCOVER_CLAUDE_ARGS` de `~/.devlead/loop.env`; si no está, usa `DEVLEAD_LOOP_CLAUDE_ARGS`. Discover solo lee el repo y archiva issues, así que alcanza con algo como `--permission-mode default --allowedTools Bash,Read,Glob,Grep`. Sin ninguna de las dos, no arranca y te avisa.
+- **Un intento por repo, sin reintentos** (un segundo intento podría archivar la misma brecha dos veces). Espera a que terminen el loop nocturno y el run multi-repo si siguen corriendo.
+- `DEVLEAD_LOOP_DRYRUN=1 bash ~/.devlead/scripts/discover-fleet.sh` muestra qué correría, sin invocar nada.
+
+## Aprendizaje — DevLead aprende de tus reviews (`learn.sh`)
+
+DevLead aprende cómo trabajás leyendo lo que escribís en los PRs:
+
+1. Comentás un PR como siempre (inline, en la conversación, o en el resumen de una review).
+2. En el siguiente `/arranquemos`, `learn.sh capture` guarda tus comentarios nuevos — solo los de tu cuenta — y DevLead destila de ellos preferencias de una línea.
+3. Las preferencias quedan **activas al instante** y aparecen en el standup ("Aprendí de tus reviews"). Si una no va: "quitá p3".
+4. Todo run posterior — `/arranquemos`, `/batch`, `/sweep-execute`, el loop nocturno — las aplica al implementar.
+
+| Comando | Qué hace |
+|---|---|
+| `learn.sh pref-list` | Preferencias activas y quitadas |
+| `learn.sh pref-add user "..."` | Agregar una a mano |
+| `learn.sh pref-remove p3` | Quitar una (no se vuelve a deducir) |
+| `learn.sh outcomes` | Resumen de cómo terminaron los PRs de DevLead |
+| `learn.sh trust` | Si ese historial está estable (10+ mergeados, 5 mediciones seguidas sin rechazos). Solo informa: el margen de DevLead lo cambiás vos en `devlead config` |
+
+Todo vive en `~/.devlead/learn/<repo-key>/`, local y por repo. Una preferencia es estilo, nunca autoridad: no puede mergear, saltear un gate ni mover un límite (`GOVERNANCE.md §learned-preferences`).
+
+El journal también es acumulativo: `/cerremos` archiva la entrada anterior en vez de pisarla (`journal.sh`), y `/arranquemos` lee los últimos días para detectar lo que se repite.
+
+## Agenda del día — qué va a hacer DevLead hoy (`agenda.sh`)
+
+Cada mañana el sweep arma la cola de cada repo enrolado con la policy de su envelope, la guarda como **agenda del día** y te manda un aviso al teléfono. DevLead no espera tu OK: a la hora del run arranca con esa cola. Si tenés otra prioridad, la cambiás antes:
+
+| Comando (dentro del repo) | Qué hace |
+|---|---|
+| `devlead agenda` | Muestra la agenda de hoy, con tus ajustes aplicados |
+| `devlead agenda first 15` | La #15 se trabaja primero |
+| `devlead agenda skip 12` | La #12 no se trabaja hoy |
+| `devlead agenda reset` | Descarta los ajustes |
+
+En una sesión de `/arranquemos` alcanza con decirlo ("hoy primero la 15", "la 12 dejala").
+
+Un ajuste solo **reordena o saltea** issues de la cola que tu policy ya incluyó; nunca agrega una. Vale por el día: la agenda de mañana arranca limpia. Para un cambio permanente — o para cambiar prioridades desde el teléfono, donde no hay terminal — usá labels en GitHub: las de `select.exclude_labels` sacan una issue de la cola y las de `order.priority_labels` la suben.
+
+El push lleva por defecto solo cantidades ("2 repo(s), 5 issue(s) today"); para recibir la lista con repos y títulos en el teléfono agregá `DEVLEAD_NOTIFY_DETAIL=1` a `~/.devlead/notify.env`. La lista completa siempre queda en la bandeja local. Reglas en `GOVERNANCE.md §daily-agenda`.
+
+## Avisos — bandeja local y push al teléfono (`notify.sh`)
+
+Un run desatendido que no puede seguir solo avisa por `~/.devlead/scripts/notify.sh`. Todo queda en la bandeja local `~/.devlead/inbox.tsv`, que `/arranquemos` muestra a la mañana ("Mientras no estabas") y archiva. Los avisos de nivel `need` van además al teléfono con prioridad alta; el de nivel `agenda` (la lista del día) va con prioridad normal. La lista de qué dispara un `need` está en `.claude/GOVERNANCE.md §escalation-channel`.
+
+**Activar el push** (sin esto, solo se escribe la bandeja y nada sale de la máquina):
+
+1. Instalá la app de ntfy en el teléfono y suscribite a un topic con un nombre largo e imposible de adivinar (el nombre del topic es lo único que protege el canal), en `ntfy.sh` o en un servidor ntfy propio.
+2. Creá la configuración:
+   ```bash
+   printf 'DEVLEAD_NTFY_URL=https://ntfy.sh/tu-topic-largo-y-secreto\n' > ~/.devlead/notify.env
+   chmod 600 ~/.devlead/notify.env
+   ```
+   `notify.sh` ignora el archivo si los permisos no son exactamente `600` o si la URL no es `https`.
+3. Probalo: `bash ~/.devlead/scripts/notify.sh send need prueba "hola"` y después `bash ~/.devlead/scripts/notify.sh list` — la entrada debe decir `push=sent`.
+
+**Privacidad:** el push pasa por un servicio externo. Por defecto lleva solo el código del aviso (`DevLead needs you: loop-paused`), sin nombre de repo ni detalle. Agregá `DEVLEAD_NOTIFY_DETAIL=1` al archivo si querés que incluya el nombre del repo y el mensaje. Opcional: `DEVLEAD_NTFY_TOKEN=...` para un servidor con autenticación.
 
 ---
 

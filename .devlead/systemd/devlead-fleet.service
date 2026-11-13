@@ -1,0 +1,40 @@
+[Unit]
+Description=DevLead fleet run (headless plan-driven sweep-execute over every enrolled repo)
+Documentation=file:%h/.devlead/scripts/sweep-loop.sh
+# No enrolled repo, no run: without the fleet list there is nothing to work on.
+ConditionPathExists=%h/.devlead/autonomous-repos
+# Two unattended runs must never work the same checkout at once. The plan loop
+# fires at 22:00 and this unit at 22:30: if the loop is still running, this
+# start waits for it to finish instead of running beside it. The ordering is
+# one-way on purpose — a mutual After= between two units that share an
+# [Install] target is an ordering cycle. If you move either timer, keep this
+# unit the later one.
+After=devlead-loop.service
+
+[Service]
+Type=oneshot
+# Fleet mode takes its repos from ~/.devlead/autonomous-repos, not from cwd;
+# %h/.devlead always exists (the condition above depends on a file in it).
+WorkingDirectory=%h/.devlead
+# Same file the plan loop reads. It MUST carry the permission flags for the
+# headless session; without them sweep-loop.sh refuses to invoke claude and
+# this unit fails:
+#   DEVLEAD_LOOP_CLAUDE_ARGS=--permission-mode acceptEdits --allowedTools Bash,Read,Edit,Write,Glob,Grep,Agent
+EnvironmentFile=-%h/.devlead/loop.env
+# What it works on: for each enrolled repo whose envelope says `enabled: true`,
+# the queue that repo's policy produces, with the adjustments you made to
+# today's agenda (`devlead agenda first|skip <N>`) applied.
+#
+# One pass, on purpose. A plan run can tell when it is finished (its plan is
+# settled); a fleet run cannot, so every extra iteration would pay a full
+# headless session to find the queue already worked. Raise the number here if
+# your queues are longer than one session can finish.
+ExecStart=%h/.devlead/scripts/sweep-loop.sh --max-iterations 1 -- --fleet
+StandardOutput=journal
+StandardError=journal
+# A pass over several repos outlives the default oneshot timeout, which would
+# kill it mid-run and leave branches half-built.
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=default.target
