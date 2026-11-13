@@ -282,6 +282,16 @@ El loop nocturno de arriba trabaja UN repo con UN plan local. Este timer hace la
 - **No recupera noches perdidas** (`Persistent=false`): no arranca a crear ramas cuando abrís la laptop.
 - Lo que puede mergear sigue siendo lo que diga `merge.mode` de cada envelope; el timer no cambia eso.
 
+## Discover programado (`devlead-discover.timer`)
+
+`/sweep-discover` compara los módulos que declaraste en `discover.modules[]` contra su spec y archiva una issue por cada brecha. Este timer lo corre solo, una vez por semana (lunes 05:00), en cada repo enrolado cuyo envelope diga `enabled: true` **y** `discover.enabled: true` (`discover-fleet.sh`). Un repo que no lo pidió no se toca.
+
+- **Solo archiva issues.** No crea ramas ni abre PRs. Cada issue lleva `discover.label`, que la mantiene fuera de toda agenda hasta que la revises y le saques la label (el ciclo de dos noches, `GOVERNANCE.md §sweep-discover-profile`).
+- **No viene activado.** Se enciende en `devlead config` → Machine setup → Timers → discover timer.
+- **Permisos propios y más chicos.** Lee `DEVLEAD_DISCOVER_CLAUDE_ARGS` de `~/.devlead/loop.env`; si no está, usa `DEVLEAD_LOOP_CLAUDE_ARGS`. Discover solo lee el repo y archiva issues, así que alcanza con algo como `--permission-mode default --allowedTools Bash,Read,Glob,Grep`. Sin ninguna de las dos, no arranca y te avisa.
+- **Un intento por repo, sin reintentos** (un segundo intento podría archivar la misma brecha dos veces). Espera a que terminen el loop nocturno y el run multi-repo si siguen corriendo.
+- `DEVLEAD_LOOP_DRYRUN=1 bash ~/.devlead/scripts/discover-fleet.sh` muestra qué correría, sin invocar nada.
+
 ## Aprendizaje — DevLead aprende de tus reviews (`learn.sh`)
 
 DevLead aprende cómo trabajás leyendo lo que escribís en los PRs:
@@ -297,6 +307,7 @@ DevLead aprende cómo trabajás leyendo lo que escribís en los PRs:
 | `learn.sh pref-add user "..."` | Agregar una a mano |
 | `learn.sh pref-remove p3` | Quitar una (no se vuelve a deducir) |
 | `learn.sh outcomes` | Resumen de cómo terminaron los PRs de DevLead |
+| `learn.sh trust` | Si ese historial está estable (10+ mergeados, 5 mediciones seguidas sin rechazos). Solo informa: el margen de DevLead lo cambiás vos en `devlead config` |
 
 Todo vive en `~/.devlead/learn/<repo-key>/`, local y por repo. Una preferencia es estilo, nunca autoridad: no puede mergear, saltear un gate ni mover un límite (`GOVERNANCE.md §learned-preferences`).
 
