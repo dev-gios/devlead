@@ -11,8 +11,6 @@
 #   learn.sh pref-shown               mark those as shown
 #   learn.sh pref-remove <id>         deactivate a preference (kept, so it is not re-learned)
 #   learn.sh outcomes                 summary of the last measured PR outcomes
-#   learn.sh trust                    whether the measured record is steady enough
-#                                     to be worth the user's attention
 #
 # The loop this supports: the user comments on a PR -> `capture` stores the
 # comment -> /arranquemos reads `pending`, writes each lesson with `pref-add`
@@ -51,10 +49,6 @@ BODY_MAX_CHARS=2000
 PREF_MAX_CHARS=300
 CAPTURE_PAGE=100
 CAPTURE_PR_LIMIT=30
-# `trust` calls the record steady only after this many measured runs in a
-# row with nothing rejected, and at least this many merged PRs.
-TRUST_MIN_RUNS=5
-TRUST_MIN_MERGED=10
 
 _root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$_root" ]]; then
@@ -309,63 +303,6 @@ _outcomes() {
   fi
 }
 
-# trust — a reading of the measured record, for the human. It grants nothing
-# and changes nothing: this script cannot reach the limits it talks about,
-# and the only thing a `steady` verdict does is let /arranquemos mention that
-# the user may want to look at their own settings. Deliberately strict, and
-# deliberately blind to anything it cannot measure:
-#   - `merged` counts every merged PR, including one that needed changes
-#     before it was merged; the record does not keep that history.
-#   - a snapshot holds what GitHub showed that morning, not a full history.
-_trust() {
-  local file="$OUTCOMES_DIR/${_key}.jsonl"
-  if [[ ! -s "$file" ]]; then
-    echo "STATUS: none"
-    return 0
-  fi
-  local runs last merged closed changes window clean=0 line n
-  runs="$(wc -l < "$file" | tr -d ' ')"
-  last="$(tail -n 1 "$file")"
-  merged="$(_field "$last" merged)"
-  closed="$(_field "$last" closed_sin_merge)"
-  changes="$(_field "$last" changes_requested)"
-  for n in "$merged" "$closed" "$changes"; do
-    # Plain decimals only: a leading zero would be read as octal below, and
-    # a count that cannot be compared must not fall through to a verdict.
-    if [[ ! "$n" =~ ^(0|[1-9][0-9]{0,8})$ ]]; then
-      echo "STATUS: unreadable"
-      return 0
-    fi
-  done
-  # How many of the most recent snapshots show nothing rejected and nothing
-  # waiting on requested changes.
-  window="$(tail -n "$TRUST_MIN_RUNS" "$file")"
-  while IFS= read -r line; do
-    [[ "$(_field "$line" closed_sin_merge)" == "0" && "$(_field "$line" changes_requested)" == "0" ]] && clean=$((clean + 1))
-  done <<<"$window"
-
-  echo "STATUS: ok"
-  echo "RUNS: $runs"
-  echo "MERGED: $merged"
-  echo "CLOSED_SIN_MERGE: $closed"
-  echo "CHANGES_REQUESTED: $changes"
-  echo "CLEAN_RECENT_RUNS: $clean of $TRUST_MIN_RUNS"
-  if (( runs < TRUST_MIN_RUNS )); then
-    echo "VERDICT: not-yet"
-    echo "REASON: only $runs measured run(s); $TRUST_MIN_RUNS are needed"
-  elif (( merged < TRUST_MIN_MERGED )); then
-    echo "VERDICT: not-yet"
-    echo "REASON: $merged merged PR(s); $TRUST_MIN_MERGED are needed"
-  elif (( clean < TRUST_MIN_RUNS )); then
-    echo "VERDICT: not-yet"
-    echo "REASON: a PR was closed without merging or had changes requested in the last $TRUST_MIN_RUNS runs"
-  else
-    echo "VERDICT: steady"
-    echo "REASON: $merged merged PR(s), none closed without merging and none with changes requested in the last $TRUST_MIN_RUNS runs"
-  fi
-  echo "NOTE: a merged PR that needed changes first still counts as merged — the record does not keep that"
-}
-
 case "${1:-}" in
   capture)     _capture ;;
   pending)     _pending ;;
@@ -376,8 +313,7 @@ case "${1:-}" in
   pref-shown)  _pref_shown ;;
   pref-remove) shift; _pref_remove "$@" ;;
   outcomes)    _outcomes ;;
-  trust)       _trust ;;
   *)
-    echo "Usage: learn.sh capture | pending | digested | pref-add <source> <text> | pref-list | pref-new | pref-shown | pref-remove <id> | outcomes | trust" >&2
+    echo "Usage: learn.sh capture | pending | digested | pref-add <source> <text> | pref-list | pref-new | pref-shown | pref-remove <id> | outcomes" >&2
     exit 1 ;;
 esac

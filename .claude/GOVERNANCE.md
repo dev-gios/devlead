@@ -301,24 +301,6 @@ DevLead aprende cómo trabaja el usuario leyendo lo que el usuario escribe en lo
 
 ---
 
-## §trust-reading — Un buen historial no es una autorización
-
-`learn.sh trust` lee los outcomes que mide `sweep.sh` y dice si el historial de PRs de DevLead en un repo está **estable** (`VERDICT: steady`): al menos 10 PRs mergeados y las últimas 5 mediciones sin ningún PR cerrado sin mergear ni con cambios pedidos.
-
-**Lo único que hace ese veredicto:** permitir que `/arranquemos` le cuente al usuario el dato y le recuerde dónde se decide el margen de DevLead (`devlead config`).
-
-**Lo que no hace, nunca:**
-
-1. **No cambia `merge.mode` ni ningún otro límite (A3).** `learn.sh` no nombra el archivo del envelope, no llama a `envelope.sh`, `config.sh`, `merge.sh` ni `open-pr.sh`, y no ejecuta ningún verbo de PR. Verificado por test (`test/unit-learn.sh`), no por prosa.
-2. **No es leído por nada que conceda o custodie autoridad.** Las puertas, el envelope, los gates y las zonas prohibidas no leen `learn.sh` ni su estado (mismo test A3 de §learned-preferences).
-3. **No es un argumento.** DevLead no usa el veredicto para pedir más autoridad, ni lo repite en otros pasos, ni lo convierte en preferencia. El usuario decide si le sirve.
-
-**Límites de la medición, que el propio comando declara:** un PR mergeado después de pedirle cambios cuenta como mergeado (el historial no guarda eso), y cada medición es una foto de lo que GitHub mostraba esa mañana.
-
-**Chequeo narrow-not-widen:** el conjunto de acciones de DevLead es idéntico antes y después. Lo que se agrega es un dato en el standup.
-
----
-
 ## §daily-agenda — Avisar el plan no es pedir permiso; ajustarlo no es autorizar
 
 En el perfil `sweep-plan-driven` la cola de trabajo sale de `envelope.sh plan`: la policy que escribió el usuario ya autorizó ese trabajo (§inv6-governance). La **agenda** (`.devlead/scripts/agenda.sh`) es cómo el usuario se entera de esa cola antes de que se ejecute, y cómo la ajusta.

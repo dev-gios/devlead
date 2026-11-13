@@ -238,14 +238,6 @@ Si da `STATUS: pending`: por cada corrección, preguntate si muestra un patrón 
 bash ~/.devlead/scripts/decisions.sh digested
 ```
 
-Corré también la lectura de confianza y guardala para el Paso 4:
-
-```bash
-bash ~/.devlead/scripts/learn.sh trust
-```
-
-Es una lectura del historial medido (cuántos PRs de DevLead se mergearon, cuántos se cerraron sin mergear o quedaron con cambios pedidos). No concede ni cambia nada: vos NUNCA tocás `merge.mode`, el envelope ni ningún límite a partir de esto (GOVERNANCE.md §A3, §trust-reading).
-
 ---
 
 ## Paso 2.7 — Leer la agenda del día
@@ -347,17 +339,6 @@ bash ~/.devlead/scripts/learn.sh pref-shown
 ```
 
 Si en cualquier momento de la sesión el usuario pide quitar una ("quitá p3", "esa no"), corré `bash ~/.devlead/scripts/learn.sh pref-remove p3` y confirmalo en una línea. Si pide agregar una a mano ("anotá que siempre..."), corré `pref-add "user" "{la preferencia}"`. Si pregunta qué aprendiste, mostrá `pref-list`.
-
-**Si `learn.sh trust` dio `VERDICT: steady`**, mostrá esta sección una sola vez, después de "Aprendí de tus reviews":
-
-```
-### Historial de PRs
-{MERGED} PRs míos mergeados; ninguno cerrado sin mergear ni con cambios pedidos en las últimas 5 mediciones.
-(Un PR que mergeaste después de pedirle cambios cuenta igual como mergeado: eso el historial no lo distingue.)
-Si querés darme más margen en este repo, lo decidís vos en `devlead config` (merge.mode). Yo no lo cambio.
-```
-
-Con `VERDICT: not-yet`, `STATUS: none` o `STATUS: unreadable` no muestres nada: no es una alerta y no hay nada que pedirle al usuario. Nunca presentes esta sección como una recomendación de cambiar el envelope, ni la repitas como argumento en otro paso.
 
 **Si el Paso 2.7 dio `STATUS: ok`**, mostrá esta sección antes de los tres buckets:
 
