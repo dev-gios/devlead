@@ -316,6 +316,22 @@ Todo vive en `~/.devlead/learn/<repo-key>/`, local y por repo. Una preferencia e
 
 El journal también es acumulativo: `/cerremos` archiva la entrada anterior en vez de pisarla (`journal.sh`), y `/arranquemos` lee los últimos días para detectar lo que se repite.
 
+## Registro de decisiones — qué decidió solo y por qué (`decisions.sh`)
+
+DevLead no te pide permiso para elegir una tarea o un enfoque. A cambio, nada de lo que decide por ti queda sin decir: cada decisión se registra con su razón, por repositorio.
+
+- La ves en la conversación cuando la toma, y en el siguiente `/devlead` si la tomó en una corrida desatendida ("Decidí por vos").
+- Si no era lo que querías, se lo dices ("así no, yo habría hecho un solo PR") y queda registrada la corrección.
+- Las correcciones son lo que más le enseña: de ahí salen las entradas de "cómo decides" de tu perfil.
+
+```
+bash ~/.devlead/scripts/decisions.sh list
+```
+
+Es solo un registro: no autoriza ni frena nada.
+
+---
+
 ## Perfil — DevLead aprende cómo escribes y decides (`profile.sh`)
 
 Además de tus reviews, DevLead aprende de lo que TÚ escribes en tus conversaciones de Claude Code, de todos tus proyectos, y de lo que ya está guardado en Engram.

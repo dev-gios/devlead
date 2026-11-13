@@ -651,6 +651,8 @@ Ejecutá los sub-pasos B2.a → B2.e de `batch.md` para ESTA issue. Para el deta
 
 **Preferencias aprendidas (heredadas por el mismo camino).** El Step 8.3 de `arranquemos.md` abre leyendo `bash ~/.devlead/scripts/learn.sh pref-list` y aplica las preferencias activas del usuario a la implementación de cada issue. Un run desatendido solo LEE preferencias: nunca corre `learn.sh capture`, `pref-add` ni `pref-remove`. Una preferencia es estilo, no autoridad — no levanta un PARK, no cambia la cola ni el techo de merge (GOVERNANCE.md §learned-preferences).
 
+**Decisiones tomadas sin el usuario (heredadas por el mismo camino).** En una corrida desatendida no hay nadie a quien decirle una decisión, así que el registro es la única forma de que el usuario se entere: cada vez que elijas un enfoque o resuelvas una ambigüedad del spec, ejecutá `bash ~/.devlead/scripts/decisions.sh record "{tarea}" "{qué decidiste}" "{por qué}"` desde el repo de la issue. El próximo `/devlead` se las muestra al usuario. El registro no autoriza nada: una decisión que necesitaría ampliar el alcance, tocar una zona prohibida o pasar un gate rojo no se toma — se hace PARK (§A4).
+
 **Deltas que /sweep-execute aplica ON TOP del pipeline B2** (y nada más):
 
 **Delta 1 — Skip B0 completo.**

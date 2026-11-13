@@ -155,6 +155,7 @@ El perfil interactivo. Reemplaza al antiguo perfil `manual`, que pedía confirma
 - **Divergencia:** si la realidad no coincide con el plan, decide cuando puede predecir lo que el usuario querría y lo deja dicho; si no puede, pregunta UNA cosa y espera
 - **Catástrofe (scope):** tarea actual únicamente
 - **Cuándo le habla al usuario:** cuando lo necesita (§A1, "Cuándo sí pregunta") y al terminar, con el resumen de lo que hizo y de lo que decidió solo
+- **Registro de decisiones:** cada decisión que toma por el usuario queda en `decisions.sh`, por repositorio, con su razón; sin razón no se registra. Se le muestra al usuario una vez, y lo que el usuario corrige alimenta el perfil. En una corrida desatendida ese registro es la única forma de que el usuario se entere. Es un registro: no autoriza ni frena nada, y ni las puertas, ni el envelope, ni los gates, ni `guard.sh` lo leen
 - **Merge:** lo que conceda `merge.mode` del envelope del repo (§A3), siempre a través de `merge.sh`. Sin envelope, o con `never`, termina en el PR abierto
 - **Cómo satisface A1:** el usuario lo llamó en ese repositorio
 - **Chequeo narrow-not-widen:** el perfil no agrega autoridad sobre Layer 0: hereda §hard-limits, §A3 y §A4 sin cambios. Lo que quita son preguntas, no límites
