@@ -39,6 +39,7 @@ set -uo pipefail
 DECISIONS_ROOT="${DEVLEAD_DECISIONS_DIR:-$HOME/.devlead/decisions}"
 NOW="${DEVLEAD_DECISIONS_NOW:-$(date '+%F %H:%M')}"
 FIELD_MAX_CHARS=300
+LIST_ROWS=40               # how many of the latest decisions a plain `list` prints
 LOG_MAX_ROWS="${DEVLEAD_DECISIONS_MAX_ROWS:-500}"
 
 _root="$(git rev-parse --show-toplevel 2>/dev/null)"
@@ -116,7 +117,11 @@ _print_rows() {
 _list() {
   _ensure_state || return 1
   local rows
-  if [[ "${1:-}" == "--new" ]]; then rows="$(awk -F'\t' '$3 == "new"' "$LOG")"; else rows="$(tail -n 40 "$LOG")"; fi
+  case "${1:-}" in
+    --new) rows="$(awk -F'\t' '$3 == "new"' "$LOG")" ;;
+    "")    rows="$(tail -n "$LIST_ROWS" "$LOG")" ;;
+    *)     echo "Usage: decisions.sh list [--new]" >&2; return 1 ;;
+  esac
   if [[ -z "$rows" ]]; then
     echo "STATUS: none"
     return 0
@@ -152,7 +157,10 @@ _correct() {
     return 1
   fi
   # The user saw it: that is how they could correct it.
-  _rewrite '$1 == id { $3 = "shown"; $7 = text; $8 = "pending" } { print }' "id=$id" "text=$text" || return 1
+  # The text travels through the environment, not `awk -v`: -v expands
+  # backslash escapes, and a typed "\t" would become a real tab and forge a
+  # column.
+  CORRECTION_TEXT="$text" _rewrite '$1 == id { $3 = "shown"; $7 = ENVIRON["CORRECTION_TEXT"]; $8 = "pending" } { print }' "id=$id" || return 1
   echo "STATUS: corrected"
   echo "ID: $id"
 }

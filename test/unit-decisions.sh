@@ -97,6 +97,15 @@ out="$(a correct 4 "id mal escrito" 2>&1)"; rc=$?
 check "a malformed id is misuse" "$rc" "1"
 out="$(a correct d1 "" 2>&1)"; rc=$?
 check "a correction without text is misuse" "$rc" "1"
+a record "issue #51" "uso la librería estándar" "evita una dependencia" >/dev/null
+a correct d5 'prefería C:\temp\nuevo y no \t ni \n literales' >/dev/null
+row="$(grep "^d5$(printf '\t')" "$DEVLEAD_DECISIONS_DIR"/*/log.tsv)"
+check "backslash sequences in a correction do not forge columns" "$(awk -F'\t' '{print NF}' <<<"$row")" "8"
+contains "…and are kept as typed" "$row" 'C:\temp\nuevo y no \t ni \n literales'
+check "the log still has one line per decision" "$(wc -l < "$(grep -l 'issue #51' "$DEVLEAD_DECISIONS_DIR"/*/log.tsv)")" "5"
+a digested >/dev/null
+out="$(a list --all 2>&1)"; rc=$?
+check "an unknown option to list is misuse, not silently ignored" "$rc" "1"
 check "corrections do not cross repositories" "$(field "$(b corrections)" STATUS)" "none"
 
 echo "=== bounded, without losing what the user has not seen ==="
