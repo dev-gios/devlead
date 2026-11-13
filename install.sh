@@ -172,7 +172,7 @@ fi
 _section "Claude settings"
 
 GLOBAL_SETTINGS="$HOME/.claude/settings.json"
-HOOKS_FRAGMENT='{"hooks":{"PreToolUse":[{"matcher":"Bash|Read|Grep|Write|Edit|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"bash ~/.devlead/hooks/guard.sh"}]}],"PostToolUse":[{"matcher":"Write|Edit","hooks":[{"type":"command","command":"bash ~/.devlead/hooks/post-edit.sh"}]}],"Stop":[{"hooks":[{"type":"command","command":"bash ~/.devlead/hooks/gate-check.sh"}]}]}}'
+HOOKS_FRAGMENT='{"hooks":{"PreToolUse":[{"matcher":"Bash|Monitor|Read|Grep|Write|Edit|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"bash ~/.devlead/hooks/guard.sh"}]}],"PostToolUse":[{"matcher":"Write|Edit","hooks":[{"type":"command","command":"bash ~/.devlead/hooks/post-edit.sh"}]}],"Stop":[{"hooks":[{"type":"command","command":"bash ~/.devlead/hooks/gate-check.sh"}]}]}}'
 
 # Comandos que identifican unívocamente a los hooks de devlead. Sirven para
 # deduplicar: si ya existe una entrada con el mismo command, no se vuelve a
@@ -182,7 +182,7 @@ GATE_CHECK_CMD="bash ~/.devlead/hooks/gate-check.sh"
 # guard.sh: los límites duros (producción, base de datos, claves, alcance al
 # repo). Corre ANTES de cada herramienta; inerte fuera de DevLead.
 GUARD_CMD="bash ~/.devlead/hooks/guard.sh"
-GUARD_MATCHER="Bash|Read|Grep|Write|Edit|MultiEdit|NotebookEdit"
+GUARD_MATCHER="Bash|Monitor|Read|Grep|Write|Edit|MultiEdit|NotebookEdit"
 
 # Programa jq idempotente: parte del settings existente ($base, primer input) y
 # le agrega SOLO las entradas devlead que falten, dedup por command string.

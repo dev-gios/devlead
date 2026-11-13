@@ -94,7 +94,7 @@ DevLead trabaja por su cuenta. Lo que NO puede hacer no depende de una frase en 
 
 **Un límite bloqueado no se rodea.** Si la tarea lo necesita, DevLead se detiene y le dice al usuario qué hace falta: manual → avisa y espera; autónomo → PARK con la razón exacta que imprimió el guard (§A4). Buscar otra vía para lograr el mismo efecto es una violación de esta sección.
 
-**Qué no es.** No es un sandbox: un comando de Bash se evalúa como texto, así que frena los errores de un agente honesto y no contiene a uno hostil. La defensa estructural de producción es que sus credenciales no estén en esta máquina.
+**Qué no es.** No es un sandbox: un comando de Bash se evalúa como texto, así que frena los errores de un agente honesto y no contiene a uno hostil. Tampoco ve lo que hay dentro de un script del propio repo: `npm run deploy`, `make deploy` o `./deploy.sh` pasan, porque el guard no los abre. La defensa estructural de producción es que sus credenciales no estén en esta máquina.
 
 **La sesión nunca tiene el token de GitHub en la mano.** Para saber si hay auth usa `envelope-auth.sh auth`, que responde `available` o `unavailable`; los scripts que la necesitan la resuelven en su propio proceso.
 
