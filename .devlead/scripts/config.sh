@@ -311,12 +311,15 @@ _machine_timers() {
   local choice
   choice="$(_menu "Timers" \
     "sweep timer  — plan-only, read-only; writes nothing to any repo" sweep \
-    "loop timer   — autonomous; CREATES BRANCHES, COMMITS, and OPENS PRs" loop)"
+    "loop timer   — autonomous; CREATES BRANCHES, COMMITS, and OPENS PRs" loop \
+    "fleet timer  — autonomous, every enrolled repo; CREATES BRANCHES, COMMITS, and OPENS PRs" fleet)"
   case "$choice" in
     sweep) _machine_toggle_timer devlead-sweep.timer \
          "This timer only reads state and writes a plan-only report — it makes no repo changes." ;;
     loop) _machine_toggle_timer devlead-loop.timer \
          "This timer runs the autonomous loop unattended — it CREATES BRANCHES, COMMITS, and OPENS PRs against enrolled repos. It needs DEVLEAD_LOOP_REPO and DEVLEAD_LOOP_CLAUDE_ARGS (the permission flags for the headless session) in ~/.devlead/loop.env, and enabled: true in that repo's envelope." ;;
+    fleet) _machine_toggle_timer devlead-fleet.timer \
+         "This timer runs one unattended pass over EVERY repo listed in ~/.devlead/autonomous-repos whose envelope says enabled: true — it CREATES BRANCHES, COMMITS, and OPENS PRs there, working the queue each repo's envelope policy produces (the agenda the morning sweep sends you; change it with 'devlead agenda first|skip <N>'). It needs DEVLEAD_LOOP_CLAUDE_ARGS (the permission flags for the headless session) in ~/.devlead/loop.env." ;;
     b) return 0 ;;
     *) echo "config: unknown option '${choice#__invalid__}'" ;;
   esac

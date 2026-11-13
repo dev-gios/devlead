@@ -264,6 +264,24 @@ Los units de usuario de systemd no heredan el PATH interactivo. El sweep invoca 
 
 ---
 
+## Run multi-repo (`devlead-fleet.timer`) — el que ejecuta la agenda
+
+El loop nocturno de arriba trabaja UN repo con UN plan local. Este timer hace la otra mitad del ciclo: una pasada desatendida de `/sweep-execute --fleet` sobre **todos** los repos de `~/.devlead/autonomous-repos` cuyo envelope diga `enabled: true`, trabajando la cola que arma la policy de cada uno — la misma lista que el sweep de las 07:00 te mandó como agenda, con tus ajustes aplicados.
+
+| Hora | Qué corre | Qué hace |
+|---|---|---|
+| 07:00 | `devlead-sweep.timer` | Arma la agenda de cada repo y te avisa. No toca ningún repo |
+| durante el día | vos | `devlead agenda first <N>` / `skip <N>` si querés otro orden |
+| 22:00 | `devlead-loop.timer` | El plan local, si hay uno |
+| 22:30 | `devlead-fleet.timer` | La agenda de cada repo enrolado: ramas, commits y PRs |
+
+- **No viene activado.** Publicarlo no lo enciende: se activa en `devlead config` → Machine setup → Timers → fleet timer.
+- **Necesita `DEVLEAD_LOOP_CLAUDE_ARGS`** en `~/.devlead/loop.env`, igual que el loop nocturno.
+- **Una sola pasada por noche.** Un run de plan sabe cuándo terminó; uno de flota no, así que cada pasada extra pagaría una sesión entera para encontrar la cola ya trabajada. Se cambia en `ExecStart=` de la unidad (`--max-iterations`).
+- **No corre a la par del loop nocturno.** Si a las 22:30 el loop sigue trabajando, este arranque espera a que termine (`After=devlead-loop.service`). Si movés los horarios, dejá este como el más tardío.
+- **No recupera noches perdidas** (`Persistent=false`): no arranca a crear ramas cuando abrís la laptop.
+- Lo que puede mergear sigue siendo lo que diga `merge.mode` de cada envelope; el timer no cambia eso.
+
 ## Aprendizaje — DevLead aprende de tus reviews (`learn.sh`)
 
 DevLead aprende cómo trabajás leyendo lo que escribís en los PRs:

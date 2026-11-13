@@ -105,6 +105,8 @@ all_publish_targets() {
 .config/systemd/user/devlead-sweep.timer
 .config/systemd/user/devlead-loop.service
 .config/systemd/user/devlead-loop.timer
+.config/systemd/user/devlead-fleet.service
+.config/systemd/user/devlead-fleet.timer
 EOF
 }
 all_source_paths() {
@@ -140,6 +142,8 @@ all_source_paths() {
 .devlead/systemd/devlead-sweep.timer
 .devlead/systemd/devlead-loop.service
 .devlead/systemd/devlead-loop.timer
+.devlead/systemd/devlead-fleet.service
+.devlead/systemd/devlead-fleet.timer
 EOF
 }
 

@@ -103,6 +103,16 @@ _remove_devlead_link "$SYSTEMD_USER_DIR/devlead-sweep.service" \
 _remove_devlead_link "$SYSTEMD_USER_DIR/devlead-sweep.timer" \
   "$REPO_DIR/.devlead/systemd/devlead-sweep.timer"
 
+# The fleet run creates branches and PRs: a timer left enabled after an
+# uninstall would keep firing a unit whose script is gone.
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user disable --now devlead-fleet.timer 2>/dev/null || true
+fi
+_remove_devlead_link "$SYSTEMD_USER_DIR/devlead-fleet.service" \
+  "$REPO_DIR/.devlead/systemd/devlead-fleet.service"
+_remove_devlead_link "$SYSTEMD_USER_DIR/devlead-fleet.timer" \
+  "$REPO_DIR/.devlead/systemd/devlead-fleet.timer"
+
 # ---------------------------------------------------------------------------
 # ~/.devlead/gh-token + ~/.devlead/autonomous-repos — sweep credential y enrollment
 # ---------------------------------------------------------------------------
