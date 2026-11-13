@@ -86,10 +86,12 @@ AUTO_VARS=( "REPOS_FILE" )
 # never produce an EDGE_RE-shaped edge, so bounding the scan by the derived
 # closure alone left such scripts permanently invisible to REQ-1.
 # shellcheck disable=SC2034 # read through _closure_walk's nameref (arg $2)
-AUTONOMOUS_ROOTS=( .devlead/scripts/sweep.sh .devlead/scripts/sweep-loop.sh )
+AUTONOMOUS_ROOTS=( .devlead/scripts/sweep.sh .devlead/scripts/sweep-loop.sh
+                   .devlead/scripts/discover-fleet.sh )
 # shellcheck disable=SC2034 # read through _set_diff_report's nameref (arg $2)
 AUTONOMOUS_EXPECTED=( sweep.sh sweep-loop.sh envelope.sh bootstrap-lib.sh
-                      state.sh run-state.sh doctor.sh notify.sh )
+                      state.sh run-state.sh doctor.sh notify.sh agenda.sh
+                      discover-fleet.sh )
 AUTONOMOUS_EXTRA=( .claude/commands/sweep-execute.md )     # string-scan only
 SESSION_PATH_SET=( .claude/hooks/post-edit.sh .claude/hooks/gate-check.sh
                    .devlead/scripts/devlead-session.sh )

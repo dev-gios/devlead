@@ -1,0 +1,15 @@
+[Unit]
+Description=DevLead discovery timer
+
+[Timer]
+# Weekly, before the working week's first morning sweep. A module does not
+# drift from its spec overnight, and every pass costs one headless session
+# per repo.
+OnCalendar=Mon *-*-* 05:00:00
+# Not Persistent: a missed pass waits for next week instead of starting a
+# session the moment the laptop opens.
+Persistent=false
+Unit=devlead-discover.service
+
+[Install]
+WantedBy=timers.target
