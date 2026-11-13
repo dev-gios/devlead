@@ -53,7 +53,7 @@ _section "Scripts"
 
 # devlead-active.sh: pre-rename name, kept so a machine at any migration
 # stage is fully cleaned (REQ-6) — devlead-session.sh is the current name.
-for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh open-pr.sh merge.sh notify.sh journal.sh learn.sh agenda.sh devlead-active.sh devlead-session.sh envelope.sh envelope-auth.sh sweep.sh; do
+for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh open-pr.sh merge.sh notify.sh journal.sh learn.sh agenda.sh discover-fleet.sh devlead-active.sh devlead-session.sh envelope.sh envelope-auth.sh sweep.sh; do
   _remove_devlead_link "$DEVLEAD_DIR/scripts/$_name" "$REPO_DIR/.devlead/scripts/$_name"
 done
 
@@ -102,6 +102,24 @@ _remove_devlead_link "$SYSTEMD_USER_DIR/devlead-sweep.service" \
   "$REPO_DIR/.devlead/systemd/devlead-sweep.service"
 _remove_devlead_link "$SYSTEMD_USER_DIR/devlead-sweep.timer" \
   "$REPO_DIR/.devlead/systemd/devlead-sweep.timer"
+
+# The fleet run creates branches and PRs: a timer left enabled after an
+# uninstall would keep firing a unit whose script is gone.
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user disable --now devlead-fleet.timer 2>/dev/null || true
+fi
+_remove_devlead_link "$SYSTEMD_USER_DIR/devlead-fleet.service" \
+  "$REPO_DIR/.devlead/systemd/devlead-fleet.service"
+_remove_devlead_link "$SYSTEMD_USER_DIR/devlead-fleet.timer" \
+  "$REPO_DIR/.devlead/systemd/devlead-fleet.timer"
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user disable --now devlead-discover.timer 2>/dev/null || true
+fi
+_remove_devlead_link "$SYSTEMD_USER_DIR/devlead-discover.service" \
+  "$REPO_DIR/.devlead/systemd/devlead-discover.service"
+_remove_devlead_link "$SYSTEMD_USER_DIR/devlead-discover.timer" \
+  "$REPO_DIR/.devlead/systemd/devlead-discover.timer"
 
 # ---------------------------------------------------------------------------
 # ~/.devlead/gh-token + ~/.devlead/autonomous-repos — sweep credential y enrollment
