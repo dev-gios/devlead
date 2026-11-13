@@ -1,0 +1,33 @@
+[Unit]
+Description=DevLead discovery (headless sweep-discover over the enrolled repos that enabled it)
+Documentation=file:%h/.devlead/scripts/discover-fleet.sh
+# No enrolled repo, no run.
+ConditionPathExists=%h/.devlead/autonomous-repos
+# Discovery reads each repo's working tree. It must not read it while an
+# unattended run is switching branches there, so a start that finds either
+# run still going waits for it. One-way on purpose (no ordering cycle).
+After=devlead-loop.service devlead-fleet.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.devlead
+# The headless session needs permission flags someone chose; without them
+# discover-fleet.sh refuses to start. Discovery only reads the repo and files
+# issues, so it can run with less than the loop:
+#   DEVLEAD_DISCOVER_CLAUDE_ARGS=--permission-mode default --allowedTools Bash,Read,Glob,Grep
+# When that variable is absent, DEVLEAD_LOOP_CLAUDE_ARGS is used.
+EnvironmentFile=-%h/.devlead/loop.env
+# Explores only repos whose envelope says `enabled: true` AND
+# `discover.enabled: true`. It opens no PR and creates no branch: every
+# finding becomes an issue carrying `discover.label`, which keeps it out of
+# every agenda until you review it.
+ExecStart=%h/.devlead/scripts/discover-fleet.sh
+StandardOutput=journal
+StandardError=journal
+# A hung session must not hold the unit forever. Unlike the runs that build
+# branches, discovery leaves nothing half-done in a repo when it is stopped:
+# an issue is either filed or it is not.
+TimeoutStartSec=6h
+
+[Install]
+WantedBy=default.target
