@@ -23,6 +23,7 @@ test:
 	bash test/unit-door-wiring.sh
 	bash test/unit-notify.sh
 	bash test/unit-journal.sh
+	bash test/unit-learn.sh
 	bash test/unit-publish-manifest.sh
 	bash test/unit-discover-command.sh
 	bash test/unit-doctor.sh
