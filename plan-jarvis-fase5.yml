@@ -105,5 +105,13 @@ tasks:
     type: refactor
     depends-on: decision-log
     # ACEPTACIÓN:
-    #   - Fuera `learn.sh trust`; el nivel `info` no llega al teléfono ni
-    #     ocupa la bandeja por defecto; `fleet` y `loop` son un solo timer.
+    #   - Fuera `learn.sh trust`.
+    #
+    # REVISADO al hacerla (2026-11-13) — dos recortes del plan original se
+    # descartan porque la premisa era incorrecta:
+    #   - `info`: ya no llegaba al teléfono (notify.sh lo deja solo en la
+    #     bandeja) y lo usan cuatro avisos legítimos. No hay ruido que quitar.
+    #   - `fleet` y `loop` NO hacen lo mismo: `loop` repite UN plan local de un
+    #     repo hasta terminarlo; `fleet` hace una pasada por todos los repos
+    #     enrolados según su envelope. Unirlos sería quitar una de las dos
+    #     capacidades.

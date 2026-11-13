@@ -317,50 +317,6 @@ contains "outcomes: previous run for comparison" "$o" "PREV_CHANGES_REQUESTED: 0
 contains "outcomes: previous merge rate" "$o" "PREV_MERGE_RATE: 100%"
 check    "outcomes: the history file is never written" "$(cat "$OUT_FILE")" "$before"
 
-# ===========================================================================
-# trust — a reading of the record; it grants and changes nothing
-# ===========================================================================
-snap() { printf '{"ts":"2026-11-%02dT05:00:00Z","repo":"/x","merged":%s,"closed_sin_merge":%s,"changes_requested":%s,"pending":0,"attributable":%s,"merge_rate":"n/a","oldest_pending_days":0}\n' "$1" "$2" "$3" "$4" "$2"; }
-verdict() { sed -n 's/^VERDICT: //p' <<<"$1"; }
-
-rm -f "$OUT_FILE"
-check "trust: nothing measured yet" "$(learn trust)" "STATUS: none"
-
-{ snap 1 12 0 0; snap 2 12 0 0; snap 3 12 0 0; snap 4 12 0 0; } > "$OUT_FILE"
-o="$(learn trust)"
-check "trust: too few runs is not-yet" "$(verdict "$o")" "not-yet"
-contains "trust: says how many runs are needed" "$o" "only 4 measured run(s); 5 are needed"
-
-snap 5 9 0 0 >> "$OUT_FILE"
-o="$(learn trust)"
-check "trust: too few merged PRs is not-yet" "$(verdict "$o")" "not-yet"
-contains "trust: says how many merges are needed" "$o" "9 merged PR(s); 10 are needed"
-
-{ snap 1 12 0 0; snap 2 12 0 0; snap 3 12 0 1; snap 4 13 0 0; snap 5 13 0 0; } > "$OUT_FILE"
-o="$(learn trust)"
-check "trust: changes requested inside the window is not-yet" "$(verdict "$o")" "not-yet"
-contains "trust: counts the clean runs" "$o" "CLEAN_RECENT_RUNS: 4 of 5"
-
-{ snap 1 12 0 0; snap 2 12 0 0; snap 3 12 0 0; snap 4 13 0 0; snap 5 13 1 0; } > "$OUT_FILE"
-check "trust: a PR closed without merging is not-yet" "$(verdict "$(learn trust)")" "not-yet"
-
-# The rejection has left the window: five clean runs since.
-{ snap 1 12 1 2; snap 2 12 0 0; snap 3 12 0 0; snap 4 13 0 0; snap 5 13 0 0; snap 6 14 0 0; } > "$OUT_FILE"
-before="$(cat "$OUT_FILE")"
-o="$(learn trust)"
-check "trust: five clean runs and enough merges is steady" "$(verdict "$o")" "steady"
-contains "trust: reports what it counted" "$o" "MERGED: 14"
-contains "trust: states what the record cannot show" "$o" "NOTE: a merged PR that needed changes first still counts as merged"
-check "trust: the history file is never written" "$(cat "$OUT_FILE")" "$before"
-
-echo 'not json at all' >> "$OUT_FILE"
-o="$(learn trust)"
-check "trust: an unreadable last record gives no verdict" "$o" "STATUS: unreadable"
-printf '%s\n' '{"ts":"x","merged":"n/a","closed_sin_merge":0,"changes_requested":0}' > "$OUT_FILE"
-check "trust: a non-numeric count gives no verdict" "$(learn trust)" "STATUS: unreadable"
-{ snap 1 12 0 0; snap 2 12 0 0; snap 3 12 0 0; snap 4 12 0 0; snap 5 08 0 0; } > "$OUT_FILE"
-check "trust: a zero-padded count gives no verdict" "$(learn trust 2>&1)" "STATUS: unreadable"
-
 # A reading cannot act: the script has no way to reach a limit.
 _learn_code="$(grep -v '^[[:space:]]*#' "$REPO_ROOT/.devlead/scripts/learn.sh")"
 check "A3: learn.sh never names the envelope file" "$(grep -c 'envelope\.yml' <<<"$_learn_code")" "0"
