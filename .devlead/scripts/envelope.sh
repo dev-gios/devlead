@@ -538,7 +538,13 @@ _do_show() {
   if [[ "$mm" == "integration-branch" ]]; then
     local _ib _default_branch
     _ib=$(yq e '.base.integration_branch' "$ENV_FILE" 2>/dev/null)
-    if [[ -z "$_ib" || "$_ib" == "null" ]]; then
+    # Judge by TYPE, not by spelling: yq prints a null written as `~`, `Null`
+    # or `NULL` verbatim, so a string comparison against "null" lets those
+    # through — and the `// "dev"` default below would then report `dev` as the
+    # integration branch without it ever having been compared to the trunk.
+    local _ib_type
+    _ib_type=$(yq e '.base.integration_branch | type' "$ENV_FILE" 2>/dev/null)
+    if [[ "$_ib_type" != "!!str" || -z "$_ib" ]]; then
       _block "merge.mode 'integration-branch' requires base.integration_branch to be declared"
     else
       _default_branch="$(_resolve_default_branch)" || _default_branch=""

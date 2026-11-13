@@ -212,7 +212,7 @@ Issues declaradas: [m]
 ⚠️ [K] de [m] issues sin Spec: → van a correr un ciclo SDD completo (Step 8.3-SDD, más caro que implementación directa).
 ⚠️ Presupuesto (MAX_ISSUES={X}) es menor a las {m} issues declaradas — las últimas {m-X} no se van a alcanzar (no_alcanzada).
 Política: PARK Y SIGUE — gate rojo aparca esa issue, el run continúa
-MERGE: NUNCA — cada issue termina en gh pr create. El merge es tuyo.
+MERGE: según merge.mode del envelope — never (default): cada issue termina en PR y el merge es tuyo; integration-branch: cada PR se mergea a {integration_branch} vía merge.sh. Nunca a la rama por defecto.
 
 Comenzando run...
 ```
@@ -270,7 +270,7 @@ Tareas: N
 ⚠️ [K] de [N] tareas sin Spec: → van a correr un ciclo SDD completo (Step 8.3-SDD).
 Auth: [token resuelto | auth-unavailable | ⚠️ read-only token detectado — gh pr create puede fallar]
 Política: PARK Y SIGUE — gate rojo aparca esa tarea, el run continúa
-MERGE: NUNCA — cada tarea termina en gh pr create. El merge es tuyo.
+MERGE: según merge.mode del envelope — never (default): cada tarea termina en PR y el merge es tuyo; integration-branch: cada PR se mergea a {integration_branch} vía merge.sh. Nunca a la rama por defecto.
 
 Comenzando run...
 ```
@@ -303,7 +303,7 @@ Cola (INCLUDED, orden de plan):
 Issues INCLUDED: [m]
 ⚠️ [K] de [m] issues sin Spec: → van a correr un ciclo SDD completo (Step 8.3-SDD, más caro que implementación directa).
 Política: PARK Y SIGUE — gate rojo aparca esa issue, el run continúa
-MERGE: NUNCA — cada issue termina en gh pr create. El merge es tuyo.
+MERGE: según merge.mode del envelope — never (default): cada issue termina en PR y el merge es tuyo; integration-branch: cada PR se mergea a {integration_branch} vía merge.sh. Nunca a la rama por defecto.
 Fleet: para barrer todos los repos enrollados en vez de solo este, invocá con --fleet: /sweep-execute --fleet
 
 Comenzando run...
@@ -330,7 +330,7 @@ Repos y colas (en orden de procesamiento):
 Repos a procesar: [n] | Issues totales INCLUDED: [m]
 ⚠️ [K] de [m] issues sin Spec: → van a correr un ciclo SDD completo (Step 8.3-SDD, más caro que implementación directa).
 Política: PARK Y SIGUE — gate rojo aparca esa issue, el run continúa
-MERGE: NUNCA — cada issue termina en gh pr create. El merge es tuyo.
+MERGE: según merge.mode del envelope — never (default): cada issue termina en PR y el merge es tuyo; integration-branch: cada PR se mergea a {integration_branch} vía merge.sh. Nunca a la rama por defecto.
 
 Comenzando run...
 ```
@@ -540,6 +540,47 @@ Capturá stdout completo. Procesá la salida con estas reglas (en orden):
 - Si la sección INCLUDED está presente y contiene `(none)`: cola vacía → registrá `REPO → STATUS: zero-issues` y continuá con el siguiente repo.
 - Si la sección INCLUDED está presente, no dice `(none)`, pero no se parseó ningún `#N` válido: **PARSE-MISS GUARD** — registrá `REPO → STATUS: parse-miss` y aparcá todas las issues como `parked-plan-format-unparseable`; emitilo en el reporte en forma prominente (no silenciosa). Continuá con el siguiente repo.
 
+**Paso 3 — Aplicar la agenda del usuario (SOLO MODO plan-driven, y solo si el Paso 2 dejó una cola con al menos un `#N`):**
+
+El sweep de la mañana le manda al usuario la lista de lo que DevLead piensa trabajar hoy;
+el usuario puede cambiar prioridades con `devlead agenda first <N>` / `skip <N>`. Este paso
+aplica esos ajustes a la cola que ACABÁS de derivar (nunca a una cola guardada — A2).
+No hay aprobación que esperar: sin ajustes, la cola vuelve igual.
+
+Si `~/.devlead/scripts/agenda.sh` no existe (instalación anterior a la agenda), saltá este
+paso: la cola queda como salió del Paso 2.
+
+Si existe, ejecutá con el Bash tool, pasando los números de la cola en orden, uno por línea:
+```
+printf '%s\n' {N1} {N2} ... | bash ~/.devlead/scripts/agenda.sh apply
+```
+
+Procesá la salida:
+- Leé la línea `QUEUE:` (números separados por espacio, en el orden a trabajar) y la línea
+  `SKIPPED:` (números que el usuario pidió saltear hoy; puede venir vacía).
+- **La cola pasa a ser la de `QUEUE:`, en ese orden.**
+- **Regla de estrechamiento (A1, A3 — no negociable):** un ajuste de agenda solo reordena o
+  saca issues. Si `QUEUE:` trajera un número que NO estaba en la cola del Paso 2, descartalo
+  y registralo en el reporte como anomalía; jamás lo trabajes. La agenda no puede agregar
+  trabajo que la policy del envelope no incluyó.
+- Cada número de `SKIPPED:` queda con resultado `skipped-by-agenda` (no pasa por el pipeline,
+  no cuenta contra el presupuesto) y entra a BLOQUEADAS en E1.5, para que E2.2 — cuando
+  `SKIP_DEPENDENTS: true` — aparque a sus dependientes en vez de construirlos sobre trabajo
+  que hoy no se hace. Con `SKIP_DEPENDENTS: false` rige lo de siempre: B2.c decide si
+  `branch.sh` detecta el predecesor faltante.
+- Si `QUEUE:` queda vacía porque todo fue salteado: registrá `REPO → STATUS: zero-issues
+  (todo salteado en la agenda)` y continuá con el siguiente repo.
+- **Chequeo de integridad:** cada número de la cola del Paso 2 tiene que aparecer en `QUEUE:`
+  o en `SKIPPED:`. Si falta alguno, tratalo igual que el caso de error de abajo: una issue no
+  puede desaparecer sin que el usuario la haya salteado.
+- **Si el comando sale con código distinto de 0, o la salida no trae la línea `QUEUE:`:** no
+  adivines qué quiso el usuario. Registrá `REPO → STATUS: agenda-error`, aparcá todas las
+  issues de la cola como `parked-agenda-unreadable`, y continuá con el siguiente repo. Hacer
+  menos es lo estrecho (§narrow-not-widen).
+
+MODO SCOPED y MODO LOCAL-PLAN no pasan por este paso: su cola la declaró el usuario en la
+invocación o en el plan aprobado, y ese orden ya es su decisión.
+
 ### E1.5 — Inicializar tracking per-repo
 
 Tras un parse exitoso de plan (y show), inicializá el bloque de tracking en-memoria para este repo:
@@ -555,6 +596,8 @@ REPO: /abs/path
 ```
 
 **Nota sobre PRESUPUESTO:** B0 de batch.md (donde batch inicializa `presupuesto`) no corre en sweep-execute (Delta 1). El campo `PRESUPUESTO` de este bloque reemplaza esa inicialización. B2.e de batch.md usa ese valor como guard — el outer loop de la COLA se agota primero en la mayoría de los casos, pero si `MAX_ISSUES` es menor que la longitud de INCLUDED, B2.e actúa como freno.
+
+**Agenda (plan-driven):** las issues que E1.4 Paso 3 devolvió en `SKIPPED:` NO entran a COLA; entran directo a BLOQUEADAS con resultado `skipped-by-agenda`.
 
 **Regla crítica**: BLOQUEADAS es per-repo. NO se comparte entre repos. Issue `#35` en repo-A y `#35` en repo-B son trackeos completamente independientes. Al iniciar un nuevo repo, BLOQUEADAS arranca vacío.
 
@@ -607,6 +650,8 @@ Ejecutá los sub-pasos B2.a → B2.e de `batch.md` para ESTA issue. Para el deta
 
 **Herencia de DOS saltos (no asumas que una sola referencia alcanza):** este archivo (`sweep-execute.md`) NO referencia `arranquemos.md` Step 8.3-SDD directamente. E2.3 referencia `batch.md` B2.a→B2.e; es `batch.md` B2.b (Paso 8.3, ver arriba en ese archivo) quien resuelve el no-spec branch corriendo `Step 8.3-SDD` por nombre. El camino completo es: `sweep-execute.md` E2.3 → `batch.md` B2.b → `arranquemos.md` Step 8.3-SDD. `SDD_MODE=autonomous` se fija en E0 (este archivo, Delta 1 — skip B0 completo, sin pausa) y sobrevive el salto sin volver a declararse: `batch.md` B2.b nunca redefine `SDD_MODE`, solo lo hereda de quien lo invoca (acá, sweep-execute; en invocación directa de batch, `batch.md` mismo lo fija en `autonomous` vía su propio Delta 1 de B0).
 
+**Preferencias aprendidas (heredadas por el mismo camino).** El Step 8.3 de `arranquemos.md` abre leyendo `bash ~/.devlead/scripts/learn.sh pref-list` y aplica las preferencias activas del usuario a la implementación de cada issue. Un run desatendido solo LEE preferencias: nunca corre `learn.sh capture`, `pref-add` ni `pref-remove`. Una preferencia es estilo, no autoridad — no levanta un PARK, no cambia la cola ni el techo de merge (GOVERNANCE.md §learned-preferences).
+
 **Deltas que /sweep-execute aplica ON TOP del pipeline B2** (y nada más):
 
 **Delta 1 — Skip B0 completo.**
@@ -619,7 +664,8 @@ hasta `NOT_A_GIT_REPO o gh auth perdido`). Agregás estas dos filas extra al fin
 
 | Señal | Acción en sweep-execute | Sección del reporte |
 |---|---|---|
-| `gh pr create` retorna permission error | **PARK** `auth: PR creation requires write scope (repo) — token is read-only` | Aparcadas |
+| `open-pr.sh` sale distinto de 0 por un rechazo de la puerta (gate rojo, zona prohibida, diff vacío) | **PARK** `parked-gate-check: {líneas PARK_REASON: verbatim}` | Aparcadas |
+| `open-pr.sh` reporta `gh pr create failed` por permission error | **PARK** `auth: PR creation requires write scope (repo) — token is read-only` | Aparcadas |
 | Chrome MCP no disponible (gate visual) | **PARK** `gate visual no completable sin Chrome MCP` | Aparcadas |
 
 Y modificás la fila de catástrofe de entorno de batch.md:175:
@@ -642,7 +688,7 @@ El B2.e de batch.md tiene dos caminos de salida del inner loop. En `/sweep-execu
 
 En ambos casos: **E3 corre exactamente una vez, solo después de que TODOS los repos enrollados hayan pasado por el outer loop.** Nunca saltés la cola de repos restantes al encontrar cualquiera de los dos exits de B2.e.
 
-**PR-terminal**: el inner loop termina en B2.d `gh pr create`. NUNCA invocás `git merge` ni `gh pr merge`. Si ves esas palabras en tu cabeza: STOP. El merge es del usuario, siempre. Al leer `arranquemos.md` para el detalle del cuerpo, EXCLUÍ cualquier paso de merge o `gh issue close` que encuentres — no existen en execute.
+**PR-terminal**: el inner loop termina en B2.d, con el PR abierto por `open-pr.sh`. NUNCA invocás `git merge`, `gh pr merge` ni `gh pr create` directamente: el PR sale por `open-pr.sh` y el único merge posible es el de Delta 6, por `merge.sh`, que se niega salvo que el envelope conceda `merge.mode: integration-branch`. Con `merge.mode: never` (default) no hay merge: es del usuario. Al leer `arranquemos.md` para el detalle del cuerpo, EXCLUÍ cualquier paso de merge o `gh issue close` que encuentres — no existen en execute.
 
 **Delta 5 — Adaptador de pipeline LOCAL-PLAN (solo activo en MODO LOCAL-PLAN).**
 Para cada tarea del plan, los pasos B2.b Paso 8.1 y Paso 8.2 de `arranquemos.md` se adaptan así (el resto del pipeline B2.b — Paso 8.3, Paso 8.4, Paso 9, B2.d — corre sin cambios), más dos pasos nuevos de estado en disco (8.0 y 8.6):
@@ -703,14 +749,15 @@ Para cada tarea del plan, los pasos B2.b Paso 8.1 y Paso 8.2 de `arranquemos.md`
   *Esta adaptación cita arranquemos.md Step 8.2: sustituye el primer arg de `branch.sh` de `{issue_num}` a `plan-{task.id}` para LOCAL-PLAN.*
 
 - **Paso 8.6 — Registrar el desenlace de la tarea (resume):**
-  DESPUÉS de que la tarea alcanzó su estado terminal — `gh pr create` devolvió
+  DESPUÉS de que la tarea alcanzó su estado terminal — `open-pr.sh` devolvió
   URL, o la tarea fue aparcada — persistí ese desenlace:
   ```
   bash ~/.devlead/scripts/run-state.sh mark {run_id} {task.id} done   "pr-created {URL}"
   bash ~/.devlead/scripts/run-state.sh mark {run_id} {task.id} parked "{razón exacta verbatim}"
   ```
   La razón de un PARK se pasa **verbatim, sin parafrasear** (§A4). `run-state.sh`
-  la guarda y la devuelve byte a byte, multilínea incluida.
+  la guarda y la devuelve byte a byte, multilínea incluida. Cuando el PARK viene de
+  `open-pr.sh` o `merge.sh`, la razón son sus líneas `PARK_REASON:` tal cual salieron.
 
   **Solo `done` habilita el skip de 8.0.** Una tarea aparcada se reintenta en la
   próxima invocación: PARK ≠ pass (§A4), así que aparcar nunca puede convertirse
@@ -757,53 +804,26 @@ unidad de trabajo alcanzó `gh pr create` y su desenlace quedó registrado. Con
 `MERGE_MODE: never` (default) este delta no existe: el pipeline termina en `gh pr create`,
 igual que siempre.
 
-**Precondiciones — las tres se verifican en el momento del merge, no se asumen de E1.4:**
-
-1. `MERGE_MODE` de `envelope.sh show` es exactamente `integration-branch`.
-2. El gate de Paso 8.4 salió VERDE para esta unidad. Un gate rojo ya aparcó la tarea y
-   nunca llega acá. **Nunca mergeás algo que no pasó el gate** (§A4).
-3. La rama destino NO es la rama por defecto del repo. `refs/remotes/origin/HEAD` es un
-   symref LOCAL que git nunca actualiza solo: si el remoto renombra su rama por defecto
-   después del clone, el symref queda apuntando al nombre viejo y una comparación contra
-   él sola puede aprobar mergear a lo que hoy es el tronco real. Por eso la resolución
-   PREFIERE la verdad del remoto y usa el symref solo como fallback — MISMA lógica que
-   `_resolve_default_branch` en `~/.devlead/scripts/envelope.sh` (usala como referencia
-   de implementación; no la reescribas en prosa acá, para que las dos no puedan divergir
-   de nuevo):
-   ```
-   # 1. Preferido: verdad viva del remoto (gh disponible y autenticado),
-   #    acotado por timeout (default 10s, override vía DEVLEAD_GH_TIMEOUT_SECS)
-   timeout "$GH_TIMEOUT_SECS" gh repo view --json defaultBranchRef -q .defaultBranchRef.name
-   # 2. Fallback: symref local, si gh no está disponible, no autenticado,
-   #    O si se venció el timeout — un gh colgado se trata igual que un gh
-   #    ausente, nunca como "no hay rama por defecto"
-   git symbolic-ref --quiet --short refs/remotes/origin/HEAD | sed 's|^origin/||'
-   ```
-   **`$GH_TIMEOUT_SECS` se valida ANTES de pasarlo a `timeout`, nunca se usa el override
-   crudo** — mismo chequeo que `envelope.sh` aplica antes de este mismo `_resolve_default_branch`:
-   solo un entero positivo (`>= 1`) es aceptado; `0`, negativo, o no-numérico caen al
-   default de 10s con un warning de una línea a stderr que nombra el valor ofrecido y el
-   valor efectivamente usado. Sin esta validación, `DEVLEAD_GH_TIMEOUT_SECS=0` reinstala
-   el cuelgue sin límite que este guard cierra — `timeout` con duración `0` de GNU
-   coreutils significa "sin timeout" — el mismo bug en el segundo lugar donde vive esta
-   misma lógica.
-   Un timeout que dispara se trata EXACTAMENTE igual que "gh no disponible" y cae al
-   symref local; deja una nota en stderr (visible en el journal) para que una red
-   degradada no cambie de fuente en silencio.
-   Si el destino coincide con lo que resuelve (1), o (1) no resuelve y coincide con (2), o
-   NINGUNA de las dos fuentes resuelve y no podés PROBAR que difieren →
-   **PARK** con razón `merge-abortado: no se pudo probar que {destino} no es la rama por
-   defecto`. Ese bloque fail-closed aplica SOLO cuando ninguna de las dos fuentes resuelve
-   — no antes. `envelope.sh show` ya bloquea esta configuración con el mismo orden de
-   resolución (§A3 cláusula 2); este chequeo es defensa en profundidad porque el costo de
-   equivocarse es escribir en el tronco.
-
-**El merge:**
+**El merge se hace SIEMPRE por la puerta `merge.sh`, nunca invocando `gh` directo:**
 ```
-gh pr merge {PR_URL} --merge
+bash ~/.devlead/scripts/merge.sh {PR_URL}
 ```
-Cualquier fallo — conflicto, checks en rojo, permisos — es **PARK con la razón exacta
-verbatim de `gh`**. NUNCA reintentás, NUNCA forzás, NUNCA mergeás con `--admin`.
+La puerta verifica EN CÓDIGO, en el momento del merge, lo que antes eran precondiciones
+en prosa — por eso no se repiten acá, para que prosa y código no puedan divergir:
+
+1. `envelope.sh show` da `STATUS: ok`. Eso ya incluye §A3 cláusula 2: `base.integration_branch`
+   no es la rama por defecto del repo, resuelta del remoto vía `_resolve_default_branch`
+   (consulta viva con timeout, symref local solo como fallback, fail-closed si ninguna resuelve).
+2. `MERGE_MODE` es exactamente `integration-branch`.
+3. El PR está abierto y su base es exactamente `base.integration_branch`.
+
+Lo que la puerta NO puede saber y seguís garantizando vos: **solo llega acá una unidad cuyo
+PR abrió `open-pr.sh`** (gate verde). Una tarea aparcada no tiene PR y nunca llega (§A4).
+
+- Exit 0 → mergeado.
+- Exit distinto de 0 → **PARK con las líneas `PARK_REASON:` de su stdout, verbatim** — sea
+  un rechazo de la puerta o un fallo de `gh` (conflicto, checks en rojo, permisos).
+  NUNCA reintentás, NUNCA forzás, NUNCA mergeás por otro camino.
 
 **Después de un merge exitoso**, borrá la rama de la unidad de trabajo (local y remota).
 Eso mantiene coherente la resolución de predecesores de `branch.sh`: con la rama
@@ -819,10 +839,14 @@ mecanismos resuelven la misma dependencia por caminos distintos; nunca corren ju
 **Al final del repo (una vez, no por tarea):** asegurate de que exista un PR del
 integration branch a la rama por defecto. Si ya hay uno abierto, NO abras otro — es un PR
 de larga vida que acumula la cadena. Si no existe y el integration branch está adelantado,
-crealo:
+crealo por la misma puerta, parado en el integration branch actualizado (la puerta
+abre el PR de la rama en checkout y corre el gate sobre la cadena acumulada):
 ```
-gh pr create --base {rama-por-defecto} --head {integration_branch}
+git checkout {integration_branch} && git pull --ff-only
+bash ~/.devlead/scripts/open-pr.sh --base {rama-por-defecto} --title "{título de la cadena}" --body "{resumen de las unidades mergeadas}"
 ```
+Si la puerta se niega, reportá sus líneas `PARK_REASON:` verbatim en el reporte del
+repo; no abras ese PR por otro camino.
 **Ese PR es el único punto de revisión humana del run, y §A3 lo deja intacto: DevLead lo
 CREA y jamás lo mergea.**
 
@@ -976,6 +1000,8 @@ El vocabulario de resultado (pr-created, parked-*, etc.) es idéntico al de los 
 | `parked-dep-blocked: predecesor #N aparcado (repo-scoped)` | E2.2 detectó que el predecesor ∈ BLOQUEADAS (SKIP_DEPENDENTS = true) |
 | `escalated-<zona>` | B2.a o B2.d detectó zona prohibida |
 | `no_alcanzada` | stop_at alcanzado (E2.1) antes de empezar la issue |
+| `skipped-by-agenda` | el usuario la salteó hoy con `devlead agenda skip <N>` (E1.4 Paso 3). No es un PARK: nada falló |
+| `parked-agenda-unreadable` | `agenda.sh apply` falló o no devolvió `QUEUE:` (E1.4 Paso 3) |
 
 **Resultados a nivel de repo** (no de issue individual):
 
@@ -992,6 +1018,7 @@ El vocabulario de resultado (pr-created, parked-*, etc.) es idéntico al de los 
 | `STATUS: zero-issues` | sección INCLUDED presente pero contiene `(none)` — cola vacía en E1.4 |
 | `STATUS: plan-error — empty or unrecognized output` | salida de envelope plan vacía, crash, o sin header reconocido en E1.4 |
 | `STATUS: parse-miss` | sección INCLUDED presente, no dice `(none)`, pero no se parseó ningún `#N` válido en E1.4 |
+| `STATUS: agenda-error` | `agenda.sh apply` falló o no devolvió `QUEUE:` en E1.4 Paso 3 |
 | `STATUS: auth-lost` / `STATUS: not-a-git-repo` | catástrofe de entorno mid-pipeline |
 
 Incluí siempre todas las secciones de repo (aunque estén skipped). Omití secciones de issues individuales solo si el repo no tuvo ninguna issue en cola. El resumen final siempre aparece.

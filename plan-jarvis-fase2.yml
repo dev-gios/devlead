@@ -1,0 +1,56 @@
+version: 1
+
+# Plan: Jarvis — Fase 2 de 4 (que avise solo cuando te necesita).
+# Objetivo cerrado: que un run desatendido que no puede seguir solo llegue al
+# teléfono del usuario, y que todo lo demás quede en una bandeja local que
+# /arranquemos presenta a la mañana.
+#
+# Canal elegido por el usuario (2026-11-13): push al teléfono.
+# Backend: cualquier servidor compatible con ntfy; la URL (con su topic) la
+# configura el usuario en ~/.devlead/notify.env. Sin esa configuración no sale
+# nada de la máquina: solo se escribe la bandeja.
+#
+# Privacidad: el push viaja por un servicio externo. Por defecto lleva solo un
+# código (p. ej. "loop-paused"), sin nombre de repo ni detalle. El detalle vive
+# en la bandeja local. DEVLEAD_NOTIFY_DETAIL=1 es opt-in del usuario.
+#
+# Restricciones:
+#   - Avisar no concede autoridad: notify.sh no ejecuta nada, no escribe el
+#     envelope, y un fallo del canal nunca cambia el desenlace de un run.
+#   - plan-separation-guard sigue verde.
+#
+# FUERA DE ALCANCE: Fase 3 (aprendizaje) y Fase 4 (ciclo completo).
+
+tasks:
+  - id: notify
+    title: "Script notify.sh — bandeja local + push al teléfono"
+    type: feat
+    # ACEPTACIÓN:
+    #   - `notify.sh send need <code> <msg>` agrega una entrada a la bandeja y,
+    #     si hay URL configurada, hace UN POST con timeout. `send info` solo
+    #     escribe la bandeja, nunca hace push.
+    #   - Sin notify.env, o con permisos distintos de 600, o URL no https: no
+    #     hay push; la entrada queda con el motivo. Siempre exit 0 en `send`.
+    #   - El cuerpo del push no contiene el repo ni el mensaje salvo
+    #     DEVLEAD_NOTIFY_DETAIL=1.
+    #   - `notify.sh list` muestra lo pendiente; `notify.sh ack` lo archiva.
+    #   - Suite nueva test/unit-notify.sh con curl falso. shellcheck limpio.
+
+  - id: loop-escalation
+    title: "sweep-loop.sh avisa cuando no puede seguir solo"
+    type: feat
+    depends-on: notify
+    # ACEPTACIÓN: en un run real (no dry-run) el loop emite `need` cuando: faltan
+    # permisos, el kill-switch lo pausa, el drift guard se niega, no resuelve el
+    # repo, converge sin progreso, o llega al tope con trabajo pendiente. Emite
+    # `info` cuando el plan queda completo. Dry-run no emite nada. Un notify.sh
+    # ausente o roto no cambia el exit code del loop.
+
+  - id: inbox-standup
+    title: "/arranquemos presenta la bandeja y los reportes nocturnos; GOVERNANCE admite el canal"
+    type: docs
+    depends-on: loop-escalation
+    # ACEPTACIÓN: arranquemos.md corre `notify.sh list` antes del standup, muestra
+    # las entradas `need` primero, y hace `ack` solo después de mostrarlas.
+    # GOVERNANCE.md define qué dispara una interrupción y deja explícito que el
+    # aviso no transfiere ni amplía autoridad.

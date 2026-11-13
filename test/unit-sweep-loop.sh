@@ -21,13 +21,19 @@ set -uo pipefail
 # the suite honest no matter who runs it, or with what exported.
 unset DEVLEAD_LOOP_DRYRUN DEVLEAD_LOOP_MAX DEVLEAD_LOOP_SLEEP \
       DEVLEAD_CLAUDE_BIN DEVLEAD_LOOP_REPO DEVLEAD_ALLOW_DRIFT \
-      DEVLEAD_DOCTOR_BIN
+      DEVLEAD_DOCTOR_BIN DEVLEAD_LOOP_CLAUDE_ARGS
 
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 LOOP="$REPO_ROOT/.devlead/scripts/sweep-loop.sh"
 RUN_STATE="$REPO_ROOT/.devlead/scripts/run-state.sh"
 SANDBOX="$(mktemp -d /tmp/devlead-sweeploop.XXXXXX)"
 export DEVLEAD_RUN_STATE_DIR="$SANDBOX/state"
+# The loop reports through notify.sh. Point its state at the sandbox so this
+# suite never writes the real inbox and never reads a real push configuration
+# (no notify.env exists here, so nothing can leave the machine).
+export DEVLEAD_NOTIFY_DIR="$SANDBOX/notify"
+INBOX="$DEVLEAD_NOTIFY_DIR/inbox.tsv"
+inbox_codes() { if [[ -f "$INBOX" ]]; then cut -f2,3 "$INBOX" | tr '\t' ':' | paste -sd, -; fi; }
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -72,6 +78,19 @@ tasks:
 YML
 
 RUN_ID="plan-$(sha256sum "$PLAN" | cut -c1-16)"
+
+# A real (non-dry-run) iteration needs two things the loop refuses to run
+# without: explicit permission flags, and a repo whose envelope says
+# enabled: true. Every non-dry-run scenario below uses these.
+TEST_CLAUDE_ARGS="--permission-mode acceptEdits"
+ENABLED_REPO="$SANDBOX/enabled-repo"
+# write_envelope <repo-dir> <enabled-value>
+write_envelope() {
+  mkdir -p "$1/.devlead"
+  printf 'version: 1\nenabled: %s\n' "$2" > "$1/.devlead/envelope.yml"
+}
+git init -q "$ENABLED_REPO"
+write_envelope "$ENABLED_REPO" true
 
 # --- Dry run prints the exact command and invokes nothing ------------------
 out="$(DEVLEAD_LOOP_DRYRUN=1 bash "$LOOP" --plan "$PLAN" --max-iterations 2 2>&1)"
@@ -129,6 +148,7 @@ mkdir -p "$NON_GIT_DIR"
 GIT_REPO_DIR="$SANDBOX/target-repo"
 mkdir -p "$GIT_REPO_DIR"
 git -C "$GIT_REPO_DIR" init -q
+write_envelope "$GIT_REPO_DIR" true
 git -C "$GIT_REPO_DIR" config user.email smoke@example.com
 git -C "$GIT_REPO_DIR" config user.name "Smoke Test"
 
@@ -360,7 +380,7 @@ chmod +x "$FAKE_CLAUDE_NORMAL"
 #     even with a generous cap, prints a diagnostic, and exits non-zero -----
 REACT_TMP_A="$SANDBOX/react-tmp-a"
 mkdir -p "$REACT_TMP_A"
-out="$(TMPDIR="$REACT_TMP_A" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOTAGITREPO" DEVLEAD_LOOP_SLEEP=0 \
+out="$(TMPDIR="$REACT_TMP_A" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOTAGITREPO" DEVLEAD_LOOP_SLEEP=0 \
   bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 5 2>&1)"
 rc=$?
 check "STATUS: not-a-git-repo from claude's own output exits non-zero" "$rc" "1"
@@ -376,7 +396,7 @@ check "no scratch file remains after the reactive exit" \
 #     dispatched invocation's own output is still streamed to the caller ----
 REACT_TMP_B="$SANDBOX/react-tmp-b"
 mkdir -p "$REACT_TMP_B"
-out="$(TMPDIR="$REACT_TMP_B" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NORMAL" DEVLEAD_LOOP_SLEEP=0 \
+out="$(TMPDIR="$REACT_TMP_B" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NORMAL" DEVLEAD_LOOP_SLEEP=0 \
   bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 2 2>&1)"
 rc=$?
 check "normal output iterates to the cap and exits 0" "$rc" "0"
@@ -441,7 +461,7 @@ chmod +x "$FAKE_CLAUDE_MARKER"
 
 # --- doctor fails -> loop exits non-zero, invokes nothing ------------------
 rm -f "$MARKER_FILE"
-out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_FAIL" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_FAIL" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
   bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 3 2>&1)"
 rc=$?
 check "doctor failure exits non-zero" "$rc" "1"
@@ -455,7 +475,7 @@ check "claude was never invoked" "$([[ -f "$MARKER_FILE" ]] && echo yes || echo 
 #     warning ---------------------------------------------------------------
 rm -f "$MARKER_FILE"
 out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_FAIL" DEVLEAD_ALLOW_DRIFT=1 \
-  DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" DEVLEAD_LOOP_SLEEP=0 \
+  DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" DEVLEAD_LOOP_SLEEP=0 \
   bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 1 2>&1)"
 rc=$?
 check "ALLOW_DRIFT proceeds: exits 0" "$rc" "0"
@@ -474,7 +494,7 @@ contains "dry-run still reaches the announcement" "$out" "would run"
 
 # --- A passing doctor is silent and does not block a normal run ------------
 rm -f "$MARKER_FILE"
-out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
   DEVLEAD_LOOP_SLEEP=0 bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 1 2>&1)"
 rc=$?
 check "passing doctor: exits 0" "$rc" "0"
@@ -490,7 +510,7 @@ check "passing doctor: claude WAS invoked" "$([[ -f "$MARKER_FILE" ]] && echo ye
 # --- doctor says ok-but-from-a-branch -> loop BLOCKS, message names
 #     provenance specifically, invokes nothing ------------------------------
 rm -f "$MARKER_FILE"
-out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_BRANCH" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_BRANCH" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
   bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 3 2>&1)"
 rc=$?
 check "ok-but-branch exits non-zero" "$rc" "1"
@@ -505,7 +525,7 @@ check "ok-but-branch: claude was never invoked" "$([[ -f "$MARKER_FILE" ]] && ec
 #     proceeds AND prints the warning ----------------------------------------
 rm -f "$MARKER_FILE"
 out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_BRANCH" DEVLEAD_ALLOW_DRIFT=1 \
-  DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" DEVLEAD_LOOP_SLEEP=0 \
+  DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" DEVLEAD_LOOP_SLEEP=0 \
   bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 1 2>&1)"
 rc=$?
 check "ok-but-branch + ALLOW_DRIFT: exits 0" "$rc" "0"
@@ -515,7 +535,7 @@ check "ok-but-branch + ALLOW_DRIFT: claude WAS invoked" "$([[ -f "$MARKER_FILE" 
 
 # --- doctor says ok-and-trunk (no NOTE) -> loop proceeds, no block ---------
 rm -f "$MARKER_FILE"
-out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_MARKER" \
   DEVLEAD_LOOP_SLEEP=0 bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 1 2>&1)"
 rc=$?
 check "ok-and-trunk: exits 0" "$rc" "0"
@@ -554,8 +574,8 @@ YML
 
 rm -f "$ENV_DUMP"
 DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" \
-DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ENVDUMP" \
-DEVLEAD_LOOP_REPO="$REPO_ROOT" \
+DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ENVDUMP" \
+DEVLEAD_LOOP_REPO="$ENABLED_REPO" \
 DEVLEAD_LOOP_MAX=9 \
 DEVLEAD_LOOP_SLEEP=0 \
 DEVLEAD_ALLOW_DRIFT=1 \
@@ -612,9 +632,9 @@ FAKE
 chmod +x "$FAKE_CLAUDE_NOOP"
 
 bash "$RUN_STATE" mark "$STALL_RUN_ID" delta "parked" "gate red: identical every run"
-stall_out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOOP" \
+stall_out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOOP" \
   DEVLEAD_LOOP_SLEEP=0 DEVLEAD_ALLOW_DRIFT=1 \
-  bash "$LOOP" --plan "$STALL_PLAN" --max-iterations 10 2>&1)"
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$STALL_PLAN" --max-iterations 10 2>&1)"
 
 contains "stall: announces convergence rather than running out the cap" \
   "$stall_out" "converged"
@@ -628,15 +648,15 @@ not_contains "stall: never reaches the iteration cap" \
 check "stall: stops on iteration 3 with the default limit of 2" \
   "$(printf '%s\n' "$stall_out" | grep -cE '^sweep-loop: iteration [0-9]+/[0-9]+ . invoking')" "3"
 check "stall: converging is a normal outcome, exit 0" \
-  "$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOOP" \
+  "$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOOP" \
      DEVLEAD_LOOP_SLEEP=0 DEVLEAD_ALLOW_DRIFT=1 \
-     bash "$LOOP" --plan "$STALL_PLAN" --max-iterations 10 >/dev/null 2>&1; echo $?)" "0"
+     bash "$LOOP" --repo "$ENABLED_REPO" --plan "$STALL_PLAN" --max-iterations 10 >/dev/null 2>&1; echo $?)" "0"
 
 # Opting out has to keep working: an operator who wants the old cap-only
 # bounding must be able to ask for it.
-nostall_out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOOP" \
+nostall_out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOOP" \
   DEVLEAD_LOOP_SLEEP=0 DEVLEAD_ALLOW_DRIFT=1 DEVLEAD_LOOP_STALL=0 \
-  bash "$LOOP" --plan "$STALL_PLAN" --max-iterations 3 2>&1)"
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$STALL_PLAN" --max-iterations 3 2>&1)"
 not_contains "stall: DEVLEAD_LOOP_STALL=0 disables the check" "$nostall_out" "converged"
 contains "stall: disabled means the cap bounds it as before" "$nostall_out" "iteration cap (3) reached"
 
@@ -663,12 +683,185 @@ FAKE
 chmod +x "$FAKE_CLAUDE_PROGRESS"
 
 rm -f "$SANDBOX/progress-count"
-progress_out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_PROGRESS" \
+progress_out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_PROGRESS" \
   DEVLEAD_LOOP_SLEEP=0 DEVLEAD_ALLOW_DRIFT=1 \
-  bash "$LOOP" --plan "$PROGRESS_PLAN" --max-iterations 4 2>&1)"
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PROGRESS_PLAN" --max-iterations 4 2>&1)"
 not_contains "stall: a changing park reason is progress, not convergence" \
   "$progress_out" "converged"
 contains "stall: changing reasons run to the cap" "$progress_out" "iteration cap (4) reached"
+
+# ===========================================================================
+# Explicit permissions: a real run refuses to start without them
+# ===========================================================================
+ARGS_LOG="$SANDBOX/claude-args.log"
+FAKE_CLAUDE_ARGS="$SANDBOX/fake-claude-args"
+cat > "$FAKE_CLAUDE_ARGS" <<FAKE
+#!/usr/bin/env bash
+{ printf 'CALL'; for a in "\$@"; do printf '\t%s' "\$a"; done; printf '\n'; } >> "$ARGS_LOG"
+echo "sweep-execute: ran"
+exit 0
+FAKE
+chmod +x "$FAKE_CLAUDE_ARGS"
+arg_calls() { if [[ -f "$ARGS_LOG" ]]; then wc -l < "$ARGS_LOG" | tr -d ' '; else echo 0; fi; }
+
+PERM_PLAN="$SANDBOX/plan-perm.yml"
+printf 'version: 1\ntasks:\n  - id: perm\n    title: "Unsettled"\n    type: feat\n' > "$PERM_PLAN"
+
+rm -f "$ARGS_LOG"
+out="$(DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PERM_PLAN" --max-iterations 2 2>&1)"
+rc=$?
+check "permissions unset: exits non-zero" "$rc" "1"
+check "permissions unset: claude never invoked" "$(arg_calls)" "0"
+contains "permissions unset: names the variable to set" "$out" "DEVLEAD_LOOP_CLAUDE_ARGS is not set"
+
+rm -f "$ARGS_LOG"
+out="$(DEVLEAD_LOOP_CLAUDE_ARGS="   " DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PERM_PLAN" --max-iterations 2 2>&1)"
+rc=$?
+check "permissions blank: exits non-zero" "$rc" "1"
+check "permissions blank: claude never invoked" "$(arg_calls)" "0"
+
+rm -f "$ARGS_LOG"
+out="$(DEVLEAD_LOOP_CLAUDE_ARGS="--permission-mode acceptEdits --allowedTools Bash,Read" \
+  DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PERM_PLAN" --max-iterations 1 2>&1)"
+rc=$?
+check "permissions set: exits 0" "$rc" "0"
+check "permissions set: every flag reaches claude as its own argument" "$(cat "$ARGS_LOG")" \
+  "$(printf 'CALL\t-p\t/sweep-execute --plan %s\t--permission-mode\tacceptEdits\t--allowedTools\tBash,Read' "$PERM_PLAN")"
+
+out="$(DEVLEAD_LOOP_CLAUDE_ARGS="--permission-mode acceptEdits" DEVLEAD_LOOP_DRYRUN=1 \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PERM_PLAN" --max-iterations 1 2>&1)"
+contains "dry run shows the permission flags" "$out" "--permission-mode acceptEdits"
+contains "dry run strips the variable from the child's environment" "$out" "-u DEVLEAD_LOOP_CLAUDE_ARGS"
+out="$(DEVLEAD_LOOP_DRYRUN=1 bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PERM_PLAN" --max-iterations 1 2>&1)"
+rc=$?
+check "dry run without permissions still exits 0" "$rc" "0"
+contains "dry run without permissions says a real run would refuse" "$out" "a real run refuses to start"
+
+# ===========================================================================
+# Kill switch: the unattended loop honours enabled: false
+# ===========================================================================
+run_switch() {  # run_switch <repo> [max-iterations]
+  rm -f "$ARGS_LOG"
+  DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" \
+    DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" DEVLEAD_LOOP_SLEEP=0 DEVLEAD_LOOP_STALL=0 \
+    bash "$LOOP" --repo "$1" --plan "$PERM_PLAN" --max-iterations "${2:-2}" 2>&1
+}
+
+NO_ENVELOPE_REPO="$SANDBOX/no-envelope-repo"
+git init -q "$NO_ENVELOPE_REPO"
+out="$(run_switch "$NO_ENVELOPE_REPO")"
+rc=$?
+check "no envelope: exits 0" "$rc" "0"
+check "no envelope: claude never invoked" "$(arg_calls)" "0"
+contains "no envelope: reports STATUS: paused" "$out" "STATUS: paused"
+contains "no envelope: says why" "$out" "not enrolled"
+
+DISABLED_REPO="$SANDBOX/disabled-repo"
+git init -q "$DISABLED_REPO"
+write_envelope "$DISABLED_REPO" false
+out="$(run_switch "$DISABLED_REPO")"
+rc=$?
+check "enabled: false: exits 0" "$rc" "0"
+check "enabled: false: claude never invoked" "$(arg_calls)" "0"
+contains "enabled: false: reports STATUS: paused" "$out" "STATUS: paused"
+contains "enabled: false: names the flag" "$out" "ENABLED: false"
+
+write_envelope "$DISABLED_REPO" maybe
+out="$(run_switch "$DISABLED_REPO")"
+check "enabled: <garbage>: claude never invoked" "$(arg_calls)" "0"
+contains "enabled: <garbage>: reports STATUS: paused" "$out" "STATUS: paused"
+
+before="$(sha256sum "$DISABLED_REPO/.devlead/envelope.yml")"
+run_switch "$DISABLED_REPO" >/dev/null
+check "the loop never writes the envelope" "$(sha256sum "$DISABLED_REPO/.devlead/envelope.yml")" "$before"
+
+out="$(run_switch "$ENABLED_REPO")"
+check "enabled: true: claude runs every iteration" "$(arg_calls)" "2"
+
+# Flipping the switch stops a run that is already going: the fake claude turns
+# it off during iteration 1, so iteration 2 must never start.
+FLIP_REPO="$SANDBOX/flip-repo"
+git init -q "$FLIP_REPO"
+write_envelope "$FLIP_REPO" true
+FAKE_CLAUDE_FLIP="$SANDBOX/fake-claude-flip"
+cat > "$FAKE_CLAUDE_FLIP" <<FAKE
+#!/usr/bin/env bash
+echo CALL >> "$ARGS_LOG"
+printf 'version: 1\nenabled: false\n' > "$FLIP_REPO/.devlead/envelope.yml"
+exit 0
+FAKE
+chmod +x "$FAKE_CLAUDE_FLIP"
+rm -f "$ARGS_LOG"
+out="$(DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" \
+  DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_FLIP" DEVLEAD_LOOP_SLEEP=0 DEVLEAD_LOOP_STALL=0 \
+  bash "$LOOP" --repo "$FLIP_REPO" --plan "$PERM_PLAN" --max-iterations 5 2>&1)"
+check "switch flipped mid-run: exactly one iteration ran" "$(arg_calls)" "1"
+contains "switch flipped mid-run: reports STATUS: paused" "$out" "STATUS: paused"
+
+# ===========================================================================
+# Escalation: the loop tells the human when it cannot go on by itself
+# ===========================================================================
+rm -f "$INBOX"
+DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PERM_PLAN" --max-iterations 1 >/dev/null 2>&1
+check "no permissions -> need:loop-no-permissions" "$(inbox_codes)" "need:loop-no-permissions"
+
+rm -f "$INBOX"; run_switch "$NO_ENVELOPE_REPO" >/dev/null
+check "kill switch -> need:loop-paused" "$(inbox_codes)" "need:loop-paused"
+
+rm -f "$INBOX"
+DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_FAIL" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PERM_PLAN" --max-iterations 1 >/dev/null 2>&1
+check "drift guard refusal -> need:loop-drift" "$(inbox_codes)" "need:loop-drift"
+
+rm -f "$INBOX"
+DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOTAGITREPO" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PERM_PLAN" --max-iterations 3 >/dev/null 2>&1
+check "unresolvable repo -> need:loop-no-repo" "$(inbox_codes)" "need:loop-no-repo"
+
+rm -f "$INBOX"; run_switch "$ENABLED_REPO" 2 >/dev/null
+check "cap reached with work outstanding -> need:loop-cap" "$(inbox_codes)" "need:loop-cap"
+
+rm -f "$INBOX"
+DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" DEVLEAD_LOOP_SLEEP=0 DEVLEAD_LOOP_STALL=1 \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PERM_PLAN" --max-iterations 6 >/dev/null 2>&1
+check "no progress -> need:loop-stuck" "$(inbox_codes)" "need:loop-stuck"
+
+# The plan completes during the run -> info only, never a push-level entry.
+DONE_PLAN="$SANDBOX/plan-done.yml"
+printf 'version: 1\ntasks:\n  - id: omega\n    title: "Finishes"\n    type: feat\n' > "$DONE_PLAN"
+DONE_RUN_ID="plan-$(sha256sum "$DONE_PLAN" | cut -c1-16)"
+FAKE_CLAUDE_FINISH="$SANDBOX/fake-claude-finish"
+cat > "$FAKE_CLAUDE_FINISH" <<FAKE
+#!/usr/bin/env bash
+DEVLEAD_RUN_STATE_DIR="$DEVLEAD_RUN_STATE_DIR" bash "$RUN_STATE" mark "$DONE_RUN_ID" omega done "pr-created https://example.test/pull/1"
+FAKE
+chmod +x "$FAKE_CLAUDE_FINISH"
+rm -f "$INBOX"
+DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_FINISH" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$DONE_PLAN" --max-iterations 4 >/dev/null 2>&1
+check "plan completed by the run -> info:loop-done" "$(inbox_codes)" "info:loop-done"
+
+rm -f "$INBOX"
+DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_FINISH" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$DONE_PLAN" --max-iterations 4 >/dev/null 2>&1
+check "plan already settled before the run -> silence" "$(inbox_codes)" ""
+
+rm -f "$INBOX"
+DEVLEAD_LOOP_DRYRUN=1 bash "$LOOP" --repo "$NO_ENVELOPE_REPO" --plan "$PERM_PLAN" --max-iterations 2 >/dev/null 2>&1
+check "dry run never notifies" "$(inbox_codes)" ""
+
+# A broken channel never changes what the loop does.
+BROKEN_NOTIFY_DIR="$SANDBOX/notify-is-a-file"
+: > "$BROKEN_NOTIFY_DIR"
+out="$(DEVLEAD_NOTIFY_DIR="$BROKEN_NOTIFY_DIR/x" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" \
+  DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" DEVLEAD_LOOP_SLEEP=0 DEVLEAD_LOOP_STALL=0 \
+  bash "$LOOP" --repo "$NO_ENVELOPE_REPO" --plan "$PERM_PLAN" --max-iterations 2 2>&1)"
+check "unwritable inbox: the paused run still exits 0" "$?" "0"
+contains "unwritable inbox: the loop's own report is unchanged" "$out" "STATUS: paused"
 
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="

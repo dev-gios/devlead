@@ -132,6 +132,8 @@ Si los paths candidatos no se pueden derivar con certeza (issue sin labels ni re
 
 Ejecutá los siguientes pasos de `arranquemos.md` para ESTA issue, en este orden exacto:
 
+> **Preferencias aprendidas.** El Step 8.3 de `arranquemos.md` abre leyendo `learn.sh pref-list` y aplicando las preferencias activas del usuario; en batch eso corre igual, sin pausa. Batch solo LEE preferencias: no captura feedback ni registra preferencias nuevas (eso pasa en `/arranquemos`, con el usuario presente). Una preferencia nunca levanta un PARK ni cambia el sobre.
+
 - **Paso 8.1** — Resolver spec de la issue (`ref-resolver.sh {issue_num}`) — capturá `DEPENDS-ON:` si aparece
 - **Paso 8.2** — Crear la rama: seguí exactamente `Paso 8.2` de `arranquemos.md` para esta issue — resolvé `{integration_branch}` vía `envelope.sh show` (default `dev` si ausente o `STATUS: blocked`) e invocá `branch.sh` con la forma de 5 argumentos posicionales exacta que ese paso define, pasando `dep_num` como 4to arg solo si Paso 8.1 emitió `DEPENDS-ON:` (si no, dejalo vacío `""`). Guardá el `{integration_branch}` resuelto acá — se reutiliza en B2.d (post-check) sin volver a resolverlo
 - **Paso 8.3** — Pipeline principal: con spec si encontrado (Inv 7, branch sin cambios); si NO hay spec, corré `Step 8.3-SDD` (ciclo SDD completo — ver `arranquemos.md`) con `SDD_MODE=autonomous` (Delta 1 de acá abajo ya cubre el skip de la pausa de aprobación por issue — no hace falta un flag nuevo)
@@ -147,7 +149,7 @@ Cada sub-paso es un gate. Si alguno retorna blocked/error → interceptá la se�
 
 Paso 8.5 (abrir el PR) NO se ejecuta acá — se ejecuta en B2.d después del post-check.
 
-Ningún paso de merge ni cierre de issue se ejecuta NUNCA en batch ni en sweep — el pipeline termina en `gh pr create` (B2.d). Si al leer `arranquemos.md` encontrás un paso de merge o `gh issue close`, IGNORALO: el merge es del usuario, siempre (Inv 3). (Ver GOVERNANCE.md §A3.)
+Ningún paso de merge ni cierre de issue se ejecuta en batch — el pipeline termina con el PR abierto por `open-pr.sh` (B2.d). (El único merge que existe en DevLead es el Delta 6 de `sweep-execute.md`, por `merge.sh`, y solo si el envelope concede `merge.mode: integration-branch`.) Si al leer `arranquemos.md` encontrás un paso de merge o `gh issue close`, IGNORALO: el merge es del usuario, siempre (Inv 3). (Ver GOVERNANCE.md §A3.)
 
 ---
 
@@ -193,7 +195,8 @@ git diff --name-only "origin/{integration_branch}...HEAD" | bash ~/.devlead/scri
 ```
 
 Si la salida es EXACTAMENTE `STATUS: clear`:
-- Ejecutá **Paso 8.5** de `arranquemos.md` para esta issue (`gh pr create ...`).
+- Ejecutá **Paso 8.5** de `arranquemos.md` para esta issue (el PR se abre por la puerta `open-pr.sh`, que repite en código el gate y este mismo chequeo de zonas).
+- Si `open-pr.sh` sale distinto de 0 → **PARK** esta issue con las líneas `PARK_REASON:` de su stdout como razón, verbatim (§A4). No se abrió ningún PR; no reintentes.
 - Capturá la URL del PR.
 - Marcá la issue `pr_listo` con la URL.
 
