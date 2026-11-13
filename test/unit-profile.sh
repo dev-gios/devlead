@@ -379,7 +379,15 @@ for good in \
   "Wants the main point first, details only if asked" \
   "Prefers short answers that do not waste tokens" \
   "Habla sin secretismo ni rodeos y espera lo mismo" \
-  "Pide ver primero qué quedó pendiente y después el resumen"; do
+  "Pide ver primero qué quedó pendiente y después el resumen" \
+  "Va directo a los puntos clave, sin introducción" \
+  "Decide en base a datos, no a intuiciones" \
+  "Prefers key points as a short list" \
+  "Does not like being pushed toward one option; wants the tradeoffs" \
+  "Escribe sin límite de formalidad, tuteando" \
+  "Sets clear limits on answer length: a few lines at most" \
+  "Publica sus ideas en mensajes cortos, uno por tema" \
+  "Aprueba rápido cuando la respuesta es corta y clara"; do
   out="$(bash "$P" add style conversations "$good")"
   check "accepted: $good" "$(field "$out" STATUS)" "added"
 done
