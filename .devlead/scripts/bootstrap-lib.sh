@@ -225,6 +225,7 @@ bootstrap_symlinks() {
     "$repo_dir/.devlead/scripts/forbidden-check.sh|$devlead_dir/scripts/forbidden-check.sh|x"
     "$repo_dir/.devlead/scripts/open-pr.sh|$devlead_dir/scripts/open-pr.sh|x"
     "$repo_dir/.devlead/scripts/merge.sh|$devlead_dir/scripts/merge.sh|x"
+    "$repo_dir/.devlead/scripts/notify.sh|$devlead_dir/scripts/notify.sh|x"
     "$repo_dir/.devlead/scripts/devlead-session.sh|$devlead_dir/scripts/devlead-session.sh|x"
     "$repo_dir/.devlead/scripts/envelope.sh|$devlead_dir/scripts/envelope.sh|x"
     "$repo_dir/.devlead/scripts/envelope-auth.sh|$devlead_dir/scripts/envelope-auth.sh|x"
