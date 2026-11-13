@@ -87,12 +87,21 @@ declare -A _seen=()
 while IFS= read -r _line || [[ -n "$_line" ]]; do
   _line="${_line%$'\r'}"
   [[ -z "${_line//[[:space:]]/}" || "$_line" == \#* ]] && continue
-  [[ -n "${_seen[$_line]+_}" ]] && continue
-  _seen["$_line"]=1
   if [[ ! -d "$_line" ]]; then
     echo "discover-fleet: skipped $_line — not a directory"
     continue
   fi
+  # One session per REPOSITORY, however the list spells it: a trailing slash,
+  # a symlink, a relative path or a subdirectory of an entry already seen all
+  # name the same repo, and exploring it twice could file the same gap twice.
+  _root="$(cd "$_line" && { git rev-parse --show-toplevel 2>/dev/null || pwd -P; })"
+  if [[ -z "$_root" || ! -d "$_root" ]]; then
+    echo "discover-fleet: skipped $_line — cannot resolve its location"
+    continue
+  fi
+  [[ -n "${_seen[$_root]+_}" ]] && continue
+  _seen["$_root"]=1
+  _line="$_root"
   _show="$(cd "$_line" && bash "$ENVELOPE_SH" show 2>/dev/null </dev/null)"
   if ! grep -q '^STATUS: ok' <<<"$_show"; then
     echo "discover-fleet: skipped $_line — envelope not usable ($(grep -m1 '^GAP:' <<<"$_show" | sed 's/^GAP:[[:space:]]*//' || true))"

@@ -122,6 +122,59 @@ contains "pass: summary" "$out" "2 repo(s) explored, 0 failed"
 check "pass: one info entry, never a push-level one" "$(inbox | cut -f2,3)" "info"$'\t'"discover-done"
 
 # ===========================================================================
+# one session per repository, however the list spells it
+# ===========================================================================
+git init -q "$ON2"
+mkdir -p "$ON2/sub"
+ln -s "$ON2" "$SANDBOX/repos/on2-link"
+enroll "$ON2" "$ON2/" "$SANDBOX/repos/on2-link" "$ON2/sub" "$SANDBOX/repos/../repos/on2"
+out="$(run env DEVLEAD_LOOP_CLAUDE_ARGS="$FLAGS")"
+check "aliases of one repo: a single session" "$(calls)" "1"
+check "aliases of one repo: it runs at the repository root" "$(cut -f1 "$CLAUDE_LOG")" "CWD=$(cd "$ON2" && pwd -P)"
+
+# ===========================================================================
+# the real envelope.sh speaks the dialect the launcher reads
+# ===========================================================================
+if command -v yq &>/dev/null; then
+  REAL="$SANDBOX/real/.devlead/scripts"
+  mkdir -p "$REAL"
+  cp "$SCRIPTS/discover-fleet.sh" "$SCRIPTS/envelope.sh" "$SCRIPTS/bootstrap-lib.sh" "$SCRIPTS/notify.sh" "$REAL/"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/fakebin/gh"; chmod +x "$SANDBOX/fakebin/gh"
+  # real_repo <name> <enabled> <discover block or empty>
+  real_repo() {
+    local d="$SANDBOX/repos/real-$1"
+    git init -q "$d"; mkdir -p "$d/.devlead"
+    { echo "version: 1"; echo "enabled: $2"
+      echo "select:"; echo "  bucket: nuevo-entrante"; echo "  exclude_labels: [blocked, discuss]"; echo "  require_readiness: true"
+      echo "order:"; echo "  by: [priority-label, created-asc]"
+      echo "budget:"; echo "  max_issues: 3"; echo "  stop_at: null"
+      echo "base:"; echo "  strategy: nearest-tag"
+      [[ -n "$3" ]] && printf '%s\n' "$3"
+      echo "forbidden_zones: inherit"
+      echo "on_failure:"; echo "  policy: park-and-continue"; echo "  skip_dependents: true"
+      echo "merge:"; echo "  mode: never"
+      echo "report:"; echo "  to: journal-per-repo"; } > "$d/.devlead/envelope.yml"
+    (cd "$d" && pwd -P)
+  }
+  DISC=$'discover:\n  enabled: true\n  label: discuss\n  modules:\n    - path: src/auth\n      spec: docs/auth.md'
+  R_ON="$(real_repo on true "$DISC")"
+  R_OFF="$(real_repo off true $'discover:\n  enabled: false')"
+  R_NONE="$(real_repo none true "")"
+  R_DISABLED="$(real_repo disabled false "$DISC")"
+  enroll "$R_OFF" "$R_NONE" "$R_DISABLED" "$R_ON"
+  rm -f "$CLAUDE_LOG"
+  out="$( cd "$SANDBOX" && HOME="$SANDBOX/home" DEVLEAD_NOTIFY_DIR="$SANDBOX/home/.devlead" PATH="$SANDBOX/fakebin:$PATH" \
+      DEVLEAD_CLAUDE_BIN="$SANDBOX/fakebin/claude" DEVLEAD_DOCTOR_BIN="$SANDBOX/doctor.sh" \
+      DEVLEAD_LOOP_CLAUDE_ARGS="$FLAGS" bash "$REAL/discover-fleet.sh" 2>&1 )"
+  check "real envelope: only the opted-in repo gets a session" "$(cut -f1 "$CLAUDE_LOG" 2>/dev/null)" "CWD=$R_ON"
+  contains "real envelope: discover off is skipped" "$out" "skipped $R_OFF — discover.enabled is not true"
+  contains "real envelope: no discover block is skipped" "$out" "skipped $R_NONE — discover.enabled is not true"
+  contains "real envelope: a disabled envelope is skipped" "$out" "skipped $R_DISABLED — envelope is not enabled"
+else
+  echo "SKIP  yq not available — real envelope dialect not exercised"
+fi
+
+# ===========================================================================
 # the narrower discover flags win over the loop's
 # ===========================================================================
 enroll "$ON"

@@ -24,7 +24,10 @@ EnvironmentFile=-%h/.devlead/loop.env
 ExecStart=%h/.devlead/scripts/discover-fleet.sh
 StandardOutput=journal
 StandardError=journal
-TimeoutStartSec=infinity
+# A hung session must not hold the unit forever. Unlike the runs that build
+# branches, discovery leaves nothing half-done in a repo when it is stopped:
+# an issue is either filed or it is not.
+TimeoutStartSec=6h
 
 [Install]
 WantedBy=default.target
