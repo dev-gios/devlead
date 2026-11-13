@@ -284,9 +284,26 @@ Todo vive en `~/.devlead/learn/<repo-key>/`, local y por repo. Una preferencia e
 
 El journal también es acumulativo: `/cerremos` archiva la entrada anterior en vez de pisarla (`journal.sh`), y `/arranquemos` lee los últimos días para detectar lo que se repite.
 
+## Agenda del día — qué va a hacer DevLead hoy (`agenda.sh`)
+
+Cada mañana el sweep arma la cola de cada repo enrolado con la policy de su envelope, la guarda como **agenda del día** y te manda un aviso al teléfono. DevLead no espera tu OK: a la hora del run arranca con esa cola. Si tenés otra prioridad, la cambiás antes:
+
+| Comando (dentro del repo) | Qué hace |
+|---|---|
+| `devlead agenda` | Muestra la agenda de hoy, con tus ajustes aplicados |
+| `devlead agenda first 15` | La #15 se trabaja primero |
+| `devlead agenda skip 12` | La #12 no se trabaja hoy |
+| `devlead agenda reset` | Descarta los ajustes |
+
+En una sesión de `/arranquemos` alcanza con decirlo ("hoy primero la 15", "la 12 dejala").
+
+Un ajuste solo **reordena o saltea** issues de la cola que tu policy ya incluyó; nunca agrega una. Vale por el día: la agenda de mañana arranca limpia. Para un cambio permanente — o para cambiar prioridades desde el teléfono, donde no hay terminal — usá labels en GitHub: las de `select.exclude_labels` sacan una issue de la cola y las de `order.priority_labels` la suben.
+
+El push lleva por defecto solo cantidades ("2 repo(s), 5 issue(s) today"); para recibir la lista con repos y títulos en el teléfono agregá `DEVLEAD_NOTIFY_DETAIL=1` a `~/.devlead/notify.env`. La lista completa siempre queda en la bandeja local. Reglas en `GOVERNANCE.md §daily-agenda`.
+
 ## Avisos — bandeja local y push al teléfono (`notify.sh`)
 
-Un run desatendido que no puede seguir solo avisa por `~/.devlead/scripts/notify.sh`. Todo queda en la bandeja local `~/.devlead/inbox.tsv`, que `/arranquemos` muestra a la mañana ("Mientras no estabas") y archiva. Solo los avisos de nivel `need` van además al teléfono. La lista de qué dispara un `need` está en `.claude/GOVERNANCE.md §escalation-channel`.
+Un run desatendido que no puede seguir solo avisa por `~/.devlead/scripts/notify.sh`. Todo queda en la bandeja local `~/.devlead/inbox.tsv`, que `/arranquemos` muestra a la mañana ("Mientras no estabas") y archiva. Los avisos de nivel `need` van además al teléfono con prioridad alta; el de nivel `agenda` (la lista del día) va con prioridad normal. La lista de qué dispara un `need` está en `.claude/GOVERNANCE.md §escalation-channel`.
 
 **Activar el push** (sin esto, solo se escribe la bandeja y nada sale de la máquina):
 

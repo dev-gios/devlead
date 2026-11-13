@@ -203,11 +203,12 @@ La columna "Mid-run notify" de la tabla de perfiles describe lo que hace **DevLe
 
 Lo que esta sección agrega es un canal de **escalada de nivel run**, implementado en código (`.devlead/scripts/notify.sh`), para el caso que la tabla no cubría: un run desatendido que **no puede seguir solo**. Hasta ahora ese caso terminaba en un archivo y una línea de journald que nadie leía.
 
-**Dos niveles, y solo dos:**
+**Tres niveles, y solo tres:**
 
 | Nivel | Cuándo | A dónde va |
 |-------|--------|------------|
-| `need` | El run no puede continuar sin una decisión o una acción del usuario | Bandeja local + push al teléfono |
+| `need` | El run no puede continuar sin una decisión o una acción del usuario | Bandeja local + push al teléfono (prioridad alta) |
+| `agenda` | La lista de lo que DevLead va a trabajar hoy; no pide nada (§daily-agenda). Un solo emisor: `sweep.sh`, una vez por corrida | Bandeja local + push al teléfono (prioridad normal) |
 | `info` | Desenlace normal que conviene saber | Bandeja local únicamente |
 
 **Disparadores de `need` (lista cerrada; agregar uno es una edición de esta sección):**
@@ -253,6 +254,37 @@ DevLead aprende cómo trabaja el usuario leyendo lo que el usuario escribe en lo
 **Límite conocido:** el filtro por autor no distingue lo que el usuario escribió a mano de lo que una herramienta publicó con su mismo token. Hoy el pipeline de DevLead no publica comentarios en PRs; si eso cambia, esos comentarios deben excluirse de la captura.
 
 **Chequeo narrow-not-widen:** antes, DevLead implementaba sin memoria de las correcciones. Después, implementa con ellas. El conjunto de acciones que puede tomar es idéntico; lo que cambia es la forma del diff que produce.
+
+---
+
+## §daily-agenda — Avisar el plan no es pedir permiso; ajustarlo no es autorizar
+
+En el perfil `sweep-plan-driven` la cola de trabajo sale de `envelope.sh plan`: la policy que escribió el usuario ya autorizó ese trabajo (§inv6-governance). La **agenda** (`.devlead/scripts/agenda.sh`) es cómo el usuario se entera de esa cola antes de que se ejecute, y cómo la ajusta.
+
+**Decisión del usuario (2026-11-13):** DevLead manda la lista de lo que va a hacer hoy y arranca; no espera un OK. Si el usuario tiene otra prioridad, la cambia. Esto es legal bajo A1 porque la autorización no la da la agenda: ya la dio el envelope. La agenda no agrega un paso de aprobación y no quita ninguno.
+
+**El circuito:**
+
+1. El sweep de la mañana (`sweep.sh`) guarda la cola de cada repo incluido (`agenda.sh publish`) y manda UN aviso por corrida, nivel `agenda` (§escalation-channel: llega al teléfono con prioridad normal; no es un `need`).
+2. El usuario, si quiere, ajusta: `devlead agenda first <N>`, `devlead agenda skip <N>`, `devlead agenda reset`.
+3. El run (`/sweep-execute` plan-driven, E1.4 Paso 3) deriva su cola de nuevo — A2, nunca usa la cola guardada — y la pasa por `agenda.sh apply`.
+
+**Lo que un ajuste de agenda puede hacer:** reordenar issues de la cola, o sacar issues de la cola por hoy.
+
+**Lo que un ajuste de agenda no puede hacer:**
+
+1. **No agrega trabajo (A1).** `agenda.sh apply` nunca emite un número que no recibió por stdin, sea cual sea el contenido de sus archivos de estado; una línea dañada se ignora. Una issue que la policy del envelope dejó afuera no entra por la agenda. Verificado por test (`test/unit-agenda.sh`), no por prosa, y repetido como regla en E1.4 Paso 3.
+2. **No concede ni amplía autoridad (A3).** `open-pr.sh`, `merge.sh`, `envelope.sh`, los gates y `forbidden-check.sh` no leen la agenda.
+3. **No sobrevive al día.** Los ajustes pertenecen a una agenda publicada; publicar la del día siguiente los descarta. Un cambio permanente de prioridad es policy, y la policy se cambia en el envelope o con labels (`select.exclude_labels`, `order.priority_labels`).
+4. **No destraba un fallo.** Si `agenda.sh apply` falla o devuelve algo ilegible, el repo se aparca (`agenda-error`); DevLead no adivina qué quiso el usuario.
+
+**Quién ajusta:** el usuario — en la terminal con `devlead agenda`, o pidiéndolo en una sesión de `/arranquemos`. Los perfiles autónomos solo corren `publish` (el sweep) y `apply` (el run); nunca `first`, `skip` ni `reset`.
+
+**Issue salteada y dependencias:** una issue salteada queda como `skipped-by-agenda` y cuenta como bloqueada para sus dependientes (E2.2), que se aparcan en vez de construirse sobre trabajo que hoy no se hace.
+
+**Privacidad del aviso:** el push viaja por un servicio de terceros. Por defecto lleva solo cantidades ("2 repo(s), 5 issue(s) today"); la lista con nombres de repo y títulos queda en la bandeja local, y sale de la máquina únicamente si el usuario puso `DEVLEAD_NOTIFY_DETAIL=1` en `notify.env`.
+
+**Chequeo narrow-not-widen:** antes, el run plan-driven trabajaba toda la cola de la policy en el orden de la policy. Después, trabaja esa cola o un subconjunto de ella, en un orden que el usuario pudo cambiar. El conjunto de issues alcanzables no crece nunca.
 
 ---
 

@@ -184,6 +184,24 @@ Guardá la salida de `outcomes` para el Paso 6.
 
 ---
 
+## Paso 2.7 — Leer la agenda del día
+
+```bash
+bash ~/.devlead/scripts/agenda.sh show
+```
+
+Es la cola que el run desatendido de este repo va a trabajar hoy (la arma el sweep de la mañana con la policy del envelope), con los ajustes del usuario ya aplicados. `STATUS: none` o `STATUS: empty` → no hay nada que mostrar; seguí. `STATUS: ok` → guardá la salida para el Paso 4.
+
+Vos NUNCA ajustás la agenda por iniciativa propia. Solo cuando el usuario lo pide en la sesión:
+
+- "hoy primero la 15" → `bash ~/.devlead/scripts/agenda.sh first 15`
+- "la 12 dejala" / "hoy no hagas la 12" → `bash ~/.devlead/scripts/agenda.sh skip 12`
+- "dejá la agenda como estaba" → `bash ~/.devlead/scripts/agenda.sh reset`
+
+Después de cada ajuste, corré `show` y confirmalo en una línea. Si el comando responde `STATUS: not-on-agenda`, decile que esa issue no está en la cola de hoy y por qué no la podés agregar: la agenda solo reordena o saltea lo que su policy ya incluyó; para sumar una issue se cambia el envelope o sus labels (GOVERNANCE.md §daily-agenda).
+
+---
+
 ## Paso 3 — Armar los tres buckets
 
 Con la salida de `state.sh` como única fuente, clasificá los ítems en tres grupos:
@@ -232,6 +250,18 @@ bash ~/.devlead/scripts/learn.sh pref-shown
 ```
 
 Si en cualquier momento de la sesión el usuario pide quitar una ("quitá p3", "esa no"), corré `bash ~/.devlead/scripts/learn.sh pref-remove p3` y confirmalo en una línea. Si pide agregar una a mano ("anotá que siempre..."), corré `pref-add "user" "{la preferencia}"`. Si pregunta qué aprendiste, mostrá `pref-list`.
+
+**Si el Paso 2.7 dio `STATUS: ok`**, mostrá esta sección antes de los tres buckets:
+
+```
+### Agenda del run desatendido de hoy
+1. #15  {título}
+2. #20  {título}
+Salteadas: #12
+Arranca sola a la hora del run. Si querés otro orden, decime "primero la 20" o "la 15 dejala".
+```
+
+Omití la línea `Salteadas:` si no hay ninguna.
 
 Presentá el standup en este formato. Mostrá las tres secciones siempre, aunque estén vacías:
 

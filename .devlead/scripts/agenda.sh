@@ -4,7 +4,7 @@
 #
 # Usage:
 #   agenda.sh publish        store today's queue (stdin: `envelope.sh plan` output)
-#   agenda.sh show           the effective agenda: adjusted order, then what is skipped
+#   agenda.sh [show]         the effective agenda: adjusted order, then what is skipped
 #   agenda.sh first <N>      work on issue #N before everything else
 #   agenda.sh skip <N>       do not work on issue #N today
 #   agenda.sh reset          drop every adjustment
@@ -236,7 +236,7 @@ _apply() {
   echo "SKIPPED: $skipped"
 }
 
-case "${1:-}" in
+case "${1:-show}" in
   publish) _publish ;;
   show)    _show ;;
   first)   _adjust first "${2:-}" ;;
