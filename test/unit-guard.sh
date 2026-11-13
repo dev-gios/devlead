@@ -141,6 +141,11 @@ bash_blocked database 'RAILS_ENV="production" bin/rails db:migrate'
 bash_blocked database 'psql "host=db.example.com dbname=app user=x"'
 bash_blocked database 'PGHOST=db.example.com psql app'
 bash_blocked database 'docker run --rm postgres:16 psql -h db.example.com -U u app'
+# A conninfo host is judged wherever it sits; a wrapped client is still a client.
+bash_blocked database 'psql "dbname=app host=prod-db.example.com"'
+bash_blocked database 'psql -d "sslmode=require host=db.prod.example.com dbname=app"'
+bash_blocked database "bash -c 'psql -h db.prod.example.com app'"
+bash_blocked database 'psql --host "db.prod.example.com" app'
 bash_blocked database 'alembic -x env=prod upgrade head'
 bash_blocked database 'supabase db push'
 bash_blocked database 'supabase db reset --linked'
