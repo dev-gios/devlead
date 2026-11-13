@@ -39,22 +39,25 @@ for f in devlead.md arranquemos.md batch.md sweep-execute.md; do
   report "$f: no direct gh pr create / gh pr merge in a code block" "$hits"
 done
 
+# The fenced lines are captured first and then searched. Piping them into
+# `grep -q` under pipefail is a race: grep exits at the first match, the
+# producer dies of SIGPIPE, and the check fails although the line is there.
 for f in arranquemos.md sweep-execute.md; do
-  if fenced_lines "$CMD_DIR/$f" | grep -q 'scripts/open-pr\.sh --base'; then
+  if grep -q 'scripts/open-pr\.sh --base' <<<"$(fenced_lines "$CMD_DIR/$f")"; then
     report "$f: opens PRs through open-pr.sh" ""
   else
     report "$f: opens PRs through open-pr.sh" "no fenced open-pr.sh --base invocation found"
   fi
 done
 
-if fenced_lines "$CMD_DIR/sweep-execute.md" | grep -q 'scripts/merge\.sh {PR_URL}'; then
+if grep -q 'scripts/merge\.sh {PR_URL}' <<<"$(fenced_lines "$CMD_DIR/sweep-execute.md")"; then
   report "sweep-execute.md: merges through merge.sh" ""
 else
   report "sweep-execute.md: merges through merge.sh" "no fenced merge.sh invocation found"
 fi
 
 # The interactive command starts on its own and merges only through the door.
-if fenced_lines "$CMD_DIR/arranquemos.md" | grep -q 'scripts/merge\.sh {PR_URL}'; then
+if grep -q 'scripts/merge\.sh {PR_URL}' <<<"$(fenced_lines "$CMD_DIR/arranquemos.md")"; then
   report "arranquemos.md: merges through merge.sh" ""
 else
   report "arranquemos.md: merges through merge.sh" "no fenced merge.sh invocation found"
