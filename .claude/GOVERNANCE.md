@@ -193,6 +193,7 @@ Por lo tanto: un modo que responde con PARK ante un gate rojo (en lugar de HALT)
 - **Cómo satisface A1:** `discover.enabled: true` más la lista de `discover.modules[]` declarada en el envelope ES la delegación permanente pre-autorizada, exactamente como §inv6-governance ya establece para la envelope policy en general. El usuario decidió, al declarar esos módulos y sus specs, qué superficie puede explorar DevLead — no en el momento de correr, sino de antemano.
 - **Por qué NO necesita el gate generate→show→approve** (a pesar de que a primera vista parece que debería): §inv6-governance y §generate-show-approve exigen ese gate cuando DevLead deriva un work-list AD-HOC — porque ese work-list se va a EJECUTAR (ramas, PRs, código tocando el repo) y la aprobación tiene que pasar antes de que eso ocurra. Discovery deriva un work-list también, pero ese work-list se materializa como ISSUES, no como ejecución. No se crea ninguna rama, no se abre ningún PR, no se toca código. La aprobación no se salteó — se RELOCALIZÓ al punto donde el trabajo realmente empieza: modo plan-driven decide, según policy, si esas issues se trabajan; y `discover.label`, sostenido por la regla de acoplamiento del schema (`discover.label` debe figurar en `select.exclude_labels`, ver `.devlead/scripts/envelope.sh`), las mantiene afuera del work-list de plan-driven hasta que un humano las revise y les saque la label o las reclasifique. El gate sigue existiendo; vive en el próximo perfil de la cadena, no en este.
 - **El ciclo de dos noches:** esta es la forma que gobierna el perfil. Noche uno, `sweep-discover` corre, explora los módulos declarados contra sus specs, y archiva una issue por cada gap con `discover.label` puesto. Vos mirás esas issues. Noche dos, `sweep-plan-driven` (o el modo que corresponda) decide qué de lo que sobrevivió a tu revisión se trabaja — y solo lo hace si vos ya sacaste o cambiaste la label, porque mientras `discover.label` siga puesto y siga en `select.exclude_labels`, plan-driven las sigue ignorando. El label ES el mecanismo que mantiene el ciclo abierto entre las dos noches; sin él, discovery se archivaría trabajo a sí mismo y lo ejecutaría en la corrida siguiente, sin que nadie lo mire — que es exactamente el agujero que la regla de acoplamiento del schema existe para cerrar.
+- **Corrida programada:** `devlead-discover.timer` (semanal, nunca habilitado por la instalación) dispara `discover-fleet.sh`, que entra SOLO a los repos de `~/.devlead/autonomous-repos` cuyo envelope dice `enabled: true` y `discover.enabled: true`, y ahí invoca este mismo comando — un intento por repo, sin reintentos. El lanzador no agrega autoridad: lee el envelope y dispara el comando; se niega a correr sin flags de permisos elegidos por el usuario o sobre artefactos que `doctor.sh` no verifica como el trunk revisado (mismo listón que `sweep-loop.sh`), y avisa por §escalation-channel (`discover-no-permissions`, `discover-drift`).
 - **Chequeo narrow-not-widen:** este perfil no gana ninguna autoridad que los demás no tengan — la pierde. No puede crear ramas, no puede abrir PRs, no puede mergear; ninguno de los otros verbos de Layer 0 (A3, merge) aplica porque nunca llega a ese punto. Es un perfil de SOLO LECTURA sobre el repo y SOLO ESCRITURA sobre el issue tracker. Estrecha por debajo de todos los perfiles existentes, no los iguala ni los amplía.
 
 ---
@@ -203,11 +204,12 @@ La columna "Mid-run notify" de la tabla de perfiles describe lo que hace **DevLe
 
 Lo que esta sección agrega es un canal de **escalada de nivel run**, implementado en código (`.devlead/scripts/notify.sh`), para el caso que la tabla no cubría: un run desatendido que **no puede seguir solo**. Hasta ahora ese caso terminaba en un archivo y una línea de journald que nadie leía.
 
-**Dos niveles, y solo dos:**
+**Tres niveles, y solo tres:**
 
 | Nivel | Cuándo | A dónde va |
 |-------|--------|------------|
-| `need` | El run no puede continuar sin una decisión o una acción del usuario | Bandeja local + push al teléfono |
+| `need` | El run no puede continuar sin una decisión o una acción del usuario | Bandeja local + push al teléfono (prioridad alta) |
+| `agenda` | La lista de lo que DevLead va a trabajar hoy; no pide nada (§daily-agenda). Un solo emisor: `sweep.sh`, una vez por corrida | Bandeja local + push al teléfono (prioridad normal) |
 | `info` | Desenlace normal que conviene saber | Bandeja local únicamente |
 
 **Disparadores de `need` (lista cerrada; agregar uno es una edición de esta sección):**
@@ -218,6 +220,8 @@ Lo que esta sección agrega es un canal de **escalada de nivel run**, implementa
 - no se pudo resolver el repo destino (`loop-no-repo`)
 - el run convergió sin progreso: las mismas tareas aparcadas por las mismas razones (`loop-stuck`)
 - se alcanzó el tope de iteraciones con tareas del plan sin terminar (`loop-cap`)
+- el discover programado no tiene flags de permisos elegidos por el usuario (`discover-no-permissions`)
+- el discover programado encontró artefactos instalados que no verifican como el trunk revisado (`discover-drift`)
 
 Una issue aparcada por un gate rojo NO es un disparador: es el funcionamiento normal del perfil y va al reporte. Lo que escala es que el run entero dejó de avanzar.
 
@@ -253,6 +257,55 @@ DevLead aprende cómo trabaja el usuario leyendo lo que el usuario escribe en lo
 **Límite conocido:** el filtro por autor no distingue lo que el usuario escribió a mano de lo que una herramienta publicó con su mismo token. Hoy el pipeline de DevLead no publica comentarios en PRs; si eso cambia, esos comentarios deben excluirse de la captura.
 
 **Chequeo narrow-not-widen:** antes, DevLead implementaba sin memoria de las correcciones. Después, implementa con ellas. El conjunto de acciones que puede tomar es idéntico; lo que cambia es la forma del diff que produce.
+
+---
+
+## §trust-reading — Un buen historial no es una autorización
+
+`learn.sh trust` lee los outcomes que mide `sweep.sh` y dice si el historial de PRs de DevLead en un repo está **estable** (`VERDICT: steady`): al menos 10 PRs mergeados y las últimas 5 mediciones sin ningún PR cerrado sin mergear ni con cambios pedidos.
+
+**Lo único que hace ese veredicto:** permitir que `/arranquemos` le cuente al usuario el dato y le recuerde dónde se decide el margen de DevLead (`devlead config`).
+
+**Lo que no hace, nunca:**
+
+1. **No cambia `merge.mode` ni ningún otro límite (A3).** `learn.sh` no nombra el archivo del envelope, no llama a `envelope.sh`, `config.sh`, `merge.sh` ni `open-pr.sh`, y no ejecuta ningún verbo de PR. Verificado por test (`test/unit-learn.sh`), no por prosa.
+2. **No es leído por nada que conceda o custodie autoridad.** Las puertas, el envelope, los gates y las zonas prohibidas no leen `learn.sh` ni su estado (mismo test A3 de §learned-preferences).
+3. **No es un argumento.** DevLead no usa el veredicto para pedir más autoridad, ni lo repite en otros pasos, ni lo convierte en preferencia. El usuario decide si le sirve.
+
+**Límites de la medición, que el propio comando declara:** un PR mergeado después de pedirle cambios cuenta como mergeado (el historial no guarda eso), y cada medición es una foto de lo que GitHub mostraba esa mañana.
+
+**Chequeo narrow-not-widen:** el conjunto de acciones de DevLead es idéntico antes y después. Lo que se agrega es un dato en el standup.
+
+---
+
+## §daily-agenda — Avisar el plan no es pedir permiso; ajustarlo no es autorizar
+
+En el perfil `sweep-plan-driven` la cola de trabajo sale de `envelope.sh plan`: la policy que escribió el usuario ya autorizó ese trabajo (§inv6-governance). La **agenda** (`.devlead/scripts/agenda.sh`) es cómo el usuario se entera de esa cola antes de que se ejecute, y cómo la ajusta.
+
+**Decisión del usuario (2026-11-13):** DevLead manda la lista de lo que va a hacer hoy y arranca; no espera un OK. Si el usuario tiene otra prioridad, la cambia. Esto es legal bajo A1 porque la autorización no la da la agenda: ya la dio el envelope. La agenda no agrega un paso de aprobación y no quita ninguno.
+
+**El circuito:**
+
+1. El sweep de la mañana (`sweep.sh`) guarda la cola de cada repo incluido (`agenda.sh publish`) y manda UN aviso por corrida, nivel `agenda` (§escalation-channel: llega al teléfono con prioridad normal; no es un `need`).
+2. El usuario, si quiere, ajusta: `devlead agenda first <N>`, `devlead agenda skip <N>`, `devlead agenda reset`.
+3. El run (`/sweep-execute` plan-driven, E1.4 Paso 3) deriva su cola de nuevo — A2, nunca usa la cola guardada — y la pasa por `agenda.sh apply`.
+
+**Lo que un ajuste de agenda puede hacer:** reordenar issues de la cola, o sacar issues de la cola por hoy.
+
+**Lo que un ajuste de agenda no puede hacer:**
+
+1. **No agrega trabajo (A1).** `agenda.sh apply` nunca emite un número que no recibió por stdin, sea cual sea el contenido de sus archivos de estado; una línea dañada se ignora. Una issue que la policy del envelope dejó afuera no entra por la agenda. Verificado por test (`test/unit-agenda.sh`), no por prosa, y repetido como regla en E1.4 Paso 3.
+2. **No concede ni amplía autoridad (A3).** `open-pr.sh`, `merge.sh`, `envelope.sh`, los gates y `forbidden-check.sh` no leen la agenda.
+3. **No sobrevive al día.** Los ajustes pertenecen a una agenda publicada; publicar la del día siguiente los descarta. Un cambio permanente de prioridad es policy, y la policy se cambia en el envelope o con labels (`select.exclude_labels`, `order.priority_labels`).
+4. **No destraba un fallo.** Si `agenda.sh apply` falla o devuelve algo ilegible, el repo se aparca (`agenda-error`); DevLead no adivina qué quiso el usuario.
+
+**Quién ajusta:** el usuario — en la terminal con `devlead agenda`, o pidiéndolo en una sesión de `/arranquemos`. Los perfiles autónomos solo corren `publish` (el sweep) y `apply` (el run); nunca `first`, `skip` ni `reset`.
+
+**Issue salteada y dependencias:** una issue salteada queda como `skipped-by-agenda` y cuenta como bloqueada para sus dependientes: con `on_failure.skip_dependents: true` E2.2 los aparca en vez de construirlos sobre trabajo que hoy no se hace; con `false` rige el chequeo de siempre de `branch.sh`. Poner primero (`first`) una issue que depende de otra todavía no trabajada es decisión del usuario: la agenda no reordena dependencias por él, y el chequeo de `branch.sh` sigue aplicando.
+
+**Privacidad del aviso:** el push viaja por un servicio de terceros. Por defecto lleva solo cantidades ("2 repo(s), 5 issue(s) today"); la lista con nombres de repo y títulos queda en la bandeja local, y sale de la máquina únicamente si el usuario puso `DEVLEAD_NOTIFY_DETAIL=1` en `notify.env`.
+
+**Chequeo narrow-not-widen:** antes, el run plan-driven trabajaba toda la cola de la policy en el orden de la policy. Después, trabaja esa cola o un subconjunto de ella, en un orden que el usuario pudo cambiar. El conjunto de issues alcanzables no crece nunca.
 
 ---
 

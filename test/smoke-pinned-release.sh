@@ -84,6 +84,8 @@ all_publish_targets() {
 .devlead/scripts/notify.sh
 .devlead/scripts/journal.sh
 .devlead/scripts/learn.sh
+.devlead/scripts/agenda.sh
+.devlead/scripts/discover-fleet.sh
 .devlead/scripts/devlead-session.sh
 .devlead/scripts/envelope.sh
 .devlead/scripts/envelope-auth.sh
@@ -104,6 +106,10 @@ all_publish_targets() {
 .config/systemd/user/devlead-sweep.timer
 .config/systemd/user/devlead-loop.service
 .config/systemd/user/devlead-loop.timer
+.config/systemd/user/devlead-fleet.service
+.config/systemd/user/devlead-fleet.timer
+.config/systemd/user/devlead-discover.service
+.config/systemd/user/devlead-discover.timer
 EOF
 }
 all_source_paths() {
@@ -118,6 +124,8 @@ all_source_paths() {
 .devlead/scripts/notify.sh
 .devlead/scripts/journal.sh
 .devlead/scripts/learn.sh
+.devlead/scripts/agenda.sh
+.devlead/scripts/discover-fleet.sh
 .devlead/scripts/devlead-session.sh
 .devlead/scripts/envelope.sh
 .devlead/scripts/envelope-auth.sh
@@ -138,6 +146,10 @@ all_source_paths() {
 .devlead/systemd/devlead-sweep.timer
 .devlead/systemd/devlead-loop.service
 .devlead/systemd/devlead-loop.timer
+.devlead/systemd/devlead-fleet.service
+.devlead/systemd/devlead-fleet.timer
+.devlead/systemd/devlead-discover.service
+.devlead/systemd/devlead-discover.timer
 EOF
 }
 

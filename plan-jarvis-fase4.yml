@@ -1,0 +1,94 @@
+version: 1
+
+# Plan: Jarvis — Fase 4 de 4 (ciclo completo).
+# Objetivo cerrado: que DevLead arme solo la agenda del día de cada repo
+# enrolado, se la mande al usuario, la ejecute sin esperar una aprobación, y
+# que el usuario pueda cambiar prioridades en cualquier momento antes del run.
+#
+# Decisión del usuario (2026-11-13): "que me mande como una lista de lo que
+# hará hoy por si yo tengo alguna prioridad él pueda modificarlo". O sea:
+# DevLead avisa y arranca; no espera un OK. El usuario ajusta si quiere.
+#
+# Restricciones:
+#   - La agenda nunca amplía autoridad (A1, A3). La cola sale de
+#     `envelope.sh plan`, que aplica la policy que escribió el usuario. Un
+#     ajuste de agenda solo puede REORDENAR o SALTEAR issues de esa cola;
+#     nunca agrega una issue que la policy no incluyó. Verificado en código
+#     (`agenda.sh apply`: la salida es un subconjunto de la entrada) y por test.
+#   - Las puertas (open-pr.sh, merge.sh), el envelope, los gates y las zonas
+#     prohibidas no leen la agenda.
+#   - El estado técnico se sigue re-derivando en vivo (A2): la agenda publicada
+#     es informativa; la cola autoritativa es la que E1.4 deriva en el momento
+#     del run, y sobre ESA se aplican los ajustes.
+#   - El push viaja por un servicio de terceros: por defecto lleva solo la
+#     cantidad de repos e issues. Los títulos salen de la máquina únicamente
+#     con DEVLEAD_NOTIFY_DETAIL=1 (decisión del usuario en notify.env).
+#   - plan-separation-guard sigue verde.
+#
+# FUERA DE ALCANCE: responder desde el teléfono al push (el canal es de una
+# sola vía). Desde el teléfono las prioridades se cambian con labels en GitHub
+# (`select.exclude_labels`, `order.priority_labels`), que la policy ya lee.
+
+tasks:
+  - id: agenda
+    title: "agenda.sh — la agenda del día, con ajustes que solo estrechan"
+    type: feat
+    # ACEPTACIÓN:
+    #   - `agenda.sh publish` (salida de `envelope.sh plan` por stdin) guarda la
+    #     cola INCLUDED del día; una entrada que no es un plan no cambia nada,
+    #     exit 1. Publicar un día nuevo descarta los ajustes del día anterior.
+    #   - `agenda.sh first <N>` / `skip <N>` / `reset` registran los ajustes;
+    #     un <N> que no está en la agenda publicada se rechaza, exit 1.
+    #   - `agenda.sh show` imprime la agenda efectiva y lo salteado.
+    #   - `agenda.sh apply` (números por stdin) devuelve la cola reordenada y
+    #     filtrada; toda issue de la salida estaba en la entrada.
+    #   - Suite nueva test/unit-agenda.sh. shellcheck limpio.
+
+  - id: agenda-wiring
+    title: "Publicar la agenda en el sweep de la mañana y aplicarla en el run"
+    type: feat
+    depends-on: agenda
+    # ACEPTACIÓN:
+    #   - `sweep.sh` publica la agenda de cada repo incluido y manda UN aviso
+    #     por corrida (`notify.sh send agenda ...`), que llega al teléfono.
+    #   - `notify.sh` acepta el nivel `agenda`: push con prioridad normal; sin
+    #     DEVLEAD_NOTIFY_DETAIL el cuerpo no lleva repos ni títulos.
+    #   - sweep-execute.md (plan-driven, E1.4) pasa la cola por `agenda.sh
+    #     apply`; una issue salteada figura en el reporte como
+    #     `skipped-by-agenda` y cuenta como bloqueada para sus dependientes.
+    #   - `devlead agenda ...` reenvía a agenda.sh. /arranquemos muestra la
+    #     agenda y acepta ajustes en lenguaje natural.
+    #   - GOVERNANCE.md y DEVLEAD.md describen la agenda y su límite.
+
+  - id: fleet-timer
+    title: "Timer del run plan-driven multi-repo"
+    type: feat
+    depends-on: agenda-wiring
+    # Hoy el timer nocturno solo corre `--plan plan.local.yml`. Sin un timer
+    # para `--fleet`, la agenda de la mañana solo se ejecuta a mano.
+    # ACEPTACIÓN:
+    #   - Unidades devlead-fleet.{service,timer} que corren
+    #     `sweep-loop.sh -- --fleet`; publicadas, NUNCA habilitadas solas.
+    #   - Habilitarlo es una elección del usuario en `devlead config`.
+    #   - test/unit-loop-units.sh cubre las unidades nuevas.
+
+  - id: discover-timer
+    title: "Timer de /sweep-discover"
+    type: feat
+    depends-on: fleet-timer
+    # ACEPTACIÓN:
+    #   - Unidades devlead-discover.{service,timer}, publicadas y nunca
+    #     habilitadas solas. Las issues que archiva siguen llevando
+    #     `discover.label`, así que no entran a ninguna agenda hasta que el
+    #     usuario las revise (ciclo de dos noches, §sweep-discover-profile).
+
+  - id: trust-report
+    title: "Confianza graduada como recomendación, nunca como cambio"
+    type: feat
+    depends-on: discover-timer
+    # ACEPTACIÓN:
+    #   - `learn.sh trust` resume, de los outcomes medidos, cuántos PRs de
+    #     DevLead se mergearon sin cambios pedidos. /arranquemos lo muestra y,
+    #     pasado un umbral, SUGIERE revisar `merge.mode` en `devlead config`.
+    #   - Ningún camino escribe el envelope ni cambia `merge.mode` (A3): la
+    #     sugerencia es texto para el usuario. Test estructural.

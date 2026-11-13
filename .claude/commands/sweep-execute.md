@@ -540,6 +540,47 @@ Capturá stdout completo. Procesá la salida con estas reglas (en orden):
 - Si la sección INCLUDED está presente y contiene `(none)`: cola vacía → registrá `REPO → STATUS: zero-issues` y continuá con el siguiente repo.
 - Si la sección INCLUDED está presente, no dice `(none)`, pero no se parseó ningún `#N` válido: **PARSE-MISS GUARD** — registrá `REPO → STATUS: parse-miss` y aparcá todas las issues como `parked-plan-format-unparseable`; emitilo en el reporte en forma prominente (no silenciosa). Continuá con el siguiente repo.
 
+**Paso 3 — Aplicar la agenda del usuario (SOLO MODO plan-driven, y solo si el Paso 2 dejó una cola con al menos un `#N`):**
+
+El sweep de la mañana le manda al usuario la lista de lo que DevLead piensa trabajar hoy;
+el usuario puede cambiar prioridades con `devlead agenda first <N>` / `skip <N>`. Este paso
+aplica esos ajustes a la cola que ACABÁS de derivar (nunca a una cola guardada — A2).
+No hay aprobación que esperar: sin ajustes, la cola vuelve igual.
+
+Si `~/.devlead/scripts/agenda.sh` no existe (instalación anterior a la agenda), saltá este
+paso: la cola queda como salió del Paso 2.
+
+Si existe, ejecutá con el Bash tool, pasando los números de la cola en orden, uno por línea:
+```
+printf '%s\n' {N1} {N2} ... | bash ~/.devlead/scripts/agenda.sh apply
+```
+
+Procesá la salida:
+- Leé la línea `QUEUE:` (números separados por espacio, en el orden a trabajar) y la línea
+  `SKIPPED:` (números que el usuario pidió saltear hoy; puede venir vacía).
+- **La cola pasa a ser la de `QUEUE:`, en ese orden.**
+- **Regla de estrechamiento (A1, A3 — no negociable):** un ajuste de agenda solo reordena o
+  saca issues. Si `QUEUE:` trajera un número que NO estaba en la cola del Paso 2, descartalo
+  y registralo en el reporte como anomalía; jamás lo trabajes. La agenda no puede agregar
+  trabajo que la policy del envelope no incluyó.
+- Cada número de `SKIPPED:` queda con resultado `skipped-by-agenda` (no pasa por el pipeline,
+  no cuenta contra el presupuesto) y entra a BLOQUEADAS en E1.5, para que E2.2 — cuando
+  `SKIP_DEPENDENTS: true` — aparque a sus dependientes en vez de construirlos sobre trabajo
+  que hoy no se hace. Con `SKIP_DEPENDENTS: false` rige lo de siempre: B2.c decide si
+  `branch.sh` detecta el predecesor faltante.
+- Si `QUEUE:` queda vacía porque todo fue salteado: registrá `REPO → STATUS: zero-issues
+  (todo salteado en la agenda)` y continuá con el siguiente repo.
+- **Chequeo de integridad:** cada número de la cola del Paso 2 tiene que aparecer en `QUEUE:`
+  o en `SKIPPED:`. Si falta alguno, tratalo igual que el caso de error de abajo: una issue no
+  puede desaparecer sin que el usuario la haya salteado.
+- **Si el comando sale con código distinto de 0, o la salida no trae la línea `QUEUE:`:** no
+  adivines qué quiso el usuario. Registrá `REPO → STATUS: agenda-error`, aparcá todas las
+  issues de la cola como `parked-agenda-unreadable`, y continuá con el siguiente repo. Hacer
+  menos es lo estrecho (§narrow-not-widen).
+
+MODO SCOPED y MODO LOCAL-PLAN no pasan por este paso: su cola la declaró el usuario en la
+invocación o en el plan aprobado, y ese orden ya es su decisión.
+
 ### E1.5 — Inicializar tracking per-repo
 
 Tras un parse exitoso de plan (y show), inicializá el bloque de tracking en-memoria para este repo:
@@ -555,6 +596,8 @@ REPO: /abs/path
 ```
 
 **Nota sobre PRESUPUESTO:** B0 de batch.md (donde batch inicializa `presupuesto`) no corre en sweep-execute (Delta 1). El campo `PRESUPUESTO` de este bloque reemplaza esa inicialización. B2.e de batch.md usa ese valor como guard — el outer loop de la COLA se agota primero en la mayoría de los casos, pero si `MAX_ISSUES` es menor que la longitud de INCLUDED, B2.e actúa como freno.
+
+**Agenda (plan-driven):** las issues que E1.4 Paso 3 devolvió en `SKIPPED:` NO entran a COLA; entran directo a BLOQUEADAS con resultado `skipped-by-agenda`.
 
 **Regla crítica**: BLOQUEADAS es per-repo. NO se comparte entre repos. Issue `#35` en repo-A y `#35` en repo-B son trackeos completamente independientes. Al iniciar un nuevo repo, BLOQUEADAS arranca vacío.
 
@@ -957,6 +1000,8 @@ El vocabulario de resultado (pr-created, parked-*, etc.) es idéntico al de los 
 | `parked-dep-blocked: predecesor #N aparcado (repo-scoped)` | E2.2 detectó que el predecesor ∈ BLOQUEADAS (SKIP_DEPENDENTS = true) |
 | `escalated-<zona>` | B2.a o B2.d detectó zona prohibida |
 | `no_alcanzada` | stop_at alcanzado (E2.1) antes de empezar la issue |
+| `skipped-by-agenda` | el usuario la salteó hoy con `devlead agenda skip <N>` (E1.4 Paso 3). No es un PARK: nada falló |
+| `parked-agenda-unreadable` | `agenda.sh apply` falló o no devolvió `QUEUE:` (E1.4 Paso 3) |
 
 **Resultados a nivel de repo** (no de issue individual):
 
@@ -973,6 +1018,7 @@ El vocabulario de resultado (pr-created, parked-*, etc.) es idéntico al de los 
 | `STATUS: zero-issues` | sección INCLUDED presente pero contiene `(none)` — cola vacía en E1.4 |
 | `STATUS: plan-error — empty or unrecognized output` | salida de envelope plan vacía, crash, o sin header reconocido en E1.4 |
 | `STATUS: parse-miss` | sección INCLUDED presente, no dice `(none)`, pero no se parseó ningún `#N` válido en E1.4 |
+| `STATUS: agenda-error` | `agenda.sh apply` falló o no devolvió `QUEUE:` en E1.4 Paso 3 |
 | `STATUS: auth-lost` / `STATUS: not-a-git-repo` | catástrofe de entorno mid-pipeline |
 
 Incluí siempre todas las secciones de repo (aunque estén skipped). Omití secciones de issues individuales solo si el repo no tuvo ninguna issue en cola. El resumen final siempre aparece.

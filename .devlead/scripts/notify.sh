@@ -3,14 +3,17 @@
 # to their phone for the few things that cannot wait.
 #
 # Usage:
-#   notify.sh send <need|info> <code> <message>
+#   notify.sh send <need|agenda|info> <code> <message>
 #   notify.sh list          pending entries, `need` first
 #   notify.sh ack           archive everything pending
 #
-# Two levels, on purpose:
-#   need  — an unattended run cannot continue on its own. Written to the inbox
-#           AND pushed to the phone (when a push URL is configured).
-#   info  — worth knowing, not worth interrupting for. Inbox only.
+# Three levels, on purpose:
+#   need   — an unattended run cannot continue on its own. Written to the
+#            inbox AND pushed to the phone (when a push URL is configured),
+#            with high priority.
+#   agenda — what DevLead plans to work on today. Inbox AND phone, with
+#            normal priority: it asks for nothing, the run starts anyway.
+#   info   — worth knowing, not worth interrupting for. Inbox only.
 #
 # Notifying grants nothing: this script runs no pipeline step and writes
 # nothing but its own inbox. `send` always exits 0 — a dead network or a
@@ -25,8 +28,9 @@
 # No file, wrong permissions, or a non-https URL -> nothing leaves the machine.
 #
 # Privacy: the push travels through a third-party service. By default its body
-# is only the code ("DevLead needs you: loop-paused"); the repository and the
-# message stay in the local inbox. DEVLEAD_NOTIFY_DETAIL=1 adds them.
+# is only the code ("DevLead needs you: loop-paused", "DevLead agenda: 2 repos,
+# 5 issues"); the repository and the message stay in the local inbox.
+# DEVLEAD_NOTIFY_DETAIL=1 adds them.
 #
 # Inbox format (~/.devlead/inbox.tsv, append-only, one entry per line):
 #   <utc timestamp> TAB <level> TAB <code> TAB <push outcome> TAB <repo> TAB <message>
@@ -54,9 +58,10 @@ _config_get() {
   sed -n "s/^[[:space:]]*$1=//p" "$CONFIG" | tail -n 1 | sed 's/[[:space:]]*$//'
 }
 
-# _push <code> <repo> <message> — echoes the outcome word recorded in the inbox.
+# _push <level> <code> <repo> <message> — echoes the outcome word recorded in
+# the inbox.
 _push() {
-  local code="$1" repo="$2" message="$3" url token detail perms body
+  local level="$1" code="$2" repo="$3" message="$4" url token detail perms body priority
   if [[ ! -f "$CONFIG" ]]; then echo "off"; return; fi
   perms="$(stat -c '%a' "$CONFIG" 2>/dev/null || stat -f '%Lp' "$CONFIG" 2>/dev/null || echo unknown)"
   if [[ "$perms" != "600" ]]; then echo "skipped:config-not-600"; return; fi
@@ -65,22 +70,28 @@ _push() {
   if [[ "$url" != https://* ]]; then echo "skipped:url-not-https"; return; fi
   if ! command -v curl &>/dev/null; then echo "skipped:no-curl"; return; fi
 
-  body="DevLead needs you: $code"
   detail="$(_config_get DEVLEAD_NOTIFY_DETAIL)"
-  if [[ "$detail" == "1" ]]; then
-    body="$body — $repo: $message"
+  if [[ "$level" == "agenda" ]]; then
+    # The agenda message already names its repositories, one per segment.
+    body="DevLead agenda: $code"
+    priority="default"
+    [[ "$detail" == "1" ]] && body="$body — $message"
+  else
+    body="DevLead needs you: $code"
+    priority="high"
+    [[ "$detail" == "1" ]] && body="$body — $repo: $message"
   fi
   token="$(_config_get DEVLEAD_NTFY_TOKEN)"
   local -a args=(-fsS --max-time "$PUSH_TIMEOUT_SECS" -o /dev/null
-                 -H "Title: DevLead" -H "Priority: high" --data-binary "$body")
+                 -H "Title: DevLead" -H "Priority: $priority" --data-binary "$body")
   [[ -n "$token" ]] && args+=(-H "Authorization: Bearer $token")
   if curl "${args[@]}" "$url" 2>/dev/null; then echo "sent"; else echo "failed"; fi
 }
 
 _send() {
   local level="${1:-}" code="${2:-}" message="${3:-}" repo outcome
-  if [[ "$level" != "need" && "$level" != "info" ]] || [[ -z "$code" ]]; then
-    echo "notify: usage: notify.sh send <need|info> <code> <message>" >&2
+  if [[ "$level" != "need" && "$level" != "agenda" && "$level" != "info" ]] || [[ -z "$code" ]]; then
+    echo "notify: usage: notify.sh send <need|agenda|info> <code> <message>" >&2
     return 0
   fi
   code="$(_flat "$code")"
@@ -89,7 +100,7 @@ _send() {
   repo="$(_flat "${repo:--}")"
 
   outcome="none"
-  [[ "$level" == "need" ]] && outcome="$(_push "$code" "${repo##*/}" "$message")"
+  [[ "$level" != "info" ]] && outcome="$(_push "$level" "$code" "${repo##*/}" "$message")"
 
   if ! mkdir -p "$STATE_DIR" 2>/dev/null \
      || ! printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$level" "$code" \
@@ -106,9 +117,10 @@ _list() {
   fi
   echo "STATUS: pending"
   echo "COUNT_NEED: $(grep -c $'^[^\t]*\tneed\t' "$INBOX")"
+  echo "COUNT_AGENDA: $(grep -c $'^[^\t]*\tagenda\t' "$INBOX")"
   echo "COUNT_INFO: $(grep -c $'^[^\t]*\tinfo\t' "$INBOX")"
   local level ts lvl code outcome repo message
-  for level in need info; do
+  for level in need agenda info; do
     while IFS=$'\t' read -r ts lvl code outcome repo message; do
       [[ "$lvl" == "$level" ]] || continue
       printf '[%s] %s  %s  (%s)  push=%s\n    %s\n' "$lvl" "$ts" "$code" "$repo" "$outcome" "$message"
@@ -138,6 +150,6 @@ case "${1:-}" in
   list) _list ;;
   ack)  _ack ;;
   *)
-    echo "Usage: notify.sh send <need|info> <code> <message> | list | ack" >&2
+    echo "Usage: notify.sh send <need|agenda|info> <code> <message> | list | ack" >&2
     exit 1 ;;
 esac
