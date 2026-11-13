@@ -1,0 +1,62 @@
+version: 1
+
+# Plan: Jarvis — Fase 3 de 4 (que aprenda cómo trabajás).
+# Objetivo cerrado: que DevLead acumule el *porqué* de cada día en vez de
+# pisarlo, que lea lo que le corregís en los PRs, y que convierta eso en
+# preferencias que aplican solas a los runs siguientes.
+#
+# Decisión del usuario (2026-11-13): las preferencias deducidas quedan ACTIVAS
+# al instante; DevLead las muestra y el usuario quita las que no le sirven.
+#
+# Restricciones:
+#   - Aprender nunca amplía autoridad (A3). Una preferencia es contexto de
+#     estilo para las etapas de implementación. Las puertas (open-pr.sh,
+#     merge.sh), el envelope, los gates y las zonas prohibidas no leen
+#     preferencias: verificado por test, no por prosa.
+#   - Solo el texto escrito por el usuario autenticado se captura. Un
+#     comentario de otra cuenta nunca llega a ser una preferencia.
+#   - La deducción ocurre en /arranquemos (con el usuario presente, que las ve
+#     en el standup). Los runs desatendidos solo LEEN las preferencias activas.
+#   - Todo queda local (~/.devlead/learn, ~/.devlead/journals).
+#   - plan-separation-guard sigue verde.
+#
+# FUERA DE ALCANCE: Fase 4 (plan con aprobación, discover programado,
+# multi-repo, confianza graduada). Preferencias globales entre repos.
+
+tasks:
+  - id: journal-history
+    title: "journal.sh — journal acumulativo en vez de pisar el día anterior"
+    type: feat
+    # ACEPTACIÓN:
+    #   - `journal.sh save` (entrada por stdin) archiva la entrada vigente en
+    #     el historial ANTES de reemplazarla; stdin vacío no cambia nada, exit 1.
+    #   - `journal.sh history [N]` imprime las últimas N entradas archivadas.
+    #   - `journal.sh path` imprime la misma ruta que usan hoy los comandos.
+    #   - /cerremos escribe por `journal.sh save`; /arranquemos lee el historial.
+    #   - Suite nueva test/unit-journal.sh. shellcheck limpio.
+
+  - id: learn
+    title: "learn.sh — capturar reviews del usuario, preferencias y outcomes"
+    type: feat
+    depends-on: journal-history
+    # ACEPTACIÓN (con `gh` falso):
+    #   - `learn.sh capture` guarda, deduplicado por id, los comentarios de PR
+    #     cuyo autor es el usuario autenticado; ignora los de cualquier otra
+    #     cuenta. Fallo de gh → `STATUS: gh-failed`, exit 0, nada escrito.
+    #   - `learn.sh pending` lista lo no digerido; `learn.sh digested` lo marca.
+    #   - `learn.sh pref-add <source> <text>` deja la preferencia activa;
+    #     `pref-list` muestra las activas y las quitadas; `pref-new` las no
+    #     mostradas; `pref-shown` las marca; `pref-remove <id>` la desactiva sin
+    #     borrarla (para no volver a deducirla).
+    #   - `learn.sh outcomes` resume el último registro de outcomes del repo.
+    #   - Ninguna puerta ni guard referencia learn.sh ni ~/.devlead/learn.
+    #   - Suite nueva test/unit-learn.sh. shellcheck limpio.
+
+  - id: learn-wiring
+    title: "Cablear el aprendizaje en /arranquemos y en los runs autónomos"
+    type: docs
+    depends-on: learn
+    # ACEPTACIÓN: arranquemos.md captura, deduce, activa y MUESTRA las
+    # preferencias nuevas con cómo quitarlas; batch.md y sweep-execute.md pasan
+    # las activas a las etapas de implementación; GOVERNANCE.md define que una
+    # preferencia nunca gana contra Layer-0, el envelope, un gate o una zona.

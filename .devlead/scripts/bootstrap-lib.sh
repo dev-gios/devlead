@@ -223,6 +223,13 @@ bootstrap_symlinks() {
     "$repo_dir/.devlead/scripts/branch.sh|$devlead_dir/scripts/branch.sh|x"
     "$repo_dir/.devlead/scripts/ref-resolver.sh|$devlead_dir/scripts/ref-resolver.sh|x"
     "$repo_dir/.devlead/scripts/forbidden-check.sh|$devlead_dir/scripts/forbidden-check.sh|x"
+    "$repo_dir/.devlead/scripts/open-pr.sh|$devlead_dir/scripts/open-pr.sh|x"
+    "$repo_dir/.devlead/scripts/merge.sh|$devlead_dir/scripts/merge.sh|x"
+    "$repo_dir/.devlead/scripts/notify.sh|$devlead_dir/scripts/notify.sh|x"
+    "$repo_dir/.devlead/scripts/journal.sh|$devlead_dir/scripts/journal.sh|x"
+    "$repo_dir/.devlead/scripts/learn.sh|$devlead_dir/scripts/learn.sh|x"
+    "$repo_dir/.devlead/scripts/agenda.sh|$devlead_dir/scripts/agenda.sh|x"
+    "$repo_dir/.devlead/scripts/discover-fleet.sh|$devlead_dir/scripts/discover-fleet.sh|x"
     "$repo_dir/.devlead/scripts/devlead-session.sh|$devlead_dir/scripts/devlead-session.sh|x"
     "$repo_dir/.devlead/scripts/envelope.sh|$devlead_dir/scripts/envelope.sh|x"
     "$repo_dir/.devlead/scripts/envelope-auth.sh|$devlead_dir/scripts/envelope-auth.sh|x"
@@ -312,6 +319,10 @@ bootstrap_systemd() {
     "$repo_dir/.devlead/systemd/devlead-sweep.timer|$systemd_dir/devlead-sweep.timer"
     "$repo_dir/.devlead/systemd/devlead-loop.service|$systemd_dir/devlead-loop.service"
     "$repo_dir/.devlead/systemd/devlead-loop.timer|$systemd_dir/devlead-loop.timer"
+    "$repo_dir/.devlead/systemd/devlead-fleet.service|$systemd_dir/devlead-fleet.service"
+    "$repo_dir/.devlead/systemd/devlead-fleet.timer|$systemd_dir/devlead-fleet.timer"
+    "$repo_dir/.devlead/systemd/devlead-discover.service|$systemd_dir/devlead-discover.service"
+    "$repo_dir/.devlead/systemd/devlead-discover.timer|$systemd_dir/devlead-discover.timer"
   )
 
   local _entry _src _dst _before _after
