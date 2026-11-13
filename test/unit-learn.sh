@@ -87,7 +87,7 @@ write_fixtures() {
  {"id": 103, "created_at": "2026-11-10T10:02:00Z", "user": {"login": "owner"},
   "html_url": "https://example.test/acme/repo/pull/7#discussion_r103", "path": "src/b.ts", "body": ""},
  {"id": 104, "created_at": "2026-11-10T10:03:00Z", "user": {"login": "owner"},
-  "html_url": "https://example.test/acme/repo/pull/8#discussion_r104", "path": "src/c.ts",
+  "html_url": "https://example.test/acme/repo/pull/8#discussion_r104", "path": "",
   "body": "$LONG_BODY"}
 ]
 EOF_J
@@ -273,6 +273,23 @@ learn pref-add "user" "" >/dev/null 2>&1;     check "pref-add: empty text exits 
 learn pref-add "" "something" >/dev/null 2>&1; check "pref-add: empty source exits 1" "$?" "1"
 learn pref-add "user" "$LONG_BODY" >/dev/null 2>&1; check "pref-add: a wall of text exits 1" "$?" "1"
 check "pref-add: refused calls add no row" "$(rows "$PREFS")" "3"
+
+# Text with backslashes is compared literally, so removing it sticks too.
+learn pref-add "user" 'Escape tabs as \t literal, never \d' >/dev/null 2>&1
+_bs_id="$(grep -F 'Escape tabs as' "$PREFS" | cut -f1)"
+learn pref-remove "$_bs_id" >/dev/null
+out="$(learn pref-add "rc-1" 'Escape tabs as \t literal, never \d' 2>&1)"
+contains "pref-add: a removed preference with backslashes stays removed" "$out" "STATE: removed"
+lacks    "pref-add: backslashes produce no awk warning" "$out" "warning"
+
+# A hand-edited file without its final newline: the next id is still unique
+# and the new row does not glue onto the last one.
+_before="$(rows "$PREFS")"
+printf '%s' "$(cat "$PREFS")" > "$PREFS"
+out="$(learn pref-add "user" "Describe the why in the PR body")"
+contains "pref-add: unique id after a missing final newline" "$out" "ID: p$(( _before + 1 ))"
+check    "pref-add: the row is its own line" "$(rows "$PREFS")" "$(( _before + 1 ))"
+check    "pref-add: every row still has six fields" "$(awk -F'\t' '{print NF}' "$PREFS" | sort -u)" "6"
 
 # ===========================================================================
 # outcomes — read-only summary of what sweep.sh measured

@@ -85,7 +85,7 @@ _rewrite() {
     echo "learn: cannot create a temp file in $STATE_DIR" >&2
     return 1
   fi
-  if ! awk -F'\t' -v OFS='\t' "${vars[@]}" "$prog" "$file" > "$tmp" || ! mv -f "$tmp" "$file"; then
+  if ! awk -F'\t' -v OFS='\t' ${vars[@]+"${vars[@]}"} "$prog" "$file" > "$tmp" || ! mv -f "$tmp" "$file"; then
     rm -f "$tmp"
     echo "learn: cannot rewrite $file" >&2
     return 1
@@ -118,7 +118,7 @@ _capture() {
   local inline issue reviews
   if ! inline="$(gh api "repos/{owner}/{repo}/pulls/comments?sort=created&direction=desc&per_page=$CAPTURE_PAGE" \
         -q ".[] | select(.user.login == \"$me\") | select((.body // \"\") != \"\")
-            | [(\"rc-\" + (.id|tostring)), .created_at, \"inline\", .html_url, (.path // \"-\"), .body] | @tsv" 2>/dev/null)" \
+            | [(\"rc-\" + (.id|tostring)), .created_at, \"inline\", .html_url, (if (.path // \"\") == \"\" then \"-\" else .path end), .body] | @tsv" 2>/dev/null)" \
      || ! issue="$(gh api "repos/{owner}/{repo}/issues/comments?sort=created&direction=desc&per_page=$CAPTURE_PAGE" \
         -q ".[] | select(.user.login == \"$me\") | select(.html_url | contains(\"/pull/\")) | select((.body // \"\") != \"\")
             | [(\"ic-\" + (.id|tostring)), .created_at, \"comment\", .html_url, \"-\", .body] | @tsv" 2>/dev/null)" \
@@ -190,7 +190,9 @@ _pref_add() {
   fi
   _ensure_state || return 1
   if [[ -f "$PREFS" ]]; then
-    existing="$(awk -F'\t' -v t="$text" 'tolower($6) == tolower(t) { print $1 "\t" $3; exit }' "$PREFS")"
+    # The text travels through the environment: `awk -v` would interpret
+    # backslash escapes in it and never match the row stored literally.
+    existing="$(LEARN_TEXT="$text" awk -F'\t' 'tolower($6) == tolower(ENVIRON["LEARN_TEXT"]) { print $1 "\t" $3; exit }' "$PREFS")"
     if [[ -n "$existing" ]]; then
       # Already known. A removed one stays removed: the user took it out.
       echo "STATUS: duplicate"
@@ -199,7 +201,14 @@ _pref_add() {
       return 0
     fi
   fi
-  id="p$(( $( [[ -f "$PREFS" ]] && wc -l < "$PREFS" || echo 0 ) + 1 ))"
+  # Next id = highest existing + 1 (not a line count: a hand-edited file may
+  # lack its final newline, which is also repaired here before appending).
+  local last=0
+  if [[ -s "$PREFS" ]]; then
+    last="$(awk -F'\t' '{ n = substr($1, 2) + 0; if (n > m) m = n } END { print m + 0 }' "$PREFS")"
+    [[ -z "$(tail -c 1 "$PREFS")" ]] || printf '\n' >> "$PREFS"
+  fi
+  id="p$(( last + 1 ))"
   if ! printf '%s\t%s\tactive\tunseen\t%s\t%s\n' "$id" "$(date -u +%FT%TZ)" "$source" "$text" >> "$PREFS"; then
     echo "learn: cannot write $PREFS" >&2
     return 1
