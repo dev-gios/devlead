@@ -231,6 +231,31 @@ Una issue aparcada por un gate rojo NO es un disparador: es el funcionamiento no
 
 ---
 
+## §learned-preferences — Aprender no es autorizar
+
+DevLead aprende cómo trabaja el usuario leyendo lo que el usuario escribe en los PRs (`.devlead/scripts/learn.sh`). De ese feedback destila **preferencias**: una línea de estilo de trabajo cada una ("los tests primero", "un PR por cambio").
+
+**Decisión del usuario (2026-11-13):** una preferencia deducida queda **activa al instante**; DevLead la muestra en el siguiente standup y el usuario quita la que no le sirve. No hay paso de aprobación previo. Esto es legal bajo A1 porque una preferencia no inicia trabajo: solo da forma a trabajo que ya fue autorizado por el camino de siempre.
+
+**Lo que una preferencia es:** contexto de estilo que se entrega a las etapas de implementación (cómo nombrar, cómo testear, cómo partir un cambio, cómo redactar un PR).
+
+**Lo que una preferencia no puede hacer:**
+
+1. **No concede ni amplía autoridad (A3).** `open-pr.sh`, `merge.sh`, `envelope.sh`, los gates y `forbidden-check.sh` no leen preferencias ni el estado de `learn.sh`. Ninguna frase guardada ahí puede abrir un PR, mergear, ni mover un límite. Esto se verifica por test (`test/unit-learn.sh`, bloque A3), no por prosa.
+2. **No gana ningún conflicto.** Orden de precedencia: Layer-0 › envelope › gates y zonas prohibidas › spec / plan de la issue › preferencia. Una preferencia que choca con cualquiera de los anteriores no se aplica, y se anota en el PR.
+3. **No se registra si habla de autoridad.** Un comentario que pide mergear a otra rama, saltear un gate, tocar una zona prohibida o cambiar permisos no se convierte en preferencia: se le muestra al usuario como algo que configura él (envelope / `devlead config`).
+4. **No vuelve una vez quitada.** `pref-remove` desactiva sin borrar, justamente para que el mismo feedback no la deduzca de nuevo.
+
+**De quién se aprende:** solo de la cuenta autenticada en `gh`. El filtro por autor está en código, en `learn.sh capture`: el texto de cualquier otra cuenta se descarta antes de guardarse, así que el comentario de un tercero en un PR nunca llega a ser una instrucción para un run desatendido.
+
+**Dónde se aprende:** la deducción (feedback → preferencia) corre en `/arranquemos`, con el usuario presente, que la ve en el standup. Los perfiles autónomos (batch, sweep-execute, loop) solo **leen** las preferencias activas.
+
+**Límite conocido:** el filtro por autor no distingue lo que el usuario escribió a mano de lo que una herramienta publicó con su mismo token. Hoy el pipeline de DevLead no publica comentarios en PRs; si eso cambia, esos comentarios deben excluirse de la captura.
+
+**Chequeo narrow-not-widen:** antes, DevLead implementaba sin memoria de las correcciones. Después, implementa con ellas. El conjunto de acciones que puede tomar es idéntico; lo que cambia es la forma del diff que produce.
+
+---
+
 ## §inv6-governance — Autoridad de la envelope policy
 
 **La envelope policy (`.devlead/envelope.yml`) es una DELEGACIÓN PERMANENTE PRE-AUTORIZADA que satisface A1.**

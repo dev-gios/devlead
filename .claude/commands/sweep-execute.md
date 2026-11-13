@@ -607,6 +607,8 @@ Ejecutá los sub-pasos B2.a → B2.e de `batch.md` para ESTA issue. Para el deta
 
 **Herencia de DOS saltos (no asumas que una sola referencia alcanza):** este archivo (`sweep-execute.md`) NO referencia `arranquemos.md` Step 8.3-SDD directamente. E2.3 referencia `batch.md` B2.a→B2.e; es `batch.md` B2.b (Paso 8.3, ver arriba en ese archivo) quien resuelve el no-spec branch corriendo `Step 8.3-SDD` por nombre. El camino completo es: `sweep-execute.md` E2.3 → `batch.md` B2.b → `arranquemos.md` Step 8.3-SDD. `SDD_MODE=autonomous` se fija en E0 (este archivo, Delta 1 — skip B0 completo, sin pausa) y sobrevive el salto sin volver a declararse: `batch.md` B2.b nunca redefine `SDD_MODE`, solo lo hereda de quien lo invoca (acá, sweep-execute; en invocación directa de batch, `batch.md` mismo lo fija en `autonomous` vía su propio Delta 1 de B0).
 
+**Preferencias aprendidas (heredadas por el mismo camino).** El Step 8.3 de `arranquemos.md` abre leyendo `bash ~/.devlead/scripts/learn.sh pref-list` y aplica las preferencias activas del usuario a la implementación de cada issue. Un run desatendido solo LEE preferencias: nunca corre `learn.sh capture`, `pref-add` ni `pref-remove`. Una preferencia es estilo, no autoridad — no levanta un PARK, no cambia la cola ni el techo de merge (GOVERNANCE.md §learned-preferences).
+
 **Deltas que /sweep-execute aplica ON TOP del pipeline B2** (y nada más):
 
 **Delta 1 — Skip B0 completo.**

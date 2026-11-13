@@ -264,6 +264,26 @@ Los units de usuario de systemd no heredan el PATH interactivo. El sweep invoca 
 
 ---
 
+## Aprendizaje — DevLead aprende de tus reviews (`learn.sh`)
+
+DevLead aprende cómo trabajás leyendo lo que escribís en los PRs:
+
+1. Comentás un PR como siempre (inline, en la conversación, o en el resumen de una review).
+2. En el siguiente `/arranquemos`, `learn.sh capture` guarda tus comentarios nuevos — solo los de tu cuenta — y DevLead destila de ellos preferencias de una línea.
+3. Las preferencias quedan **activas al instante** y aparecen en el standup ("Aprendí de tus reviews"). Si una no va: "quitá p3".
+4. Todo run posterior — `/arranquemos`, `/batch`, `/sweep-execute`, el loop nocturno — las aplica al implementar.
+
+| Comando | Qué hace |
+|---|---|
+| `learn.sh pref-list` | Preferencias activas y quitadas |
+| `learn.sh pref-add user "..."` | Agregar una a mano |
+| `learn.sh pref-remove p3` | Quitar una (no se vuelve a deducir) |
+| `learn.sh outcomes` | Resumen de cómo terminaron los PRs de DevLead |
+
+Todo vive en `~/.devlead/learn/<repo-key>/`, local y por repo. Una preferencia es estilo, nunca autoridad: no puede mergear, saltear un gate ni mover un límite (`GOVERNANCE.md §learned-preferences`).
+
+El journal también es acumulativo: `/cerremos` archiva la entrada anterior en vez de pisarla (`journal.sh`), y `/arranquemos` lee los últimos días para detectar lo que se repite.
+
 ## Avisos — bandeja local y push al teléfono (`notify.sh`)
 
 Un run desatendido que no puede seguir solo avisa por `~/.devlead/scripts/notify.sh`. Todo queda en la bandeja local `~/.devlead/inbox.tsv`, que `/arranquemos` muestra a la mañana ("Mientras no estabas") y archiva. Solo los avisos de nivel `need` van además al teléfono. La lista de qué dispara un `need` está en `.claude/GOVERNANCE.md §escalation-channel`.

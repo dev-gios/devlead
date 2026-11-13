@@ -322,6 +322,20 @@ for _f in .devlead/scripts/open-pr.sh .devlead/scripts/merge.sh .devlead/scripts
     "$(grep -c -E 'learn\.sh|/learn/|DEVLEAD_LEARN_DIR|prefs\.tsv' "$REPO_ROOT/$_f")" "0"
 done
 
+# ===========================================================================
+# wiring — the commands read preferences; unattended ones never write them
+# ===========================================================================
+_cmds="$REPO_ROOT/.claude/commands"
+check "wiring: /arranquemos captures feedback" "$(grep -c 'learn.sh capture' "$_cmds/arranquemos.md")" "1"
+contains "wiring: the implementation step reads preferences" "$(sed -n '/^### Step 8.3 — Pipeline principal/,/^### Step 8.3-SDD/p' "$_cmds/arranquemos.md")" "learn.sh pref-list"
+contains "wiring: batch points at the preferences step" "$(cat "$_cmds/batch.md")" "learn.sh pref-list"
+contains "wiring: sweep-execute points at the preferences step" "$(cat "$_cmds/sweep-execute.md")" "learn.sh pref-list"
+for _c in batch.md sweep-execute.md sweep-discover.md; do
+  check "wiring: $_c never runs a learn.sh write" \
+    "$(grep -c -E 'bash [^ ]*learn\.sh (capture|digested|pref-add|pref-remove|pref-shown)' "$_cmds/$_c")" "0"
+done
+contains "wiring: GOVERNANCE defines the limits of a preference" "$(cat "$REPO_ROOT/.claude/GOVERNANCE.md")" "§learned-preferences"
+
 echo
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
 [[ $FAIL_COUNT -eq 0 ]]
