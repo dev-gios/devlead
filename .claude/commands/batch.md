@@ -149,7 +149,7 @@ Cada sub-paso es un gate. Si alguno retorna blocked/error → interceptá la se�
 
 Paso 8.5 (abrir el PR) NO se ejecuta acá — se ejecuta en B2.d después del post-check.
 
-Ningún paso de merge ni cierre de issue se ejecuta en batch — el pipeline termina con el PR abierto por `open-pr.sh` (B2.d). (El único merge que existe en DevLead es el Delta 6 de `sweep-execute.md`, por `merge.sh`, y solo si el envelope concede `merge.mode: integration-branch`.) Si al leer `arranquemos.md` encontrás un paso de merge o `gh issue close`, IGNORALO: el merge es del usuario, siempre (Inv 3). (Ver GOVERNANCE.md §A3.)
+Ningún paso de merge ni cierre de issue se ejecuta en batch — el pipeline termina con el PR abierto por `open-pr.sh` (B2.d). (Los únicos merges que existen en DevLead pasan por `merge.sh` — el Delta 6 de `sweep-execute.md` y el Paso 10 de `arranquemos.md` — y solo si el envelope concede `merge.mode: integration-branch`.) Si al leer `arranquemos.md` encontrás un paso de merge o `gh issue close`, IGNORALO: el merge es del usuario, siempre (Inv 3). (Ver GOVERNANCE.md §A3.)
 
 ---
 

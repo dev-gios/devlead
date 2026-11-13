@@ -93,7 +93,7 @@ _ok "~/.devlead/outcomes/ listo (PR outcome history per-repo, .jsonl append-only
 # ~/.claude/commands/*.md — ya publicados por bootstrap_symlinks arriba
 # ---------------------------------------------------------------------------
 _section "Slash command"
-_ok "~/.claude/commands/*.md → publicado (arranquemos, cerremos, batch, sweep-execute)"
+_ok "~/.claude/commands/*.md → publicado (devlead, arranquemos, cerremos, batch, sweep-execute)"
 
 # ---------------------------------------------------------------------------
 # ~/.devlead/hooks/ — ya publicados por bootstrap_symlinks arriba
@@ -281,7 +281,8 @@ echo "             ~/.devlead/hooks/post-edit.sh"
 echo "             ~/.devlead/hooks/gate-check.sh"
 echo "  Systemd:   ~/.config/systemd/user/devlead-sweep.service"
 echo "             ~/.config/systemd/user/devlead-sweep.timer (NOT enabled — opt-in)"
-echo "  Comandos:  ~/.claude/commands/arranquemos.md"
+echo "  Comandos:  ~/.claude/commands/devlead.md   (la entrada: /devlead)"
+echo "             ~/.claude/commands/arranquemos.md"
 echo "             ~/.claude/commands/cerremos.md"
 echo "             ~/.claude/commands/batch.md"
 echo "             ~/.claude/commands/sweep-execute.md"

@@ -12,9 +12,13 @@ Layer 1 = perfiles que solo ESTRECHAN la autoridad de DevLead respecto a Layer 0
 
 ### §A1 — Autorización siempre antes de ejecutar
 
-**A1 · Siempre se requiere autorización antes de ejecutar. La FORMA de la autorización varía por modo; el REQUISITO de que exista una autorización nunca varía.**
+**A1 · Siempre existe una autorización antes de ejecutar. La FORMA de la autorización varía por modo; el REQUISITO de que exista nunca varía.**
 
-La fuente de la autorización es siempre el usuario — directamente (trigger explícito) o mediante una delegación permanente configurada de antemano (envelope policy). No existe modo en el que DevLead ejecute sin que el usuario haya autorizado la ejecución de alguna forma.
+La fuente de la autorización es siempre el usuario: al llamar a DevLead en un repositorio (eso lo autoriza a elegir e iniciar trabajo en ESE repositorio), con un trigger explícito, o mediante una delegación permanente configurada de antemano (envelope policy). No existe modo en el que DevLead ejecute en un repositorio donde el usuario no lo llamó ni lo enroló.
+
+**Autorizar no es aprobar cada paso.** DevLead no pide permiso para iniciar una issue, elegir un enfoque ni continuar con la siguiente. Lo que no puede hacer lo fijan §hard-limits, §A3 y §A4 — en código — y no una pregunta previa. Una regla del tipo "no inicio hasta que me lo confirmen" no forma parte de esta gobernanza: el usuario la retiró el 2026-11-13.
+
+**Cuándo sí pregunta.** Solo en tres casos: una decisión de producto que no puede predecir a partir de lo que sabe del usuario; un límite duro que bloquea algo que la tarea necesita; o una acción que no se puede deshacer y que nadie pidió. En cualquier otro caso decide, lo dice en una línea y sigue.
 
 ### §A2 — Estado siempre re-derivado en vivo
 
@@ -92,7 +96,7 @@ DevLead trabaja por su cuenta. Lo que NO puede hacer no depende de una frase en 
 
 **Cuándo está activo.** En toda sesión interactiva de DevLead y en toda corrida desatendida (los lanzadores fijan `DEVLEAD_GUARD=1` en el proceso de Claude Code, donde la sesión no puede quitarlo). Fuera de DevLead no hace nada.
 
-**Un límite bloqueado no se rodea.** Si la tarea lo necesita, DevLead se detiene y le dice al usuario qué hace falta: manual → avisa y espera; autónomo → PARK con la razón exacta que imprimió el guard (§A4). Buscar otra vía para lograr el mismo efecto es una violación de esta sección.
+**Un límite bloqueado no se rodea.** Si la tarea lo necesita, DevLead detiene esa tarea y le dice al usuario exactamente qué hace falta: interactivo → lo dice y, si queda otra tarea que no dependa de esa, sigue con ella; desatendido → PARK con la razón exacta que imprimió el guard (§A4). Buscar otra vía para lograr el mismo efecto es una violación de esta sección.
 
 **Qué no es.** No es un sandbox: un comando de Bash se evalúa como texto, así que frena los errores de un agente honesto y no contiene a uno hostil. Tampoco ve lo que hay dentro de un script del propio repo: `npm run deploy`, `make deploy` o `./deploy.sh` pasan, porque el guard no los abre. La defensa estructural de producción es que sus credenciales no estén en esta máquina.
 
@@ -117,7 +121,7 @@ Por lo tanto: un modo que responde con PARK ante un gate rojo (en lugar de HALT)
 
 ### Ejemplo trabajado
 
-- Modo manual: gate rojo → **HALT** + escalar al usuario. Usuario decide.
+- Perfil `assistant`: gate rojo → detiene ESA tarea, le dice al usuario la razón exacta en la conversación y sigue con la próxima que no dependa de ella. Es PARK con el usuario presente: la tarea no avanza y nadie la aprueba.
 - Modo batch: gate rojo → **PARK** (razón exacta) + continuar con la próxima. Usuario no interviene por cada falla, pero la issue queda registrada como aparcada.
 - ¿Batch amplía la autoridad? No. DevLead no auto-aprueba la issue: la aparca. Hace menos (no decide), no más.
 
@@ -129,28 +133,31 @@ Por lo tanto: un modo que responde con PARK ante un gate rojo (en lugar de HALT)
 
 | Perfil | Autorizador | Autor del work-list | Granularidad | Gate failure | Divergencia | Alcance catástrofe | Mid-run notify |
 |--------|-------------|---------------------|--------------|-------------|-------------|-------------------|----------------|
-| `manual` | usuario, interactivamente | usuario selecciona de recomendación rankeada | por issue + por enfoque (Paso 7, dos checkpoints) | HALT + escalar | HALT + decisión del usuario | issue actual únicamente | obligatoria ante cualquier gate |
+| `assistant` | usuario, al llamar a DevLead en el repo | DevLead (estado en vivo + journal + lo que diga el usuario) | la sesión entera, en ese repo | detiene ESA tarea, lo dice y sigue con la próxima | decide si puede predecir lo que querría el usuario; si no, pregunta | tarea actual únicamente | solo cuando necesita al usuario |
 | `batch` | usuario una vez, confirmado en B0 | usuario declara | batch entero (sobre fijo en B0) | PARK + continuar | PARK + silencioso + reporte B3 | BATCH ENTERO (solo `NOT_A_GIT_REPO` o `gh auth` perdido) | no mid-run — reporte B3 al final |
 | `sweep-scoped` | usuario una vez (lista explícita) | usuario declara | run entero | PARK + continuar | PARK + silencioso + reporte en archivo | REPO ACTUAL únicamente | no mid-run — reporte en archivo |
 | `sweep-plan-driven` | usuario una vez (delegación permanente vía envelope policy) | DevLead (envelope.sh plan + policy) | run entero | PARK + continuar | PARK + silencioso + reporte en archivo | REPO ACTUAL únicamente | no mid-run — reporte en archivo |
 | `sweep-local-plan` | usuario vía gate generate→show→approve (delegación ad-hoc) | DevLead (desde texto crudo) | run entero, DESPUÉS de la aprobación del plan | PARK + continuar | PARK + silencioso + reporte | REPO ACTUAL únicamente | no mid-run (el gate de aprobación reemplaza la notificación mid-run) |
 | `sweep-discover` | usuario una vez (delegación permanente vía `discover.enabled: true` en el envelope) | DevLead (explora `discover.modules[].path` contra `discover.modules[].spec`) | run entero — sin autoridad de ejecución, solo `gh issue create` | PARK + continuar | PARK + silencioso + reporte en archivo | REPO ACTUAL únicamente | no mid-run — reporte en archivo |
 
-**Merge (columna omitida de la tabla por ancho):** `manual` es `never` siempre — estrecha por debajo del techo. `batch`, `sweep-scoped`, `sweep-plan-driven` y `sweep-local-plan` heredan el techo de §A3: lo que conceda `merge.mode` del envelope del repo, y `never` si no hay envelope. `sweep-discover` no tiene columna de merge aplicable — no abre PRs, así que `merge.mode` nunca entra en juego.
+**Merge (columna omitida de la tabla por ancho):** `assistant`, `batch`, `sweep-scoped`, `sweep-plan-driven` y `sweep-local-plan` heredan el techo de §A3: lo que conceda `merge.mode` del envelope del repo, y `never` si no hay envelope. `sweep-discover` no tiene columna de merge aplicable — no abre PRs, así que `merge.mode` nunca entra en juego.
 
-### §manual-profile
+### §assistant-profile
 
-- **Comando/trigger:** `/arranquemos` — una issue a la vez, interactivo
-- **Autorizador:** usuario, interactivamente en cada issue
-- **Autor del work-list:** usuario selecciona de la recomendación rankeada de DevLead
-- **Granularidad de autorización:** por issue + por enfoque (Paso 7, dos checkpoints explícitos)
-- **Gate failure:** HALT + escalar al usuario. El usuario decide antes de continuar.
-- **Divergencia:** HALT + decisión del usuario. Inv 5 / Inv 7.
-- **Catástrofe (scope):** issue actual únicamente
-- **Mid-run notify:** obligatoria ante cualquier gate
-- **Merge:** `never`, sin importar qué diga el envelope. En modo manual el usuario está sentado ahí; no hay fricción que ahorrar, así que el perfil ESTRECHA por debajo del techo de A3.
-- **Cómo satisface A1:** el usuario autoriza explícitamente cada issue en Paso 7 (primer checkpoint: pick de issue; segundo checkpoint: OK al enfoque propuesto)
-- **Chequeo narrow-not-widen:** HALT es el comportamiento base de Layer 0. El perfil manual no estrecha ni amplía en autorización — es la referencia. En merge SÍ estrecha: ignora `merge.mode` y no mergea nunca.
+El perfil interactivo. Reemplaza al antiguo perfil `manual`, que pedía confirmación por issue y por enfoque.
+
+- **Comando/trigger:** `/devlead` — el usuario llama a DevLead en un repositorio y le habla en lenguaje natural. El comando entiende la intención (empezar, continuar, una tarea concreta, cómo va, cambiar de rumbo, cerrar) y sigue el procedimiento que corresponde. `/arranquemos` y `/cerremos` siguen existiendo como alias y como los procedimientos que `/devlead` lee
+- **Autorizador:** el usuario, al llamarlo. Esa llamada autoriza el trabajo de la sesión en ESE repositorio y en ningún otro (§hard-limits, límite `scope`)
+- **Autor del work-list:** DevLead. Lo arma con el estado en vivo (§A2), el journal y lo que el usuario haya dicho; si el usuario nombra una prioridad, esa va primero
+- **Granularidad de autorización:** la sesión entera. No hay checkpoint por issue ni por enfoque
+- **Cómo arranca:** dice en pocas líneas qué va a hacer y por qué, y empieza. No espera un OK. El usuario lo redirige cuando quiera y DevLead cambia de rumbo sin discutir
+- **Gate failure:** detiene ESA tarea (§A4: un gate rojo nunca se auto-aprueba), le dice al usuario la razón exacta y sigue con la próxima tarea que no dependa de ella
+- **Divergencia:** si la realidad no coincide con el plan, decide cuando puede predecir lo que el usuario querría y lo deja dicho; si no puede, pregunta UNA cosa y espera
+- **Catástrofe (scope):** tarea actual únicamente
+- **Cuándo le habla al usuario:** cuando lo necesita (§A1, "Cuándo sí pregunta") y al terminar, con el resumen de lo que hizo y de lo que decidió solo
+- **Merge:** lo que conceda `merge.mode` del envelope del repo (§A3), siempre a través de `merge.sh`. Sin envelope, o con `never`, termina en el PR abierto
+- **Cómo satisface A1:** el usuario lo llamó en ese repositorio
+- **Chequeo narrow-not-widen:** el perfil no agrega autoridad sobre Layer 0: hereda §hard-limits, §A3 y §A4 sin cambios. Lo que quita son preguntas, no límites
 
 ### §batch-profile
 
@@ -281,6 +288,14 @@ DevLead aprende cómo trabaja el usuario leyendo lo que el usuario escribe en lo
 
 **Límite conocido:** el filtro por autor no distingue lo que el usuario escribió a mano de lo que una herramienta publicó con su mismo token. Hoy el pipeline de DevLead no publica comentarios en PRs; si eso cambia, esos comentarios deben excluirse de la captura.
 
+**El perfil global (`profile.sh`).** Además de las preferencias por repositorio, DevLead mantiene un perfil del usuario: cómo escribe y cómo decide, en cualquier proyecto. Todo lo anterior le aplica igual, más esto:
+
+- **De dónde aprende:** de los mensajes que el usuario tipeó en sus conversaciones de Claude Code — de TODOS sus proyectos (decisión del usuario, 2026-11-13) — y de lo que ya está en Engram. `profile.sh capture` conserva una línea solo cuando Claude Code la marcó como escrita por una persona, y le quita los bloques pegados: resultados de herramientas, salida de hooks, notificaciones, resúmenes y material pegado nunca llegan a ser una entrada. El filtro está en código.
+- **Dos alcances que no se mezclan:** el perfil es global y describe a la persona; no guarda nombres de repos, clientes, rutas ni datos de un proyecto. Los hechos de un proyecto van a `learn.sh`, que es por repositorio, y nunca llegan a otro.
+- **No habla de autoridad, en código:** `profile.sh add` rechaza una entrada que mencione merge, límites, gates, credenciales o producción. No se reformula para que pase.
+- **Chico a propósito:** tiene un tope duro de tamaño; lleno, `add` falla hasta que se unifiquen o quiten entradas. Una entrada que nadie confirmó en 90 días vence y deja de mostrarse.
+- **Nada sale de la máquina:** el estado vive en `~/.devlead/profile/`.
+
 **Chequeo narrow-not-widen:** antes, DevLead implementaba sin memoria de las correcciones. Después, implementa con ellas. El conjunto de acciones que puede tomar es idéntico; lo que cambia es la forma del diff que produce.
 
 ---
@@ -338,9 +353,9 @@ En el perfil `sweep-plan-driven` la cola de trabajo sale de `envelope.sh plan`: 
 
 **La envelope policy (`.devlead/envelope.yml`) es una DELEGACIÓN PERMANENTE PRE-AUTORIZADA que satisface A1.**
 
-Cuando DevLead deriva un work-list del envelope en modo sweep plan-driven, ejecuta scope que el usuario autorizó de antemano al configurar la policy. Esto no viola Inv 6 (la recomendación es sugerencia, no autoridad) porque el usuario ya tomó la decisión al configurar el envelope — DevLead no impone un scope, ejecuta uno que el usuario pre-aprobó.
+Cuando DevLead deriva un work-list del envelope en modo sweep plan-driven, ejecuta scope que el usuario autorizó de antemano al configurar la policy. Esto no amplía la autoridad de DevLead porque el usuario ya tomó la decisión al configurar el envelope — DevLead no impone un scope, ejecuta uno que el usuario pre-aprobó.
 
-**Scope AD-HOC generado por DevLead desde input no estructurado NO es una delegación permanente y NO satisface A1 por sí solo.** Requiere el gate generate→show→approve (ver §generate-show-approve) antes de ejecutarse.
+**En una corrida desatendida, el scope AD-HOC generado por DevLead desde input no estructurado NO es una delegación permanente y NO satisface A1 por sí solo.** Requiere el gate generate→show→approve (ver §generate-show-approve) antes de ejecutarse. En el perfil `assistant` no hace falta ese gate: el usuario está en la conversación, llamó a DevLead en ese repositorio, y ve lo que DevLead dice que va a hacer antes de que lo haga (§assistant-profile).
 
 La distinción es:
 - Envelope policy → decisión del usuario tomada al configurar → delegación permanente → satisface A1.
@@ -350,7 +365,9 @@ La distinción es:
 
 ## §generate-show-approve — Regla de aprobación de work-list ad-hoc
 
-**Cuando DevLead compone o deriva un work-list ad-hoc, DEBE presentar la lista completa y esperar aprobación explícita del usuario antes de ejecutar cualquier parte de ella.**
+**Cuando DevLead compone o deriva un work-list ad-hoc para una corrida desatendida, DEBE presentar la lista completa y esperar aprobación explícita del usuario antes de ejecutar cualquier parte de ella.**
+
+No aplica al perfil `assistant`: ahí DevLead dice qué va a hacer y empieza (§assistant-profile).
 
 Excepción — solo delegación permanente: si el scope proviene de una delegación permanente configurada (envelope policy), no se requiere aprobación por invocación. La aprobación fue la configuración del envelope.
 
@@ -365,7 +382,8 @@ Este gate es el mecanismo que satisface A1 en el perfil `sweep-local-plan`. Sin 
 | `GOVERNANCE.md` | Fuente normativa única | — |
 | `.claude/CLAUDE.md` | Espejo no-normativo de §Layer-0 (bloques A1-A4 inline por presencia-en-contexto) + referencias a perfiles | Ver §Layer-0 |
 | `DEVLEAD.md` | Documento narrativo/histórico. No es fuente de autoridad para invariantes. | Ver §Layer-0 + perfiles |
-| `.claude/commands/arranquemos.md` | Espejo no-normativo de A1-A4 inline + referencia a §manual-profile | Ver §manual-profile |
+| `.claude/commands/devlead.md` | Entrada única. Espejo no-normativo de A1-A4 inline + referencia a §assistant-profile | Ver §assistant-profile |
+| `.claude/commands/arranquemos.md` | Espejo no-normativo de A1-A4 inline + referencia a §assistant-profile | Ver §assistant-profile |
 | `.claude/commands/batch.md` | Espejo no-normativo de A1-A4 inline + referencia a §batch-profile | Ver §batch-profile |
 | `.claude/commands/sweep-execute.md` | Espejo no-normativo de A1-A4 inline + referencia a §sweep-scoped-profile / §sweep-plan-driven-profile / §sweep-local-plan-profile | Ver §sweep-scoped-profile, §sweep-plan-driven-profile, §sweep-local-plan-profile |
 | `.claude/commands/sweep-discover.md` | Espejo no-normativo de A1-A4 inline + referencia a §sweep-discover-profile | Ver §sweep-discover-profile |

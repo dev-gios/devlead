@@ -7,9 +7,9 @@
 
 ## 1. Qué es DevLead (en una frase)
 
-DevLead es el **front door** del día: un orquestador con el que arrancas la jornada, que te dice qué tienes, qué quedó en camino y qué te conviene abordar, y que **despacha** el trabajo al pipeline que ya usas a diario (rama → SDD → implementación → tests → Chrome → qa gates → PR). No pica código él mismo: delega.
+DevLead es el **front door** del día: un asistente con el que arrancas la jornada, que ve qué tienes y qué quedó en camino, decide qué abordar, te lo dice y **despacha** el trabajo al pipeline que ya usas a diario (rama → SDD → implementación → tests → Chrome → qa gates → PR). No pica código él mismo: delega.
 
-La interacción objetivo: dices *"arranquemos el día"*, te da el standup + recomendación; eliges; él ejecuta.
+La interacción objetivo: dices *"arranquemos el día"*, te da el standup y el plan, y empieza; si tienes otra prioridad se lo dices y cambia.
 
 ---
 
@@ -26,9 +26,9 @@ Estas son las que NO se redecidan al construir. Cada una tiene su porqué para q
    - *El por qué* (por qué paraste ayer, qué decidiste, blockers, próximo paso mental) → **sí se guarda** en un journal local. Ese contexto no vive en ningún otro lado.
    - *La referencia / intención* (FRD, DDT, criterios de aceptación, bundles de Claude Design) → estable; se carga **por-issue y on-demand**, nunca precargada. Detalle en la sección 5.
 
-4. **Un solo checkpoint humano:** DevLead arma el plan y te lo presenta; tú confirmas *dónde arrancar*; de ahí es hands-off hasta que vuelven los PRs. El control está al inicio (apruebas el plan) y al final (revisas PRs), no por tarea.
+4. **Sin checkpoint de arranque** (revisada el 2026-11-13; antes: "un solo checkpoint humano"): DevLead arma el plan, te lo dice y empieza. El control está en los límites duros (`guard.sh`), en el envelope y en la revisión de los PRs, no en una confirmación previa.
 
-5. **El merge siempre es tuyo.** DevLead nunca hace auto-merge a `dev`. Cada issue cierra en un PR.
+5. **El merge lo concedes tú.** DevLead mergea solo lo que permita `merge.mode` de tu envelope, por `merge.sh`, y nunca a la rama por defecto. Con el valor por defecto (`never`) cada issue cierra en un PR abierto.
 
 6. **DevLead escala de vuelta cuando la realidad diverge del plan**, aunque hayas dado "arranca". Autorizas un plan, no un cheque en blanco contra sorpresas.
 
@@ -38,15 +38,18 @@ Estas son las que NO se redecidan al construir. Cada una tiene su porqué para q
 
 ## 3. Cómo funciona — ciclo del día (modo single-task)
 
-### Al arrancar (`/arranquemos`)
+### Al empezar (`/devlead`)
+
+Un solo comando para todo. Después le hablas en lenguaje natural y él entiende la intención: empezar el día, continuar lo de ayer, hacer una tarea concreta, decir cómo va, cambiar de rumbo o cerrar. `/arranquemos` y `/cerremos` siguen existiendo como alias.
+
 1. Re-deriva el estado en vivo: ramas activas, PRs abiertos, estado de CI, issues asignadas.
 2. Lee el journal local para recuperar el *porqué* de lo que quedó a medias.
 3. Arma un **standup corto**: en camino / listo para review / nuevo entrante.
-4. Te pregunta cuántas horas tienes hoy (para calibrar la recomendación).
-5. **Recomienda** qué abordar — sugerencia rankeada, sin auto-arrancar nada.
+4. Estima la capacidad del día con el calendario y con lo que le hayas dicho; no te lo pregunta.
+5. **Dice qué va a hacer** — el plan de hoy, con su porqué y su enfoque — **y empieza**.
 
-### Al elegir tarea
-6. Esperas tu OK. DevLead confirma el plan en una línea ("voy con SDD porque toca 3 módulos, ¿ok?") para que vetes el *enfoque*, no solo el resultado.
+### Al trabajar
+6. No espera un OK por issue ni por enfoque. Si tienes otra prioridad se lo dices y cambia de rumbo. Solo te pregunta ante una decisión de producto que no puede predecir, un límite duro que bloquea algo necesario, o una acción irreversible que nadie pidió (`.claude/GOVERNANCE.md §A1`).
 7. Despacha el pipeline: **rama desde el tag más cercano de dev → SDD si aplica (consume la referencia de la issue) → implementación → tests (hook) → Chrome MCP (E2E; diff visual contra el diseño si es front) → qa gates → PR.**
 
 ### Durante
@@ -113,7 +116,7 @@ La issue **apunta a su spec por path relativo** (línea `Spec: docs/facturacion/
 
 | Componente | Tipo | Ubicación | Qué hace |
 |---|---|---|---|
-| `/arranquemos` | Slash command | `.claude/commands/` | Entry point del día: orquesta estado → journal → standup → recomendación |
+| `/arranquemos` | Slash command | `.claude/commands/` | Entry point del día: orquesta estado → journal → standup → plan → ejecución |
 | Persona DevLead | CLAUDE.md | `.claude/CLAUDE.md` | Define tono, reglas; espejos A1-A4 inline. Invariantes normativos: ver `.claude/GOVERNANCE.md` |
 | Script de ensamblado de estado | Script (bash/py) | `.devlead/scripts/` | Re-deriva el *qué* en vivo: git + GitHub |
 | Script de branching | Script | `.devlead/scripts/` | Rama desde el tag más cercano de dev (`git describe --tags`), determinista |
@@ -312,6 +315,27 @@ DevLead aprende cómo trabajás leyendo lo que escribís en los PRs:
 Todo vive en `~/.devlead/learn/<repo-key>/`, local y por repo. Una preferencia es estilo, nunca autoridad: no puede mergear, saltear un gate ni mover un límite (`GOVERNANCE.md §learned-preferences`).
 
 El journal también es acumulativo: `/cerremos` archiva la entrada anterior en vez de pisarla (`journal.sh`), y `/arranquemos` lee los últimos días para detectar lo que se repite.
+
+## Perfil — DevLead aprende cómo escribes y decides (`profile.sh`)
+
+Además de tus reviews, DevLead aprende de lo que TÚ escribes en tus conversaciones de Claude Code, de todos tus proyectos, y de lo que ya está guardado en Engram.
+
+- **Qué lee:** solo lo que tecleaste. Descarta en código las respuestas del modelo, los resultados de herramientas, la salida de hooks, las notificaciones y todo lo que pegaste.
+- **Qué guarda:** un perfil corto con dos clases de entradas — cómo escribes y cómo decides. Tiene un tope de tamaño (3000 caracteres por defecto) y cada entrada vence a los 90 días si no se confirma.
+- **Qué no guarda:** nada de un proyecto concreto (nombres, clientes, rutas). Eso queda por repositorio, en `learn.sh`, y nunca pasa a otro.
+- **Qué no puede decir:** nada sobre lo que DevLead puede hacer. Una entrada que hable de merge, límites, claves o producción se rechaza en código.
+- **Dónde vive:** `~/.devlead/profile/`. Nada sale de tu máquina.
+
+Para verlo o corregirlo:
+
+```
+bash ~/.devlead/scripts/profile.sh list
+bash ~/.devlead/scripts/profile.sh remove p3
+```
+
+O simplemente díselo: "esa no me representa, quítala".
+
+---
 
 ## Agenda del día — qué va a hacer DevLead hoy (`agenda.sh`)
 
