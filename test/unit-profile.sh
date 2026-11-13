@@ -393,6 +393,16 @@ for good in \
 done
 export DEVLEAD_PROFILE_DIR="$SANDBOX/state"
 
+echo "=== the command shows what it learned, every time ==="
+CMD="$REPO_ROOT/.claude/commands/arranquemos.md"
+# The profile section must not sit inside the reviews template, which is only
+# printed when there are new review preferences.
+between="$(awk '/learn.sh pref-new. da .STATUS: new/ { on = 1 } on && /learn.sh pref-shown/ { exit } on' "$CMD")"
+not_contains "the profile section is outside the reviews-only template" "$between" "Lo que aprendí de vos"
+contains "the command shows new profile entries whether or not reviews changed" "$(cat "$CMD")" "haya o no preferencias nuevas de reviews"
+contains "the command never adds to the profile without showing it" "$(cat "$CMD")" "nunca agregues al perfil sin mostrarlo"
+check "the profile section is defined once" "$(grep -c '^### Lo que aprendí de vos' "$CMD")" "1"
+
 echo "=== nothing else reads the profile ==="
 for f in .devlead/scripts/open-pr.sh .devlead/scripts/merge.sh .devlead/scripts/envelope.sh \
          .devlead/scripts/forbidden-check.sh .claude/hooks/gate-check.sh .claude/hooks/guard.sh; do

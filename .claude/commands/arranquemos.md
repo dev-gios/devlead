@@ -286,19 +286,20 @@ bash ~/.devlead/scripts/notify.sh ack
 
 Nunca corras `ack` antes de mostrar las entradas: archivar algo que el usuario no vio es perderlo.
 
-**Si `bash ~/.devlead/scripts/learn.sh pref-new` da `STATUS: new`**, mostrá esta sección después de "Mientras no estabas" y antes de los tres buckets:
+**Si hoy agregaste entradas al perfil (Paso 2.6)** — haya o no preferencias nuevas de reviews —, mostrá esta sección después de "Mientras no estabas", con una línea por entrada y su id:
 
 ```
 ### Lo que aprendí de vos
+· [p7] estilo · {entrada}
+· [p8] decisión · {entrada}
+Ya las estoy usando. Si alguna no te representa, decime cuál y la quito.
+```
 
-Si hoy agregaste entradas al perfil (Paso 2.6), mostralas así, una por línea, con su id:
+Una entrada que el usuario no vio no puede quitarla: nunca agregues al perfil sin mostrarlo en este standup. Si pide quitar una, corré `bash ~/.devlead/scripts/profile.sh remove {id}` y confirmalo en una línea. Si hoy no agregaste ninguna, omití la sección.
 
-> p7 · estilo · Prefiere respuestas cortas, con lo mínimo útil primero
->
-> Si alguna no te representa, decime cuál y la quito.
+**Si `bash ~/.devlead/scripts/learn.sh pref-new` da `STATUS: new`**, mostrá esta sección después de "Mientras no estabas" y antes de los tres buckets:
 
-Si el usuario pide quitar una, corré `bash ~/.devlead/scripts/profile.sh remove {id}` y confirmalo en una línea. Si no agregaste ninguna, omití esta sección.
-
+```
 ### Aprendí de tus reviews
 · [p3] {preferencia}   (de {source})
 · [p4] {preferencia}   (de {source})
