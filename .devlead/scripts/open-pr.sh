@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # open-pr.sh — the single door through which the pipeline opens a PR.
 #
-# Usage: open-pr.sh --base <branch> [<gh pr create args>...]
+# Usage: open-pr.sh --base <branch> --title <title> [--body <body>]
+#                   [--label <label>]... [--draft]
 #
 # Runs, in order and WITHOUT short-circuiting:
 #   1. gate-check.sh, the explicit full gate (clean tree + tests + shellcheck)
@@ -9,9 +10,12 @@
 # and only when both pass does it run `gh pr create` with the arguments it was
 # given, exactly once.
 #
-# The checks judge the checked-out branch of this repository, from its root.
-# `--repo`, and a `--head` that is not the checked-out branch, are refused:
-# they would open a PR for work the checks never saw.
+# The door owns its interface instead of forwarding arguments to `gh`: it
+# accepts only the options above (as `--opt value` or `--opt=value`) and builds
+# the `gh pr create` call itself, always with `--head <checked-out branch>`.
+# `gh` has many spellings for the flags that would point a PR elsewhere
+# (`-R owner/repo`, `-Rowner/repo`, `-H`, a second `-B`); refusing everything
+# outside a closed list is the only way to be sure none of them gets through.
 #
 # Why this exists: until now the gates were steps the command prose told the
 # model to run before `gh pr create`. In an unattended run nothing checked that
@@ -27,7 +31,7 @@
 #
 # Exit codes:
 #   0  — PR created
-#   1  — misuse (no --base)
+#   1  — misuse (no --base or no --title)
 #   2  — refused: a gate is red, the diff touches a forbidden zone, there is
 #        nothing to ship, or the checks could not be run. `gh` was NOT invoked.
 #   N  — `gh pr create` itself failed with exit code N (one attempt, no retry)
@@ -60,27 +64,37 @@ _emit_reasons() {
 # work unit changed.
 # ---------------------------------------------------------------------------
 _base=""
-_head=""
-_head_given=0
-_repo_given=0
-_prev=""
-for _arg in "$@"; do
-  case "$_prev" in
-    --base|-B) _base="$_arg" ;;
-    --head|-H) _head="$_arg"; _head_given=1 ;;
+_title=""
+_body=""
+_labels=()
+_draft=0
+_bad_args=()
+while [[ $# -gt 0 ]]; do
+  _opt="$1"
+  _val=""
+  case "$_opt" in
+    --draft) _draft=1; shift; continue ;;
+    --base=*|--title=*|--body=*|--label=*)
+      _val="${_opt#*=}"; _opt="${_opt%%=*}"; shift ;;
+    --base|--title|--body|--label)
+      if [[ $# -lt 2 ]]; then
+        _bad_args+=("$_opt (missing value)"); shift; continue
+      fi
+      _val="$2"; shift 2 ;;
+    *) _bad_args+=("$_opt"); shift; continue ;;
   esac
-  case "$_arg" in
-    --base=*) _base="${_arg#--base=}" ;;
-    --head=*) _head="${_arg#--head=}"; _head_given=1 ;;
-    --repo|-R|--repo=*) _repo_given=1 ;;
+  case "$_opt" in
+    --base)  _base="$_val" ;;
+    --title) _title="$_val" ;;
+    --body)  _body="$_val" ;;
+    --label) _labels+=("$_val") ;;
   esac
-  _prev="$_arg"
 done
 
-if [[ -z "$_base" ]]; then
-  _refuse "open-pr: --base <branch> is required"
+if [[ -z "$_base" || -z "$_title" ]]; then
+  _refuse "open-pr: --base <branch> and --title <title> are required"
   _emit_reasons
-  echo "Usage: open-pr.sh --base <branch> [<gh pr create args>...]" >&2
+  echo "Usage: open-pr.sh --base <branch> --title <title> [--body <body>] [--label <label>]... [--draft]" >&2
   exit 1
 fi
 
@@ -100,19 +114,15 @@ if ! cd "$_toplevel"; then
 fi
 
 # ---------------------------------------------------------------------------
-# The checks below judge the checked-out branch in this repository. A PR for
-# anything else would be a PR for work nobody checked, so arguments that point
-# `gh` elsewhere are refused rather than passed through.
+# The checks below judge the checked-out branch, so that is the branch the PR
+# is opened for: the door names it to `gh` itself and takes no other head.
 # ---------------------------------------------------------------------------
-if [[ $_repo_given -eq 1 ]]; then
-  _refuse "open-pr: --repo is not allowed — the PR must be opened in the repository that was checked"
-fi
-if [[ $_head_given -eq 1 ]]; then
-  _current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
-  # gh accepts <owner>:<branch>; only the branch part names the work.
-  if [[ -z "$_current_branch" || "${_head##*:}" != "$_current_branch" ]]; then
-    _refuse "open-pr: --head '$_head' is not the checked-out branch ('${_current_branch:-detached HEAD}') — the checks would not cover that PR"
-  fi
+for _bad in "${_bad_args[@]}"; do
+  _refuse "open-pr: unsupported argument: $_bad"
+done
+_head="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+if [[ -z "$_head" ]]; then
+  _refuse "open-pr: HEAD is detached — there is no branch to open a PR for"
 fi
 
 # ---------------------------------------------------------------------------
@@ -223,7 +233,12 @@ fi
 # Both checks passed: open the PR. One attempt; a failure is reported, never
 # retried (a retry could open a duplicate).
 # ---------------------------------------------------------------------------
-gh pr create "$@"
+_gh_args=(--base "$_base" --head "$_head" --title "$_title" --body "$_body")
+for _label in "${_labels[@]}"; do
+  _gh_args+=(--label "$_label")
+done
+[[ $_draft -eq 1 ]] && _gh_args+=(--draft)
+gh pr create "${_gh_args[@]}"
 _gh_rc=$?
 if [[ $_gh_rc -ne 0 ]]; then
   _refuse "gh pr create failed (exit $_gh_rc)"

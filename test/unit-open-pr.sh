@@ -117,8 +117,8 @@ out="$(run_door --base main --title "feat: a title with spaces" --body "Closes #
 rc=$?
 check "green: exit 0" "$rc" "0"
 check "green: gh invoked exactly once" "$(gh_calls)" "1"
-check "green: arguments reach gh intact" "$(cat "$GH_LOG")" \
-  "$(printf 'CALL\tpr\tcreate\t--base\tmain\t--title\tfeat: a title with spaces\t--body\tCloses #7')"
+check "green: gh gets the door's own argument list, values intact" "$(cat "$GH_LOG")" \
+  "$(printf 'CALL\tpr\tcreate\t--base\tmain\t--head\tfeat/unit\t--title\tfeat: a title with spaces\t--body\tCloses #7')"
 check "green: stdout is the PR URL and nothing else" "$out" \
   "https://example.test/acme/repo/pull/7"
 
@@ -231,25 +231,34 @@ contains "red tests, called from a subdirectory: runner output reported" "$out" 
 # ===========================================================================
 # The PR must be for the work that was checked
 # ===========================================================================
-mk_repo otherhead
+mk_repo closedlist
 commit_file notes.txt "a harmless change"
-out="$(run_door --base main --head feat/something-else --title t 2>/dev/null)"
-rc=$?
-check "--head names another branch: exit 2" "$rc" "2"
-check "--head names another branch: gh never invoked" "$(gh_calls)" "0"
-contains "--head names another branch: reason says so" "$out" "feat/something-else"
-
-out="$(run_door --base main --head acme:feat/unit --title t 2>/dev/null)"
-rc=$?
-check "--head owner:<current branch>: exit 0" "$rc" "0"
-check "--head owner:<current branch>: gh invoked once" "$(gh_calls)" "1"
+# Every spelling gh would accept for "another repo / head / base" is refused:
+# the door takes a closed list of options and names the head itself.
+for spelling in "--repo other/repo" "-R other/repo" "-Rother/repo" "-R=other/repo" \
+                "-dRother/repo" "--head feat/x" "-Hfeat/x" "-Bother" "--fill" "extra"; do
+  : > "$GH_LOG"
+  # shellcheck disable=SC2086  # word-splitting the spelling is the point
+  out="$(run_door --base main --title t $spelling 2>/dev/null)"
+  rc=$?
+  check "unsupported [$spelling]: exit 2" "$rc" "2"
+  check "unsupported [$spelling]: gh never invoked" "$(gh_calls)" "0"
+  contains "unsupported [$spelling]: reason says so" "$out" "PARK_REASON: open-pr: unsupported argument: "
+done
 
 : > "$GH_LOG"
-out="$(run_door --base main --repo other/repo --title t 2>/dev/null)"
+out="$(run_door --base=main --title=t --label a --label=b --draft 2>/dev/null)"
 rc=$?
-check "--repo: exit 2" "$rc" "2"
-check "--repo: gh never invoked" "$(gh_calls)" "0"
-contains "--repo: reason says so" "$out" "PARK_REASON: open-pr: --repo"
+check "labels + draft: exit 0" "$rc" "0"
+check "labels + draft: forwarded in the door's order" "$(cat "$GH_LOG")" \
+  "$(printf 'CALL\tpr\tcreate\t--base\tmain\t--head\tfeat/unit\t--title\tt\t--body\t\t--label\ta\t--label\tb\t--draft')"
+
+git checkout -q --detach
+: > "$GH_LOG"
+out="$(run_door --base main --title t 2>/dev/null)"
+rc=$?
+check "detached HEAD: exit 2" "$rc" "2"
+check "detached HEAD: gh never invoked" "$(gh_calls)" "0"
 
 # ===========================================================================
 # Nothing to ship -> fail closed
