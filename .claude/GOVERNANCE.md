@@ -288,6 +288,14 @@ DevLead aprende cómo trabaja el usuario leyendo lo que el usuario escribe en lo
 
 **Límite conocido:** el filtro por autor no distingue lo que el usuario escribió a mano de lo que una herramienta publicó con su mismo token. Hoy el pipeline de DevLead no publica comentarios en PRs; si eso cambia, esos comentarios deben excluirse de la captura.
 
+**El perfil global (`profile.sh`).** Además de las preferencias por repositorio, DevLead mantiene un perfil del usuario: cómo escribe y cómo decide, en cualquier proyecto. Todo lo anterior le aplica igual, más esto:
+
+- **De dónde aprende:** de los mensajes que el usuario tipeó en sus conversaciones de Claude Code — de TODOS sus proyectos (decisión del usuario, 2026-11-13) — y de lo que ya está en Engram. `profile.sh capture` conserva una línea solo cuando Claude Code la marcó como escrita por una persona, y le quita los bloques pegados: resultados de herramientas, salida de hooks, notificaciones, resúmenes y material pegado nunca llegan a ser una entrada. El filtro está en código.
+- **Dos alcances que no se mezclan:** el perfil es global y describe a la persona; no guarda nombres de repos, clientes, rutas ni datos de un proyecto. Los hechos de un proyecto van a `learn.sh`, que es por repositorio, y nunca llegan a otro.
+- **No habla de autoridad, en código:** `profile.sh add` rechaza una entrada que mencione merge, límites, gates, credenciales o producción. No se reformula para que pase.
+- **Chico a propósito:** tiene un tope duro de tamaño; lleno, `add` falla hasta que se unifiquen o quiten entradas. Una entrada que nadie confirmó en 90 días vence y deja de mostrarse.
+- **Nada sale de la máquina:** el estado vive en `~/.devlead/profile/`.
+
 **Chequeo narrow-not-widen:** antes, DevLead implementaba sin memoria de las correcciones. Después, implementa con ellas. El conjunto de acciones que puede tomar es idéntico; lo que cambia es la forma del diff que produce.
 
 ---
