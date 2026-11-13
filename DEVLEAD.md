@@ -38,7 +38,10 @@ Estas son las que NO se redecidan al construir. Cada una tiene su porqué para q
 
 ## 3. Cómo funciona — ciclo del día (modo single-task)
 
-### Al arrancar (`/arranquemos`)
+### Al empezar (`/devlead`)
+
+Un solo comando para todo. Después le hablas en lenguaje natural y él entiende la intención: empezar el día, continuar lo de ayer, hacer una tarea concreta, decir cómo va, cambiar de rumbo o cerrar. `/arranquemos` y `/cerremos` siguen existiendo como alias.
+
 1. Re-deriva el estado en vivo: ramas activas, PRs abiertos, estado de CI, issues asignadas.
 2. Lee el journal local para recuperar el *porqué* de lo que quedó a medias.
 3. Arma un **standup corto**: en camino / listo para review / nuevo entrante.
@@ -312,6 +315,27 @@ DevLead aprende cómo trabajás leyendo lo que escribís en los PRs:
 Todo vive en `~/.devlead/learn/<repo-key>/`, local y por repo. Una preferencia es estilo, nunca autoridad: no puede mergear, saltear un gate ni mover un límite (`GOVERNANCE.md §learned-preferences`).
 
 El journal también es acumulativo: `/cerremos` archiva la entrada anterior en vez de pisarla (`journal.sh`), y `/arranquemos` lee los últimos días para detectar lo que se repite.
+
+## Perfil — DevLead aprende cómo escribes y decides (`profile.sh`)
+
+Además de tus reviews, DevLead aprende de lo que TÚ escribes en tus conversaciones de Claude Code, de todos tus proyectos, y de lo que ya está guardado en Engram.
+
+- **Qué lee:** solo lo que tecleaste. Descarta en código las respuestas del modelo, los resultados de herramientas, la salida de hooks, las notificaciones y todo lo que pegaste.
+- **Qué guarda:** un perfil corto con dos clases de entradas — cómo escribes y cómo decides. Tiene un tope de tamaño (3000 caracteres por defecto) y cada entrada vence a los 90 días si no se confirma.
+- **Qué no guarda:** nada de un proyecto concreto (nombres, clientes, rutas). Eso queda por repositorio, en `learn.sh`, y nunca pasa a otro.
+- **Qué no puede decir:** nada sobre lo que DevLead puede hacer. Una entrada que hable de merge, límites, claves o producción se rechaza en código.
+- **Dónde vive:** `~/.devlead/profile/`. Nada sale de tu máquina.
+
+Para verlo o corregirlo:
+
+```
+bash ~/.devlead/scripts/profile.sh list
+bash ~/.devlead/scripts/profile.sh remove p3
+```
+
+O simplemente díselo: "esa no me representa, quítala".
+
+---
 
 ## Agenda del día — qué va a hacer DevLead hoy (`agenda.sh`)
 
