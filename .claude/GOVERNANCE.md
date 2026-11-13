@@ -280,7 +280,7 @@ En el perfil `sweep-plan-driven` la cola de trabajo sale de `envelope.sh plan`: 
 
 **Quién ajusta:** el usuario — en la terminal con `devlead agenda`, o pidiéndolo en una sesión de `/arranquemos`. Los perfiles autónomos solo corren `publish` (el sweep) y `apply` (el run); nunca `first`, `skip` ni `reset`.
 
-**Issue salteada y dependencias:** una issue salteada queda como `skipped-by-agenda` y cuenta como bloqueada para sus dependientes (E2.2), que se aparcan en vez de construirse sobre trabajo que hoy no se hace.
+**Issue salteada y dependencias:** una issue salteada queda como `skipped-by-agenda` y cuenta como bloqueada para sus dependientes: con `on_failure.skip_dependents: true` E2.2 los aparca en vez de construirlos sobre trabajo que hoy no se hace; con `false` rige el chequeo de siempre de `branch.sh`. Poner primero (`first`) una issue que depende de otra todavía no trabajada es decisión del usuario: la agenda no reordena dependencias por él, y el chequeo de `branch.sh` sigue aplicando.
 
 **Privacidad del aviso:** el push viaja por un servicio de terceros. Por defecto lleva solo cantidades ("2 repo(s), 5 issue(s) today"); la lista con nombres de repo y títulos queda en la bandeja local, y sale de la máquina únicamente si el usuario puso `DEVLEAD_NOTIFY_DETAIL=1` en `notify.env`.
 

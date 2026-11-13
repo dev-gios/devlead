@@ -184,6 +184,22 @@ contains "detail opt-in: push names the repo" "$log" "beta: #3 Add export"
 lacks "detail opt-in: never a local path" "$log" "$SANDBOX"
 
 # ===========================================================================
+# a long agenda is cut, and still says how to change it
+# ===========================================================================
+HOME6="$(fresh_home h6)"
+long_title="$(printf 'x%.0s' {1..190})"
+BIG="$(mk_repo big "#1  $long_title" "#2  $long_title" "#3  $long_title" "#4  $long_title" \
+  "#5  $long_title" "#6  $long_title" "#7  $long_title" "#8  $long_title" "#9  $long_title")"
+enroll "$HOME6" "$BIG"
+run_sweep "$HOME6"
+entry="$(inbox "$HOME6")"
+check "long agenda: the count is not cut" "$(cut -f3 <<<"$entry")" "1 repo(s), 9 issue(s) today"
+msg="$(cut -f6 <<<"$entry")"
+check "long agenda: the message is bounded" "$([[ ${#msg} -lt 1600 ]] && echo yes)" "yes"
+contains "long agenda: marks the cut" "$msg" "…"
+contains "long agenda: still says how to change it" "$msg" "devlead agenda first <N> | skip <N>"
+
+# ===========================================================================
 # nothing to do anywhere -> no notice at all
 # ===========================================================================
 HOME2="$(fresh_home h2)"

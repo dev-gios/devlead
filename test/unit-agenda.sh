@@ -165,9 +165,26 @@ for n in $(queue_of "$out") $(skipped_of "$out"); do
 done
 check "apply: a damaged line makes no issue disappear" "$(queue_of "$out")|$(skipped_of "$out")" "15 31|"
 
-# Input hygiene: duplicates collapse, non-numbers are dropped.
-out="$(printf '15\n15\n#31\nabc\n\n31\n' | bash "$AGENDA" apply)"
-check "apply: duplicates collapse and non-numeric lines are dropped" "$(queue_of "$out")" "15 31"
+# Input hygiene: duplicates collapse; `#N`, CRLF, blanks and leading zeros are read.
+out="$(printf '15\n15\n#31\r\n\n031\n' | bash "$AGENDA" apply)"
+check "apply: duplicates collapse, #N / CRLF / leading zeros are normalised" "$(queue_of "$out")" "15 31"
+
+# A line that is not one issue number is refused, never silently dropped.
+for bad in 'abc' '20 21' '-5' '12;rm' '18446744073709551628'; do
+  out="$(printf '15\n%s\n31\n' "$bad" | bash "$AGENDA" apply 2>/dev/null)"; rc=$?
+  check "apply (bad line '$bad'): exit 1" "$rc" "1"
+  check "apply (bad line '$bad'): no queue is offered" "$out" "STATUS: bad-input"
+done
+out="$(bash "$AGENDA" skip 18446744073709551628 2>&1)"; rc=$?
+check "skip (number too large to be an issue): exit 1" "$rc" "1"
+
+# Adjustments that cannot be read are an error, not "no adjustments".
+cp "$STATE/adjust.tsv" "$STATE/adjust.keep"
+rm -f "$STATE/adjust.tsv"; mkdir "$STATE/adjust.tsv"
+out="$(printf '15\n31\n' | bash "$AGENDA" apply 2>/dev/null)"; rc=$?
+check "apply (unreadable adjustments): exit 1" "$rc" "1"
+check "apply (unreadable adjustments): no queue is offered" "$out" "STATUS: unreadable"
+rmdir "$STATE/adjust.tsv"; mv "$STATE/adjust.keep" "$STATE/adjust.tsv"
 out="$(: | bash "$AGENDA" apply)"; rc=$?
 check "apply (empty queue): exit 0" "$rc" "0"
 check "apply (empty queue): empty queue back" "$(queue_of "$out")" ""
@@ -209,6 +226,10 @@ out="$(plan '#12  Fix login' '#15  "Docs: update guide"' | DEVLEAD_AGENDA_DATE=2
 contains "new day: published" "$out" "DATE: 2026-11-14"
 out="$(printf '12\n15\n' | bash "$AGENDA" apply)"
 check "new day: yesterday's adjustments are gone" "$(queue_of "$out")" "12 15"
+
+out="$(plan '#012  Zero padded' | DEVLEAD_AGENDA_DATE=2026-11-14 bash "$AGENDA" publish)"
+check "publish: a zero-padded number is stored plain" "$(cut -f2 "$STATE/agenda.tsv")" "12"
+contains "publish: and can then be adjusted" "$(bash "$AGENDA" skip 12)" "STATUS: recorded"
 
 # ===========================================================================
 # an empty queue is a valid agenda

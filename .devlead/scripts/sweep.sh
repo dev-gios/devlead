@@ -442,6 +442,8 @@ _outcomes_body=""
 # Every repo runs in its own subshell, so the agenda lines travel through a
 # file. No temp file -> no agenda notice this run; the sweep itself goes on.
 _agenda_tmp="$(mktemp "$REPORTS_DIR/.agenda-XXXXXX" 2>/dev/null || true)"
+# A sweep killed mid-run must not leave the file behind.
+trap '[[ -n "${_agenda_tmp:-}" ]] && rm -f "$_agenda_tmp"' EXIT
 
 for _repo in "${_repos[@]}"; do
   # _sweep_repo is called EXACTLY ONCE per repo. It emits two streams:

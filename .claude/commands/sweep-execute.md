@@ -564,10 +564,15 @@ Procesá la salida:
   y registralo en el reporte como anomalía; jamás lo trabajes. La agenda no puede agregar
   trabajo que la policy del envelope no incluyó.
 - Cada número de `SKIPPED:` queda con resultado `skipped-by-agenda` (no pasa por el pipeline,
-  no cuenta contra el presupuesto) y entra a BLOQUEADAS en E1.5, para que E2.2 aparque a sus
-  dependientes en vez de construirlos sobre trabajo que hoy no se hace.
+  no cuenta contra el presupuesto) y entra a BLOQUEADAS en E1.5, para que E2.2 — cuando
+  `SKIP_DEPENDENTS: true` — aparque a sus dependientes en vez de construirlos sobre trabajo
+  que hoy no se hace. Con `SKIP_DEPENDENTS: false` rige lo de siempre: B2.c decide si
+  `branch.sh` detecta el predecesor faltante.
 - Si `QUEUE:` queda vacía porque todo fue salteado: registrá `REPO → STATUS: zero-issues
   (todo salteado en la agenda)` y continuá con el siguiente repo.
+- **Chequeo de integridad:** cada número de la cola del Paso 2 tiene que aparecer en `QUEUE:`
+  o en `SKIPPED:`. Si falta alguno, tratalo igual que el caso de error de abajo: una issue no
+  puede desaparecer sin que el usuario la haya salteado.
 - **Si el comando sale con código distinto de 0, o la salida no trae la línea `QUEUE:`:** no
   adivines qué quiso el usuario. Registrá `REPO → STATUS: agenda-error`, aparcá todas las
   issues de la cola como `parked-agenda-unreadable`, y continuá con el siguiente repo. Hacer
