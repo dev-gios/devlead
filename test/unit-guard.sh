@@ -229,6 +229,13 @@ bash_allowed "sed -i 's/a/b/' src/a.ts"
 bash_allowed 'rm -rf node_modules dist'
 bash_allowed "cp $OTHER/README.md docs/other-readme.md"
 bash_allowed 'cd src && ls'
+bash_allowed 'cd src && npm test && cd ..'
+bash_allowed 'cd src && cd .. && npm test'
+bash_allowed 'cd src; cd -'
+bash_allowed 'pushd src && npm test && popd'
+bash_allowed 'cd src && touch ../docs/a.md'
+bash_blocked scope 'cd src && cd ../.. && ls'
+bash_blocked scope 'cd src && rm -rf ../../other'
 bash_allowed 'cd /tmp && ls'
 bash_allowed "ls $OTHER && cat $OTHER/README.md"
 bash_allowed 'mkdir -p src/new && touch src/new/a.ts'

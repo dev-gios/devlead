@@ -78,7 +78,9 @@ _abs() {
   local p="$1"
   # shellcheck disable=SC2088 # a literal leading tilde in the payload, not an expansion
   if [[ "$p" == "~" || "$p" == "~/"* ]]; then p="$HOME${p:1}"; fi
-  [[ "$p" == /* ]] || p="$_cwd/$p"
+  # Relative to where the command is by then: `cd src && rm ../x` is judged
+  # from src (see _vcwd in the Bash section).
+  [[ "$p" == /* ]] || p="${_vcwd:-$_cwd}/$p"
   realpath -m -- "$p" 2>/dev/null || printf '%s\n' "$p"
 }
 
@@ -262,6 +264,9 @@ _check_recursive_search() {
   return 0
 }
 
+# The directory the command is in as it goes: a `cd` moves it for the simple
+# commands that follow, so `cd src && npm test && cd ..` ends where it began.
+_vcwd="$_cwd"
 _simple="$(sed -E 's/&&|\|\||[;|&()`]|\$\(/\n/g' <<<"$_scan")"
 while IFS= read -r _line || [[ -n "$_line" ]]; do
   _line="${_line//[\"\']/}"
@@ -301,8 +306,14 @@ while IFS= read -r _line || [[ -n "$_line" ]]; do
   case "$_prog" in
     cd|pushd)
       _t="${_plain[0]:-$HOME}"
-      [[ "$_t" == "-" ]] || _check_scope "$_t"
+      # `cd -` goes back to where the command already was.
+      [[ "${_args[0]:-}" == "-" ]] && _t="-"
+      if [[ "$_t" != "-" ]]; then
+        _check_scope "$_t"
+        _vcwd="$(_abs "$_t")"
+      fi
       ;;
+    popd) _vcwd="$_cwd" ;;
     git)
       for ((_k = 0; _k < ${#_args[@]}; _k++)); do
         case "${_args[$_k]}" in
