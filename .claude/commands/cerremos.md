@@ -71,17 +71,18 @@ Esta es la ÚNICA pregunta al usuario en el camino feliz.
 
 ## Paso 4 — Escribir el journal
 
-Con el borrador confirmado y las tres respuestas del Paso 3, primero derivá la ruta del journal per-repo ejecutando con el Bash tool:
+Con el borrador confirmado y las tres respuestas del Paso 3, guardá la entrada pasándola por stdin a `journal.sh save` con el Bash tool (heredoc con delimitador entre comillas, para que nada del texto se expanda):
 
 ```bash
-_dl_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-_dl_key="${_dl_root//\//_}"
-_dl_journal="$HOME/.devlead/journals/${_dl_key}.md"
-mkdir -p "$HOME/.devlead/journals"
-echo "$_dl_journal"
+bash ~/.devlead/scripts/journal.sh save <<'DEVLEAD_JOURNAL_ENTRY'
+{la entrada completa, con el formato de abajo}
+DEVLEAD_JOURNAL_ENTRY
 ```
 
-Luego escribí el journal a la ruta absoluta que imprimió ese comando usando el Write tool.
+`journal.sh save` archiva la entrada anterior en el historial ANTES de reemplazarla: el journal es acumulativo, cerrar el día nunca borra el *porqué* de los días previos. NO escribas el archivo con el Write tool — eso pisaría la entrada anterior sin archivarla.
+
+- `STATUS: saved` → seguí.
+- Exit distinto de 0 → la entrada NO se guardó y la anterior quedó intacta. Mostrá el error tal cual y NO digas que el journal quedó guardado.
 
 Formato exacto:
 
@@ -111,7 +112,9 @@ Después de escribir, confirmá:
 Apagá DevLead para este repo (desactiva los hooks hasta el próximo `/arranquemos`) ejecutando con el Bash tool:
 
 ```
-bash ~/.devlead/scripts/devlead-active.sh off
+bash ~/.devlead/scripts/devlead-session.sh off
 ```
 
 Esto cierra el modo opt-in (invariante 7): los hooks vuelven a quedar inertes en este repo hasta que arranques el día de nuevo.
+
+El registro `~/.devlead/session-repos` que escribe `devlead-session.sh` no otorgaba ninguna autoridad mientras estuvo activo — solo sacaba los hooks del estado inerte para esta sesión. Es distinto de `~/.devlead/autonomous-repos`, que sí habilita ramas/commits/PRs sin supervisión (Inv 3).

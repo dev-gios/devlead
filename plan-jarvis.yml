@@ -1,0 +1,116 @@
+version: 1
+
+# Plan: Jarvis — Fase 1 de 4 (red de seguridad en código).
+# Objetivo cerrado: que el pipeline autónomo (/batch, /sweep-execute, loop
+# nocturno) no pueda abrir un PR con gates en rojo, ni mergear fuera de lo que
+# concede el envelope, aunque el LLM ignore la prosa del comando.
+#
+# Principio: cada salida al exterior (PR, merge) pasa por UNA puerta en código.
+# La prosa de los comandos llama a la puerta; nunca invoca `gh pr create` ni
+# `gh pr merge` directamente.
+#
+# Restricciones que este plan NO rompe:
+#   - plan-separation-guard: el camino autónomo no lee `session-repos` ni invoca
+#     `devlead-session.sh`. `test/unit-registry-separation.sh` sigue verde.
+#   - A3: ninguna tarea escribe ni modifica el envelope.
+#   - `forbidden_zones: inherit` sigue siendo el único valor legal en v1; las
+#     zonas siguen definidas en forbidden-check.sh.
+#
+# FUERA DE ALCANCE (fases siguientes, cada una con su propio plan):
+#   Fase 2 — canal de aviso + bandeja de decisiones (pendiente: elegir canal).
+#   Fase 3 — journal acumulativo, captura de feedback de reviews, preferencias.
+#   Fase 4 — generación de plan con aprobación, discover programado, multi-repo.
+#
+# Nota sobre `depends-on`: admite un único id, así que la cadena es lineal
+# (gate-explicit → pr-door → merge-door → wire-doors) aunque merge-door no
+# dependa técnicamente de pr-door. Las dos últimas tareas son independientes.
+
+tasks:
+  - id: gate-explicit
+    title: "gate-check.sh — la llamada explícita corre el gate completo sin sesión activa"
+    type: fix
+    # PROBLEMA: el guard de opt-in (gate-check.sh) corre antes de todo,
+    # también en la llamada explícita. En un repo sin /arranquemos el gate sale 0
+    # en silencio, así que el pipeline autónomo no tiene gate.
+    # ACEPTACIÓN:
+    #   - Repo NO activado, stdin vacío, árbol sucio → exit 2 con la razón en stderr.
+    #   - Repo NO activado, stdin vacío, test runner en rojo → exit 2.
+    #   - Repo NO activado, stdin con hook_event_name=="Stop" → exit 0 (hook inerte,
+    #     comportamiento actual intacto).
+    #   - Caso nuevo en test/unit-gate-check.sh que NO pre-marca el repo como activo.
+    #   - `make test` verde, incluido unit-registry-separation.sh. shellcheck limpio.
+
+  - id: pr-door
+    title: "Script open-pr.sh — única puerta para crear PRs, con gates obligatorios"
+    type: feat
+    depends-on: gate-explicit
+    # Corre, en orden y sin cortocircuito: gate-check.sh (explícito) y
+    # forbidden-check.sh sobre el diff contra la base. Solo si ambos pasan invoca
+    # `gh pr create` con los argumentos recibidos.
+    # ACEPTACIÓN (con `gh` falso, como el resto de la suite):
+    #   - Gate rojo → `gh pr create` NO se invoca; exit != 0; la razón exacta del
+    #     gate sale verbatim en stdout con prefijo `PARK_REASON:` (A4).
+    #   - Diff que toca una zona prohibida → `gh pr create` NO se invoca; exit != 0;
+    #     `PARK_REASON:` nombra la zona.
+    #   - Todo verde → `gh pr create` se invoca exactamente una vez con los
+    #     argumentos intactos; exit 0; imprime la URL del PR.
+    #   - No acepta DEVLEAD_FORCE_CLOSE: la variable se ignora en esta puerta.
+    #   - Suite nueva test/unit-open-pr.sh. shellcheck limpio.
+
+  - id: merge-door
+    title: "Script merge.sh — única puerta de merge, autoridad leída del envelope"
+    type: feat
+    depends-on: pr-door
+    # Lee `envelope.sh show`. Nunca escribe el envelope.
+    # ACEPTACIÓN (con `gh` falso):
+    #   - Sin envelope, o `merge.mode: never` → `gh pr merge` NO se invoca; exit != 0.
+    #   - `envelope.sh show` con STATUS: blocked → no se invoca; exit != 0.
+    #   - `merge.mode: integration-branch` y el PR apunta a `base.integration_branch`
+    #     → `gh pr merge` se invoca una vez; exit 0.
+    #   - `merge.mode: integration-branch` y el PR apunta a otra rama (incluida la
+    #     rama por defecto) → no se invoca; exit != 0 con la razón.
+    #   - Suite nueva test/unit-merge-door.sh. shellcheck limpio.
+
+  - id: wire-doors
+    title: "Cablear open-pr.sh y merge.sh en los comandos y quitar la contradicción de merge"
+    type: docs
+    depends-on: merge-door
+    # Los comandos dejan de invocar `gh` directo para PR y merge.
+    # ACEPTACIÓN:
+    #   - En .claude/commands/{arranquemos,batch,sweep-execute}.md no queda ninguna
+    #     invocación ejecutable de `gh pr create` ni `gh pr merge`; cada punto llama
+    #     a open-pr.sh / merge.sh. Verificable con rg sobre bloques de código.
+    #   - sweep-execute.md deja de afirmar "NUNCA invocás gh pr merge" (:645) y
+    #     "MERGE: NUNCA" en los previews mientras Delta 6 mergea: el texto describe
+    #     el techo real (lo que conceda merge.mode, vía merge.sh).
+    #   - Un `PARK_REASON:` de open-pr.sh se registra verbatim en run-state y en el
+    #     reporte como `parked-gate-check: {razón}`.
+    #   - install.sh y uninstall.sh incluyen los dos scripts nuevos;
+    #     test/unit-publish-manifest.sh verde.
+
+  - id: loop-killswitch
+    title: "sweep-loop.sh — el loop desatendido respeta el kill-switch del envelope"
+    type: fix
+    # LOCAL-PLAN interactivo sigue sin exigir enrolamiento (lo autoriza el gate
+    # generate→show→approve). El loop NOCTURNO no tiene humano presente, así que
+    # exige `enabled: true`.
+    # ACEPTACIÓN:
+    #   - Envelope ausente o `enabled: false` → no se invoca `claude`; exit 0;
+    #     imprime `STATUS: paused` con la razón.
+    #   - `enabled: true` → comportamiento actual.
+    #   - El chequeo usa `envelope.sh check` (solo lectura).
+    #   - Casos nuevos en test/unit-sweep-loop.sh. shellcheck limpio.
+
+  - id: loop-permissions
+    title: "sweep-loop.sh — permisos explícitos para la sesión headless"
+    type: feat
+    # Hoy `claude -p` corre sin flags: lo que puede hacer depende de la
+    # configuración global de la máquina.
+    # ACEPTACIÓN:
+    #   - Los argumentos de permisos se leen de DEVLEAD_LOOP_CLAUDE_ARGS en
+    #     ~/.devlead/loop.env y se pasan a `claude -p`.
+    #   - Variable ausente o vacía → el loop NO invoca `claude`; exit != 0 con un
+    #     mensaje que explica qué configurar. Nunca corre con permisos ambiente.
+    #   - DEVLEAD_LOOP_DRYRUN=1 imprime el comando exacto, flags incluidos.
+    #   - `devlead config` → Timers documenta la variable; la escribe solo con TTY.
+    #   - Casos nuevos en test/unit-sweep-loop.sh. shellcheck limpio.

@@ -223,7 +223,14 @@ bootstrap_symlinks() {
     "$repo_dir/.devlead/scripts/branch.sh|$devlead_dir/scripts/branch.sh|x"
     "$repo_dir/.devlead/scripts/ref-resolver.sh|$devlead_dir/scripts/ref-resolver.sh|x"
     "$repo_dir/.devlead/scripts/forbidden-check.sh|$devlead_dir/scripts/forbidden-check.sh|x"
-    "$repo_dir/.devlead/scripts/devlead-active.sh|$devlead_dir/scripts/devlead-active.sh|x"
+    "$repo_dir/.devlead/scripts/open-pr.sh|$devlead_dir/scripts/open-pr.sh|x"
+    "$repo_dir/.devlead/scripts/merge.sh|$devlead_dir/scripts/merge.sh|x"
+    "$repo_dir/.devlead/scripts/notify.sh|$devlead_dir/scripts/notify.sh|x"
+    "$repo_dir/.devlead/scripts/journal.sh|$devlead_dir/scripts/journal.sh|x"
+    "$repo_dir/.devlead/scripts/learn.sh|$devlead_dir/scripts/learn.sh|x"
+    "$repo_dir/.devlead/scripts/agenda.sh|$devlead_dir/scripts/agenda.sh|x"
+    "$repo_dir/.devlead/scripts/discover-fleet.sh|$devlead_dir/scripts/discover-fleet.sh|x"
+    "$repo_dir/.devlead/scripts/devlead-session.sh|$devlead_dir/scripts/devlead-session.sh|x"
     "$repo_dir/.devlead/scripts/envelope.sh|$devlead_dir/scripts/envelope.sh|x"
     "$repo_dir/.devlead/scripts/envelope-auth.sh|$devlead_dir/scripts/envelope-auth.sh|x"
     "$repo_dir/.devlead/scripts/sweep.sh|$devlead_dir/scripts/sweep.sh|x"
@@ -249,6 +256,20 @@ bootstrap_symlinks() {
       BOOTSTRAP_SYMLINKS_FAILED+=("$_dst")
     fi
   done
+
+  # Prune the orphaned pre-rename script (devlead-active.sh -> devlead-session.sh).
+  # A single hardcoded path only — never a glob — because an orphaned legacy
+  # executable would still write ~/.devlead/active-repos if invoked, pushing
+  # the machine into the permanent both-exist abort in _migrate_registry.
+  local _legacy="$devlead_dir/scripts/devlead-active.sh"
+  if [[ -e "$_legacy" || -L "$_legacy" ]]; then
+    if rm -f "$_legacy"; then
+      echo "bootstrap: removed legacy $_legacy (renamed to devlead-session.sh)" >&2
+    else
+      echo "bootstrap: WARNING: failed to prune legacy $_legacy" >&2
+      BOOTSTRAP_SYMLINKS_FAILED+=("$_legacy")
+    fi
+  fi
 
   return 0
 }
@@ -298,6 +319,10 @@ bootstrap_systemd() {
     "$repo_dir/.devlead/systemd/devlead-sweep.timer|$systemd_dir/devlead-sweep.timer"
     "$repo_dir/.devlead/systemd/devlead-loop.service|$systemd_dir/devlead-loop.service"
     "$repo_dir/.devlead/systemd/devlead-loop.timer|$systemd_dir/devlead-loop.timer"
+    "$repo_dir/.devlead/systemd/devlead-fleet.service|$systemd_dir/devlead-fleet.service"
+    "$repo_dir/.devlead/systemd/devlead-fleet.timer|$systemd_dir/devlead-fleet.timer"
+    "$repo_dir/.devlead/systemd/devlead-discover.service|$systemd_dir/devlead-discover.service"
+    "$repo_dir/.devlead/systemd/devlead-discover.timer|$systemd_dir/devlead-discover.timer"
   )
 
   local _entry _src _dst _before _after

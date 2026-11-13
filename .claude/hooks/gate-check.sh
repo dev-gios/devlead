@@ -3,7 +3,8 @@
 #   1. Implicit Stop hook (stdin carries hook_event_name=="Stop") -> cheap
 #      NO-OP on every turn. The full gate never runs per-turn.
 #   2. Explicit `bash gate-check.sh` (arranquemos Step 8.4 / batch B2.b, empty
-#      stdin) -> full blocking gate: git-clean + tests + shellcheck.
+#      stdin) -> full blocking gate: git-clean + tests + shellcheck. Runs with
+#      or without an active DevLead session; only the hook path is opt-in.
 # Accumulates ALL failures (never short-circuits) and reports them together.
 # Escape hatch (explicit path only): DEVLEAD_FORCE_CLOSE=1 emits warning, exits 0.
 #
@@ -31,18 +32,26 @@ if [[ -n "$_hook_input" ]] && command -v jq &>/dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# DevLead opt-in guard — inert unless /arranquemos activated THIS repo.
-# DevLead is an opt-in mode, not an always-on daemon (DEVLEAD.md §2, decision 7).
-# Without this guard a global Stop hook would block every session in every repo.
+# DevLead opt-in guard — HOOK path only. A hook delivery (non-empty stdin) is
+# inert unless /arranquemos activated THIS repo: DevLead is an opt-in mode, not
+# an always-on daemon (DEVLEAD.md §2, decision 7), and without this guard a
+# global Stop hook would block every session in every repo.
+#
+# The explicit `bash gate-check.sh` call (empty stdin) is NOT a hook firing in
+# someone else's session: the pipeline asked for a verdict, so it always gets
+# the full gate. The autonomous commands never register a session (the two
+# registries stay separate), so gating the explicit call on one would make the
+# pre-PR gate a silent pass exactly where no human is watching.
 # ---------------------------------------------------------------------------
-if ! bash "$HOME/.devlead/scripts/devlead-active.sh" check 2>/dev/null; then
+if [[ -n "$_hook_input" ]] \
+   && ! bash "$HOME/.devlead/scripts/devlead-session.sh" check 2>/dev/null; then
   exit 0
 fi
 
 # ---------------------------------------------------------------------------
 # Caller discriminator — implicit Stop hook vs explicit pipeline gate.
 # The Stop hook delivers event JSON on stdin (captured in $_hook_input,
-# line 21) carrying hook_event_name=="Stop". The explicit `bash gate-check.sh`
+# at the top of this script) carrying hook_event_name=="Stop". The explicit `bash gate-check.sh`
 # calls from arranquemos Step 8.4 / batch B2.b run with empty/closed stdin.
 # Implicit per-turn runs are NO-OP (exit 0 = allow the Stop); the real Inv 4
 # enforcement is the explicit pre-PR call, not this every-turn surface.

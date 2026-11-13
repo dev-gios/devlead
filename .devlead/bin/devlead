@@ -38,10 +38,15 @@ commands:
   doctor   report whether the artifacts published to this machine match
            the repo's reviewed trunk (STATUS: ok|drifted|unknown)
   config   interactive setup + envelope menu — machine setup (install
-           state, token, enrollment, timers) and this repo's envelope.
-           Refuses to run without an interactive terminal (GOVERNANCE.md
-           §A3) and is reachable ONLY from here — never from an autonomous
-           path.
+           state, token, timers), this repo's fleet enrollment (fleet-list
+           membership + envelope check/enabled state, shown together), and
+           this repo's envelope. Refuses to run without an interactive
+           terminal (GOVERNANCE.md §A3) and is reachable ONLY from here —
+           never from an autonomous path.
+  agenda [show|first <N>|skip <N>|reset]
+           what DevLead plans to work on today in this repo. `first` and
+           `skip` reorder or drop issues of that plan; they can never add
+           one. With no argument, shows the agenda.
   help     show this help
 
 All commands forward to ~/.devlead/scripts/ unchanged.
@@ -66,6 +71,10 @@ case "$_cmd" in
   config)
     shift
     exec bash "$SCRIPTS_DIR/config.sh" "$@"
+    ;;
+  agenda)
+    shift
+    exec bash "$SCRIPTS_DIR/agenda.sh" "$@"
     ;;
   # To route a NEW command to a DIFFERENT script later, add its name here:
   #   state)

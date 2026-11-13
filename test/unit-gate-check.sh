@@ -15,13 +15,13 @@
 # SAFETY: every scenario runs inside a throwaway /tmp git sandbox (bare local
 # "origin" remotes, never a real network remote). $HOME and $XDG_CACHE_HOME
 # are both overridden to sandbox paths for every gate-check.sh invocation, so
-# the DevLead opt-in marker (~/.devlead/active-repos) and the test-runner
+# the DevLead opt-in marker (~/.devlead/session-repos) and the test-runner
 # result cache never touch the real machine's $HOME or ~/.cache.
 set -uo pipefail
 
 REPO_ROOT="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)"
 GATE_SH="$REPO_ROOT/.claude/hooks/gate-check.sh"
-DEVLEAD_ACTIVE_SH="$REPO_ROOT/.devlead/scripts/devlead-active.sh"
+DEVLEAD_SESSION_SH="$REPO_ROOT/.devlead/scripts/devlead-session.sh"
 SANDBOX="$(mktemp -d /tmp/devlead-gate-check.XXXXXX)"
 
 PASS_COUNT=0
@@ -87,10 +87,10 @@ mk_repo() {
 activate_devlead() {
   local repo="$1" home="$2"
   mkdir -p "$home/.devlead/scripts"
-  cp "$DEVLEAD_ACTIVE_SH" "$home/.devlead/scripts/devlead-active.sh"
+  cp "$DEVLEAD_SESSION_SH" "$home/.devlead/scripts/devlead-session.sh"
   local root
   root="$(git -C "$repo" rev-parse --show-toplevel)"
-  printf '%s\t%s\n' "$root" "$(date -u +%s)" > "$home/.devlead/active-repos"
+  printf '%s\t%s\n' "$root" "$(date -u +%s)" > "$home/.devlead/session-repos"
 }
 
 # run_gate <repo-dir> <sandbox-home> <cache-dir> — the one true way to invoke
@@ -210,6 +210,83 @@ rc=$?
 check "clean tree, no changes vs base: gate passes" "$rc" "0"
 contains "clean tree: test gate reports 'no changes vs' skip" "$out" "no changes vs"
 rm -rf "$CLEAN_HOME" "$CLEAN_CACHE"
+
+# ===========================================================================
+# Explicit call WITHOUT an active session. The opt-in guard exists so a global
+# hook never blocks sessions in other repos; it must not turn the explicit
+# pre-PR gate into a silent pass. The autonomous pipeline (/batch,
+# /sweep-execute, the nightly loop) never registers a session, so this is the
+# path it actually takes.
+# ===========================================================================
+
+# install_session_script <sandbox-home> — the guard script is present but the
+# repo is NOT registered: no session-repos file at all.
+install_session_script() {
+  local home="$1"
+  mkdir -p "$home/.devlead/scripts"
+  cp "$DEVLEAD_SESSION_SH" "$home/.devlead/scripts/devlead-session.sh"
+}
+
+# run_gate_stdin <repo-dir> <sandbox-home> <cache-dir> <stdin-payload> — the
+# hook path: the caller delivers event JSON on stdin.
+run_gate_stdin() {
+  local repo="$1" home="$2" cache="$3" payload="$4"
+  (
+    cd "$repo" || exit 1
+    HOME="$home" XDG_CACHE_HOME="$cache" bash "$GATE_SH" <<<"$payload"
+  )
+}
+
+# --- explicit call, no session, dirty tree -> the gate blocks ---------------
+mk_repo nosession-dirty main
+git remote set-head origin main 2>/dev/null
+echo change >> seed.txt
+NS_HOME="$(mktemp -d /tmp/devlead-gate-check-home.XXXXXX)"
+NS_CACHE="$(mktemp -d /tmp/devlead-gate-check-cache.XXXXXX)"
+install_session_script "$NS_HOME"
+out="$(run_gate "$SANDBOX/nosession-dirty" "$NS_HOME" "$NS_CACHE" 2>&1)"
+rc=$?
+check "no session, explicit call, dirty tree: gate blocks" "$rc" "2"
+contains "no session, explicit call: failure names the dirty file" "$out" "seed.txt"
+
+# --- same repo, hook path -> the opt-in guard keeps the hook inert ----------
+out="$(run_gate_stdin "$SANDBOX/nosession-dirty" "$NS_HOME" "$NS_CACHE" \
+  '{"hook_event_name":"Stop"}' 2>&1)"
+rc=$?
+check "no session, Stop hook stdin: hook stays inert" "$rc" "0"
+out="$(run_gate_stdin "$SANDBOX/nosession-dirty" "$NS_HOME" "$NS_CACHE" \
+  '{"hook_event_name":"SubagentStop"}' 2>&1)"
+rc=$?
+check "no session, non-Stop hook stdin: hook stays inert" "$rc" "0"
+rm -rf "$NS_HOME" "$NS_CACHE"
+
+# --- explicit call, no session, red test runner -> the gate blocks ----------
+mk_repo nosession-redtests main
+git remote set-head origin main 2>/dev/null
+git checkout -q -b feat/red-tests
+cat > Makefile <<'EOF'
+.PHONY: test
+test:
+	@echo "suite is red"
+	@exit 1
+EOF
+git add Makefile
+git commit -q -m "add a failing test target on the feature branch"
+NS_HOME="$(mktemp -d /tmp/devlead-gate-check-home.XXXXXX)"
+NS_CACHE="$(mktemp -d /tmp/devlead-gate-check-cache.XXXXXX)"
+install_session_script "$NS_HOME"
+out="$(run_gate "$SANDBOX/nosession-redtests" "$NS_HOME" "$NS_CACHE" 2>&1)"
+rc=$?
+check "no session, explicit call, red test runner: gate blocks" "$rc" "2"
+contains "no session, explicit call: failure carries the runner output" "$out" "suite is red"
+
+# --- existing behaviour: an ACTIVE session still gets the no-op Stop hook ---
+activate_devlead "$SANDBOX/nosession-redtests" "$NS_HOME"
+out="$(run_gate_stdin "$SANDBOX/nosession-redtests" "$NS_HOME" "$NS_CACHE" \
+  '{"hook_event_name":"Stop"}' 2>&1)"
+rc=$?
+check "active session, Stop hook stdin: still a no-op" "$rc" "0"
+rm -rf "$NS_HOME" "$NS_CACHE"
 
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
