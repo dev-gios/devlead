@@ -458,7 +458,7 @@ Al cerrar 8.3-SDD.6 limpio, esta subsección termina — NO hay un paso terminal
 Ejecutá usando el Bash tool:
 
 ```
-bash ~/.devlead/hooks/gate-check.sh
+bash ~/.devlead/hooks/gate-check.sh </dev/null
 ```
 
 Si algún gate falla:
