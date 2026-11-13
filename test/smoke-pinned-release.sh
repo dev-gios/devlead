@@ -82,6 +82,7 @@ all_publish_targets() {
 .devlead/scripts/open-pr.sh
 .devlead/scripts/merge.sh
 .devlead/scripts/notify.sh
+.devlead/scripts/journal.sh
 .devlead/scripts/devlead-session.sh
 .devlead/scripts/envelope.sh
 .devlead/scripts/envelope-auth.sh
@@ -114,6 +115,7 @@ all_source_paths() {
 .devlead/scripts/open-pr.sh
 .devlead/scripts/merge.sh
 .devlead/scripts/notify.sh
+.devlead/scripts/journal.sh
 .devlead/scripts/devlead-session.sh
 .devlead/scripts/envelope.sh
 .devlead/scripts/envelope-auth.sh

@@ -114,6 +114,15 @@ Luego leé el archivo a la ruta absoluta que imprimió ese comando usando el Rea
 - Si el archivo no existe o sigue siendo la plantilla en blanco (sin entradas reales): tratá el contexto previo como vacío. No muestres error.
 - Si tiene contenido real: usalo SOLO para contexto de *por qué* (blockers, próximo paso, qué quedó a medias). NUNCA uses el journal como fuente de qué existe técnicamente — eso lo sabe solo `state.sh`.
 
+Después leé el historial (las entradas de los días anteriores, que `/cerremos` archiva en vez de pisar):
+
+```bash
+bash ~/.devlead/scripts/journal.sh history 5
+```
+
+- `STATUS: empty` → no hay historial todavía; seguí.
+- `STATUS: ok` → usalo para detectar lo que se REPITE: el mismo blocker varios días, un próximo paso que se viene postergando, una decisión que ya se tomó. Si algo se repite, decilo en la línea de contexto del standup. Vale la misma regla: es contexto de *por qué*, nunca fuente de estado técnico.
+
 ---
 
 ## Paso 2.5 — Leer la bandeja (lo que pasó sin vos)
