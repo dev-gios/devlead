@@ -307,6 +307,7 @@ DevLead aprende cómo trabajás leyendo lo que escribís en los PRs:
 | `learn.sh pref-add user "..."` | Agregar una a mano |
 | `learn.sh pref-remove p3` | Quitar una (no se vuelve a deducir) |
 | `learn.sh outcomes` | Resumen de cómo terminaron los PRs de DevLead |
+| `learn.sh trust` | Si ese historial está estable (10+ mergeados, 5 mediciones seguidas sin rechazos). Solo informa: el margen de DevLead lo cambiás vos en `devlead config` |
 
 Todo vive en `~/.devlead/learn/<repo-key>/`, local y por repo. Una preferencia es estilo, nunca autoridad: no puede mergear, saltear un gate ni mover un límite (`GOVERNANCE.md §learned-preferences`).
 
