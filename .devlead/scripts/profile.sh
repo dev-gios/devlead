@@ -145,9 +145,12 @@ _JQ_HUMAN='
   def typed:
     if (.origin | type) == "object" then
       (.origin.kind == "human") and ((.promptSource // "typed") | IN("typed", "queued"))
-    else
-      (text | test("^\\s*(<|\\[|Stop hook|This session is being continued|Caveat:)") | not)
-    end;
+    elif .origin == null then
+      # No origin mark at all (older versions): plain text that no tool, hook
+      # or command produced, and no source that says otherwise.
+      ((.promptSource // "typed") | IN("typed", "queued"))
+      and (text | test("^\\s*(<|\\[|Stop hook|This session is being continued|Caveat:)") | not)
+    else false end;
   fromjson?
   | select(type == "object" and .type == "user")
   | select((.isMeta // false) | not)
@@ -162,7 +165,13 @@ _JQ_HUMAN='
      | gsub("<(?<tag>[a-z][a-z0-9_-]*)(\\s[^>]*)?>.*?</\\k<tag>(\\s[^>]*)?>"; " ")
      | gsub("  +"; " ") | sub("^ +"; "") | sub(" +$"; "")) as $t
   | select(($t | length) >= $min)
-  | select($t | test("^<|<pasted_content|<system-reminder") | not)
+  # Fail closed: if anything shaped like a tag is left — an unclosed block, a
+  # closing tag that was inside the pasted text, a nested one — the boundary
+  # between typed and pasted is unknown, and the whole message is dropped.
+  | select($t | test("</?[A-Za-z][A-Za-z0-9_.:-]*(\\s[^>]*)?/?>") | not)
+  # A slash command is an instruction to the tool, not the user talking; an
+  # unattended run starts with one.
+  | select($t | test("^/") | not)
   | [(.uuid // "" | .[0:12]), (.timestamp // "" | .[0:10]), (.cwd // ""), "new", ($t | .[0:$max])]
   | select(.[0] != "")
   | @tsv
@@ -211,6 +220,17 @@ _capture() {
       sed -i '$d' "$chunk"
     fi
     take="$(stat -c %s "$chunk")"
+    # A single line longer than what is left of the budget would never be
+    # consumed, and nothing after it either. No typed message is that long:
+    # step over it.
+    if [[ "$take" -eq 0 && $((size - prev)) -gt "$budget" ]]; then
+      take="$(tail -c +"$((prev + 1))" "$f" 2>/dev/null | head -n 1 | wc -c)"
+      if [[ $((prev + take)) -le "$size" && "$take" -gt 0 ]]; then
+        seen["$f"]=$((prev + take))
+        files=$((files + 1))
+      fi
+      take=0
+    fi
     if [[ "$take" -gt 0 ]]; then
       jq -Rr --argjson min "$MESSAGE_MIN_CHARS" --argjson max "$MESSAGE_MAX_CHARS" "$_JQ_HUMAN" "$chunk" >> "$new_rows" 2>/dev/null || true
       seen["$f"]=$((prev + take))
@@ -323,10 +343,25 @@ _digested() {
 # ---------------------------------------------------------------------------
 # entries
 # ---------------------------------------------------------------------------
+# _norm <text> — lowercase ASCII words separated by single spaces: accents
+# folded, punctuation gone. Done on bytes, so it gives the same answer in any
+# locale. Used to recognise the same sentence written slightly differently and
+# to match the authority filter.
+_norm() {
+  # shellcheck disable=SC2018,SC2019 # ASCII on purpose: accents were folded on the line above
+  printf '%s' "$1" \
+    | LC_ALL=C sed 's/á/a/g; s/é/e/g; s/í/i/g; s/ó/o/g; s/ú/u/g; s/ü/u/g; s/ñ/n/g; s/Á/a/g; s/É/e/g; s/Í/i/g; s/Ó/o/g; s/Ú/u/g; s/Ü/u/g; s/Ñ/n/g' \
+    | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -c 'a-z0-9' ' ' | LC_ALL=C sed 's/  */ /g; s/^ //; s/ $//'
+}
+
 # An entry describes how the user works. It must not read as a rule about what
 # DevLead may do: that is the envelope's and guard.sh's business (A3,
 # §hard-limits), and a profile line must never look like it changes them.
-_AUTHORITY_RE='(merge|mergea|envelope|guard\.sh|[^a-z]gates?[^a-z]|secret|[^a-z]tokens?[^a-z]|credencial|credential|password|contrase|producci[oó]n|production|deploy|desplieg|permis|autoriz|authori[sz]|bypass|--no-verify|--force|force[- ]push|sudo|rama por defecto|default branch|[^a-z]main[^a-z]|[^a-z]master[^a-z]|(skip|salte|omit)[a-z]* (a |the |el |la |los |las )?(gate|test|prueba|review|revisi|check))'
+# Matched against the normalised text, word by word. It errs on the side of
+# refusing: a style sentence that trips it can be reworded without the word,
+# an authority sentence that slips through is the worse mistake.
+_AUTHORITY_WORDS='merge[a-z]*|fusion[a-z]*|envelope|guard sh|gates?|secrets?|secretos?|credencial[a-z]*|credentials?|passwords?|contrasen[a-z]*|claves?|keys?|env|(api|access|github|auth) tokens?|(el|the|un|a|los|sus) tokens?|produccion|production|prod|deploy[a-z]*|desplieg[a-z]*|releases?|publish[a-z]*|publica[a-z]*|permis[a-z]*|autoriz[a-z]*|authori[sz][a-z]*|aprueb[a-z]*|aprob[a-z]*|approv[a-z]*|bypass[a-z]*|no verify|force|sudo|push[a-z]*|rama (por defecto|principal)|default branch|main branch|(rama|branch|to|en|on|into|hacia|sobre) (main|master)|a (main|master) (sin|directo|direct)[a-z]*|limites?|limits?|hooks?|base de datos|bases?|databases?|migraci[a-z]*|migrations?|borr[a-z]* (los |the |la |las )?(datos|data|tablas?)|delet[a-z]* (the |all |old )?(data|tables?)|(skip|salte|omit|ignor|desactiv|disabl)[a-z]* (a |the |el |la |lo |los |las |un |failing |that )?(gates?|tests?|pruebas?|reviews?|revisi[a-z]*|checks?)|(checks?|tests?|pruebas?) (que )?(fall|fail)[a-z]*|failing (tests?|checks?)|otros? repositorios?|(other|sibling) repos[a-z]*|sin (esperar )?(el |la |un |una )?(review|revision)|without (waiting for )?(a )?review'
+_AUTHORITY_RE="(^| )(${_AUTHORITY_WORDS})( |\$)"
 
 # _used_chars — text size of the entries `show` prints.
 _used_chars() {
@@ -335,6 +370,29 @@ _used_chars() {
     BEGIN { now = days(today) }
     $4 == "active" { then = days($3); if (then != "" && (now - then) / 86400 <= ttl) n += length($7) }
     END { print n + 0 }' "$PROFILE"
+}
+
+# _confirm_entry <id> — restart an active entry's clock. Bringing an EXPIRED
+# entry back makes it count against the cap again, so it has to fit.
+_confirm_entry() {
+  local id="$1" confirmed text age used
+  confirmed="$(awk -F'\t' -v id="$id" '$1 == id { print $3; exit }' "$PROFILE")"
+  text="$(awk -F'\t' -v id="$id" '$1 == id { print $7; exit }' "$PROFILE")"
+  age="$(_days_since "$confirmed" || echo 0)"
+  if [[ "$age" -gt "$TTL_DAYS" ]]; then
+    used="$(_used_chars)"
+    if [[ $((used + ${#text})) -gt $MAX_CHARS ]]; then
+      echo "STATUS: full"
+      echo "ID: $id"
+      echo "USED: $used"
+      echo "MAX: $MAX_CHARS"
+      echo "NOTE: this entry had expired and no longer fits; merge or remove entries first"
+      return 1
+    fi
+  fi
+  _rewrite "$PROFILE" '$1 == id { $3 = today } { print }' "id=$id" "today=$TODAY" || return 1
+  echo "STATUS: confirmed"
+  echo "ID: $id"
 }
 
 _add() {
@@ -351,15 +409,20 @@ _add() {
     echo "REASON: an entry is one line of $ENTRY_MIN_CHARS to $ENTRY_MAX_CHARS characters (this one has ${#text})"
     return 1
   fi
-  if [[ " ${text,,} " =~ $_AUTHORITY_RE ]]; then
+  local key
+  key="$(_norm "$text")"
+  if [[ "$key" =~ $_AUTHORITY_RE ]]; then
     echo "STATUS: refused"
-    echo "REASON: the entry talks about what DevLead may do (${BASH_REMATCH[1]}). The profile holds how the user writes and decides; limits live in the envelope and in guard.sh"
+    echo "REASON: the entry talks about what DevLead may do (${BASH_REMATCH[2]}). The profile holds how the user writes and decides; limits live in the envelope and in guard.sh"
     return 1
   fi
 
-  # The same sentence again is a confirmation, not a second entry.
-  local dup
-  dup="$(awk -F'\t' -v t="${text,,}" 'tolower($7) == t { print $1 "\t" $4; exit }' "$PROFILE")"
+  # The same sentence again — whatever its case, accents or punctuation — is a
+  # confirmation, not a second entry; and one the user removed stays removed.
+  local dup="" eid estate etext
+  while IFS=$'\t' read -r eid _ _ estate _ _ etext; do
+    if [[ "$(_norm "$etext")" == "$key" ]]; then dup="$eid"$'\t'"$estate"; break; fi
+  done < "$PROFILE"
   if [[ -n "$dup" ]]; then
     if [[ "${dup#*$'\t'}" == "removed" ]]; then
       echo "STATUS: removed-before"
@@ -367,10 +430,8 @@ _add() {
       echo "NOTE: the user removed this entry; it is not learned again"
       return 0
     fi
-    _rewrite "$PROFILE" '$1 == id { $3 = today } { print }' "id=${dup%%$'\t'*}" "today=$TODAY" || return 1
-    echo "STATUS: confirmed"
-    echo "ID: ${dup%%$'\t'*}"
-    return 0
+    _confirm_entry "${dup%%$'\t'*}"
+    return $?
   fi
 
   local used
@@ -416,8 +477,8 @@ _set_entry() {   # <verb> <id>
       echo "NOTE: a removed entry stays removed"
       return 1
     fi
-    _rewrite "$PROFILE" '$1 == id { $3 = today } { print }' "id=$id" "today=$TODAY" || return 1
-    echo "STATUS: confirmed"
+    _confirm_entry "$id"
+    return $?
   fi
   echo "ID: $id"
 }
