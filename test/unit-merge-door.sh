@@ -57,13 +57,18 @@ cat > "$FAKEBIN/gh" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
   "auth status") exit 0 ;;
-  "repo view")   echo "main"; exit 0 ;;
+  "repo view")
+    [[ "${FAKE_REPO_VIEW_RC:-0}" == "0" ]] || exit "$FAKE_REPO_VIEW_RC"
+    echo "${FAKE_DEFAULT_BRANCH:-main}"; exit 0 ;;
   "pr view")
     [[ "${FAKE_PR_VIEW_RC:-0}" == "0" ]] || { echo "fake gh: no such PR" >&2; exit "$FAKE_PR_VIEW_RC"; }
-    printf '%s\t%s\n' "${FAKE_PR_BASE:-}" "${FAKE_PR_STATE:-OPEN}"
+    echo "fake gh: a warning nobody asked for" >&2
+    printf '%s\t%s\t%s\n' "${FAKE_PR_BASE:-}" "${FAKE_PR_STATE:-OPEN}" \
+      "${FAKE_PR_URL:-https://example.test/acme/repo/pull/7}"
     exit 0 ;;
   "pr merge")
     { printf 'CALL'; for a in "$@"; do printf '\t%s' "$a"; done; printf '\n'; } >> "$GH_LOG"
+    [[ -z "${GH_REPO:-}${GH_HOST:-}" ]] || echo "LEAK GH_REPO/GH_HOST reached gh" >> "$GH_LOG"
     if [[ "${FAKE_MERGE_RC:-0}" != "0" ]]; then
       echo "fake gh: merge conflict" >&2
       exit "$FAKE_MERGE_RC"
@@ -178,10 +183,62 @@ FAKE_PR_BASE=dev FAKE_PR_STATE=CLOSED refused "PR is not open" \
   "merge refused: PR #7 is CLOSED" 7
 FAKE_PR_VIEW_RC=1 refused "PR cannot be read" "merge refused: cannot read PR #7" 7
 
+out="$(FAKE_PR_BASE=dev run_door https://example.test/acme/repo/pull/7/ 2>/dev/null)"
+check "granted, URL with trailing slash: exit 0" "$?" "0"
+FAKE_PR_BASE=dev refused "URL of another repository" \
+  "merge refused: https://evil.example/other/repo/pull/7 is not PR #7 of this repository" \
+  https://evil.example/other/repo/pull/7
+
+out="$(FAKE_PR_BASE=dev run_door 007 2>/dev/null)"
+check "leading zeros are normalised before reaching gh" "$(cat "$GH_LOG")" \
+  "$(printf 'CALL\tpr\tmerge\t7\t--merge')"
+
+out="$(GH_REPO=other/repo GH_HOST=evil.example FAKE_PR_BASE=dev run_door 7 2>/dev/null)"
+check "GH_REPO / GH_HOST never reach gh" "$(cat "$GH_LOG")" \
+  "$(printf 'CALL\tpr\tmerge\t7\t--merge')"
+
+mkdir -p sub/dir
+out="$(cd sub/dir && FAKE_PR_BASE=dev run_door 7 2>/dev/null)"
+check "called from a subdirectory: the repo's envelope still decides (exit 0)" "$?" "0"
+write_envelope "  integration_branch: dev" "never"
+out="$(cd sub/dir && FAKE_PR_BASE=dev run_door 7 2>/dev/null)"
+check "called from a subdirectory with merge.mode never: exit 2" "$?" "2"
+write_envelope "  integration_branch: dev" "integration-branch"
+
+# --- the trunk is asked of the remote at merge time; no answer, no merge ----
+FAKE_PR_BASE=dev FAKE_REPO_VIEW_RC=1 refused "remote default branch cannot be asked" \
+  "merge refused: cannot ask the remote for its default branch" 7
+# A stale local symref says "main"; the remote's real default is now "dev".
+# envelope.sh's own gh lookup is made to fail (auth down) so it falls back to
+# the symref and approves — the door must still refuse.
+cat > "$FAKEBIN/gh-authdown" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1:-} ${2:-}" == "auth status" ]] && exit 1
+exec "$(dirname "$0")/gh.real" "$@"
+EOF
+cp "$FAKEBIN/gh" "$FAKEBIN/gh.real"
+cp "$FAKEBIN/gh-authdown" "$FAKEBIN/gh"
+chmod +x "$FAKEBIN/gh"
+FAKE_PR_BASE=dev FAKE_DEFAULT_BRANCH=dev refused "stale symref, remote default is the integration branch" \
+  "merge refused: the integration branch 'dev' is the remote's default branch" 7
+cp "$FAKEBIN/gh.real" "$FAKEBIN/gh"
+
+# --- a null integration branch, however it is spelled, grants nothing --------
+for null in "~" "null" "Null" "NULL" '""'; do
+  write_envelope "  integration_branch: $null" "integration-branch"
+  FAKE_PR_BASE=dev FAKE_DEFAULT_BRANCH=dev refused "integration_branch: $null" \
+    "merge refused: envelope blocked" 7
+  FAKE_PR_BASE=dev refused "integration_branch: $null (default is main)" \
+    "merge refused: envelope blocked" 7
+done
+write_envelope "  integration_branch: dev" "integration-branch"
+
 # ===========================================================================
 # Closed interface: one PR reference, nothing else
 # ===========================================================================
-for bad in "--admin" "7 --admin" "7 --squash" "-R other/repo 7" "7 8" "feature-branch" "-7"; do
+for bad in "--admin" "7 --admin" "7 --squash" "-R other/repo 7" "7 8" "feature-branch" "-7" \
+           "７" "1234567890" "x7" "7x" "https://example.test/acme/repo/pull/7/files" \
+           "xhttps://example.test/acme/repo/pull/7"; do
   # shellcheck disable=SC2086  # word-splitting the spelling is the point
   out="$(FAKE_PR_BASE=dev run_door $bad 2>/dev/null)"
   rc=$?
@@ -199,6 +256,9 @@ rc=$?
 check "merge failure: exit code is gh's" "$rc" "5"
 check "merge failure: exactly one attempt" "$(merge_calls)" "1"
 contains "merge failure: gh's own words reported" "$out" "PARK_REASON: fake gh: merge conflict"
+
+out="$(FAKE_PR_BASE=dev FAKE_PR_VIEW_RC=0 run_door 7 2>&1 >/dev/null)"
+check "a warning on gh's stderr does not stop a valid merge" "$(merge_calls)" "1"
 
 # ===========================================================================
 # The door never writes the envelope

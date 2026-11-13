@@ -10,7 +10,10 @@
 #   1. `envelope.sh show` reports STATUS: ok (which already proves that
 #      base.integration_branch is not the remote's default branch)
 #   2. MERGE_MODE is exactly `integration-branch`
-#   3. the PR is OPEN and its base is exactly base.integration_branch
+#   3. the remote itself, asked now, says its default branch is NOT
+#      base.integration_branch (no fallback to the local symref, which git
+#      never updates: here "cannot ask" means "do not merge")
+#   4. the PR is OPEN and its base is exactly base.integration_branch
 #
 # Until now the merge was a `gh pr merge` line in the command prose, guarded by
 # preconditions the model was told to check. Here they are checked in code, so
@@ -30,6 +33,9 @@
 #   N  — `gh pr merge` itself failed with exit code N (one attempt, no retry)
 
 set -uo pipefail
+# Byte semantics for every pattern below: under a UTF-8 locale `[0-9]` also
+# matches non-ASCII digits, which would reach `gh` untouched.
+export LC_ALL=C
 
 _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -48,13 +54,16 @@ _usage() {
 
 [[ $# -eq 1 ]] || _usage
 _pr=""
-if [[ "$1" =~ ^[0-9]+$ ]]; then
+_pr_url=""
+if [[ "$1" =~ ^[0-9]{1,9}$ ]]; then
   _pr="$1"
-elif [[ "$1" =~ ^https://[^/[:space:]]+/[^/[:space:]]+/[^/[:space:]]+/pull/([0-9]+)/?$ ]]; then
-  _pr="${BASH_REMATCH[1]}"
+elif [[ "$1" =~ ^(https://[^/[:space:]]+/[^/[:space:]]+/[^/[:space:]]+/pull/([0-9]{1,9}))/?$ ]]; then
+  _pr_url="${BASH_REMATCH[1]}"
+  _pr="${BASH_REMATCH[2]}"
 else
   _usage
 fi
+_pr=$((10#$_pr))   # canonical decimal: no leading zeros reach gh
 
 if ! _toplevel="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ -z "$_toplevel" ]] \
    || ! cd "$_toplevel"; then
@@ -93,19 +102,41 @@ if [[ -z "$_ib" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3: the PR itself, asked of the remote — not assumed from what the caller
-# believes it opened.
+# 3: the trunk, asked of the remote right now. envelope.sh may have fallen
+# back to the local origin/HEAD symref (stale after a default-branch rename);
+# that fallback is acceptable for showing configuration, not for merging.
 # ---------------------------------------------------------------------------
-if ! _view="$(gh pr view "$_pr" --json baseRefName,state \
-      -q '"\(.baseRefName)\t\(.state)"' 2>&1)"; then
-  _park "merge refused: cannot read PR #$_pr:
-$_view"
+_gh_timeout=()
+command -v timeout &>/dev/null && _gh_timeout=(timeout 30)
+_default="$("${_gh_timeout[@]}" gh repo view --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)"
+if [[ -z "$_default" || "$_default" == *$'\n'* ]]; then
+  _park "merge refused: cannot ask the remote for its default branch — cannot prove '$_ib' is not the trunk"
   exit 2
 fi
-_pr_base="${_view%%$'\t'*}"
-_pr_state="${_view#*$'\t'}"
+if [[ "$_default" == "$_ib" ]]; then
+  _park "merge refused: the integration branch '$_ib' is the remote's default branch"
+  exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# 4: the PR itself, asked of the remote — not assumed from what the caller
+# believes it opened. stderr is kept apart so a warning from gh can neither
+# pass for an answer nor garble one.
+# ---------------------------------------------------------------------------
+_view="$("${_gh_timeout[@]}" gh pr view "$_pr" --json baseRefName,state,url \
+      -q '"\(.baseRefName)\t\(.state)\t\(.url)"' 2>/dev/null)"
+_view_rc=$?
+IFS=$'\t' read -r _pr_base _pr_state _pr_real_url _extra <<<"$_view"
+if [[ $_view_rc -ne 0 || -z "$_pr_base" || -z "$_pr_state" || -n "${_extra:-}" || "$_view" == *$'\n'* ]]; then
+  _park "merge refused: cannot read PR #$_pr (gh pr view exit $_view_rc)"
+  exit 2
+fi
+if [[ -n "$_pr_url" && "$_pr_url" != "${_pr_real_url%/}" ]]; then
+  _park "merge refused: $_pr_url is not PR #$_pr of this repository (${_pr_real_url:-unknown})"
+  exit 2
+fi
 if [[ "$_pr_state" != "OPEN" ]]; then
-  _park "merge refused: PR #$_pr is ${_pr_state:-in an unknown state}, not OPEN"
+  _park "merge refused: PR #$_pr is $_pr_state, not OPEN"
   exit 2
 fi
 if [[ "$_pr_base" != "$_ib" ]]; then
