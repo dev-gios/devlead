@@ -86,7 +86,7 @@ DevLead trabaja por su cuenta. Lo que NO puede hacer no depende de una frase en 
 | `database` | Todo lo que apunte a una base de datos que no esté en esta máquina, incluida una dirección tomada de una variable |
 | `secrets` | Leer o escribir un archivo de credenciales fuera de los lugares permitidos; volcar el entorno; `gh auth token` |
 | `scope` | Escribir un archivo fuera del repositorio en el que se inició la sesión |
-| `self-config` | Cambiar los archivos que configuran estos límites (`~/.devlead/`, los settings de Claude Code) |
+| `self-config` | Cambiar los archivos que configuran estos límites: `~/.devlead/`, los settings de Claude Code y el `envelope.yml` del repo (§A3: el envelope lo escribe el usuario) |
 
 **Quién concede una excepción.** Solo el usuario, y solo para credenciales: los lugares desde donde DevLead puede leer una clave se listan, un glob por línea, en `~/.devlead/secrets-allow`. Ningún script de DevLead escribe ese archivo y el guard bloquea a la sesión que lo intente. Los otros límites no tienen excepción.
 

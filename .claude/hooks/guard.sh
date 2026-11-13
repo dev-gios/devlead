@@ -26,6 +26,10 @@
 #     Claude Code process, not of the shell a tool call runs in.
 # In any other Claude Code session it does nothing.
 #
+# The interactive case follows the session marker, so it ends when the session
+# is closed — by the user's command or by the session itself. An unattended
+# run has no such exit: DEVLEAD_GUARD=1 is out of its reach.
+#
 # The places a credential may be read from are listed by the user, one glob
 # per line, in ~/.devlead/secrets-allow. Nothing in DevLead writes that file,
 # and this guard blocks a session that tries to.
@@ -137,8 +141,9 @@ _check_self_config() {
   if _under "$abs" "$HOME/.devlead" \
      || [[ "$abs" == "$HOME"/.claude/settings*.json ]] \
      || _under "$abs" "$HOME/.claude/hooks" \
-     || [[ "$abs" == "$_root"/.claude/settings*.json ]]; then
-    _deny self-config "$1 configures DevLead's own limits or Claude Code's hooks; only the user changes it"
+     || [[ "$abs" == "$_root"/.claude/settings*.json ]] \
+     || [[ "$abs" == "$_root"/.devlead/envelope.yml ]]; then
+    _deny self-config "$1 configures DevLead's own limits (the envelope, the allow list, Claude Code's hooks); only the user changes it"
   fi
 }
 
@@ -203,7 +208,7 @@ _NL=$'\n'
 # then any number of wrappers (sudo, npx, bash -c, VAR=value ...) and an
 # optional path in front of the program name. Matching only there keeps a word
 # that is merely an argument from looking like a command.
-_CS="(^|[;&|(\`${_NL}]|\\\$\\()[[:space:]]*((sudo|npx|bunx|time|nohup|command|exec|then|do|else)[[:space:]]+|timeout[[:space:]]+[^[:space:]]+[[:space:]]+|xargs[[:space:]]+(-[^[:space:]]+[[:space:]]+)*|(bash|sh|zsh)[[:space:]]+-[a-z]*c[[:space:]]+[\"']?|(python3?|uv|pipx)[[:space:]]+(-m|run|tool run)[[:space:]]+|(pnpm|yarn|npm|bun)[[:space:]]+(dlx|exec|x)[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?"
+_CS="(^|[;&|(\`${_NL}]|\\\$\\()[[:space:]]*((sudo|npx|bunx|time|nohup|command|exec|then|do|else|env)[[:space:]]+|timeout[[:space:]]+[^[:space:]]+[[:space:]]+|xargs[[:space:]]+(-[^[:space:]]+[[:space:]]+)*|(bash|sh|zsh)[[:space:]]+-[a-z]*c[[:space:]]+[\"']?|(python3?|uv|pipx)[[:space:]]+(-m|run|tool run)[[:space:]]+|(pnpm|yarn|npm|bun)[[:space:]]+(dlx|exec|x)[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?"
 _ARGS='([^;&|]*[[:space:]])?'      # options before the subcommand, same simple command
 _END="(\$|[[:space:];&|)\"'])"
 
@@ -263,6 +268,19 @@ _check_recursive_search() {
              -print 2>/dev/null | head -50)
   return 0
 }
+
+# Local: this machine, or a dotless name (a compose service). Everything else
+# is somebody's real database until proven otherwise.
+_is_local_host() {
+  local h="${1,,}"
+  h="${h#[}"; h="${h%]}"
+  case "$h" in
+    localhost|127.*|::1|0.0.0.0|host.docker.internal|"") return 0 ;;
+  esac
+  [[ "$h" != *.* && "$h" != *:* ]]
+}
+
+_DB_CLIENTS='psql|mysql|mariadb|mongosh|mongo|redis-cli|sqlcmd|pg_restore|pg_dump|pg_dumpall|mongorestore|mongodump|clickhouse-client|cockroach'
 
 # The directory the command is in as it goes: a `cd` moves it for the simple
 # commands that follow, so `cd src && npm test && cd ..` ends where it began.
@@ -335,9 +353,9 @@ while IFS= read -r _line || [[ -n "$_line" ]]; do
     dd)
       for _a in "${_args[@]}"; do [[ "$_a" == of=* ]] && _check_write_target "${_a#of=}"; done
       ;;
-    sed|perl)
+    sed|perl|yq)
       _inplace=0
-      for _a in "${_args[@]}"; do [[ "$_a" == -i* || "$_a" == --in-place* || "$_a" == -pi* ]] && _inplace=1; done
+      for _a in "${_args[@]}"; do [[ "$_a" == -i* || "$_a" == --in-place* || "$_a" == --inplace* || "$_a" == -pi* ]] && _inplace=1; done
       if [[ $_inplace -eq 1 ]]; then
         for _a in "${_plain[@]:1}"; do _check_write_target "$_a"; done
       fi
@@ -349,6 +367,27 @@ while IFS= read -r _line || [[ -n "$_line" ]]; do
     echo|printf) ;;
     *) for _a in "${_args[@]}"; do _check_word_secret "$_a"; done ;;
   esac
+
+  # A database client: where does THIS simple command connect? Judged here
+  # and not over the whole text, so the -h of another program (`du -h a.txt`)
+  # is never read as a host.
+  _client=0
+  for _a in "$_prog" "${_args[@]}"; do
+    [[ "|${_DB_CLIENTS}|" == *"|${_a##*/}|"* ]] && _client=1
+  done
+  if [[ $_client -eq 1 ]]; then
+    for ((_k = 0; _k < ${#_args[@]}; _k++)); do
+      _h=""
+      case "${_args[$_k]}" in
+        -h|--host) _h="${_args[$((_k + 1))]:-}" ;;
+        --host=*|host=*|hostaddr=*) _h="${_args[$_k]#*=}" ;;
+        -h?*) _h="${_args[$_k]#-h}" ;;
+      esac
+      [[ -n "$_h" ]] || continue
+      _is_local_host "$_h" \
+        || _deny database "the command connects to a database that is not on this machine ($_h)"
+    done
+  fi
 
   # Recursive searches.
   _recursive=0
@@ -362,7 +401,7 @@ while IFS= read -r _line || [[ -n "$_line" ]]; do
     _excluded=0
     for _a in "${_args[@]}"; do [[ "$_a" == --exclude* || "$_a" == -g || "$_a" == --glob* || "$_a" == --include* ]] && _excluded=1; done
     if [[ $_excluded -eq 0 ]]; then
-      _dir="$_cwd"
+      _dir="$_vcwd"
       if [[ ${#_plain[@]} -gt 1 && -d "$(_abs "${_plain[-1]}")" ]]; then _dir="$(_abs "${_plain[-1]}")"; fi
       _check_recursive_search "$_dir"
     fi
@@ -425,8 +464,10 @@ if _runs "$_scan" "git[[:space:]]+${_ARGS}push${_END}"; then
   # branch first, the answer is in the command, not in the working tree.
   _re_sw="git[[:space:]]+${_ARGS}(checkout|switch)[[:space:]]"
   _re_to_default="git[[:space:]]+${_ARGS}(checkout|switch)[[:space:]]+([^;&|]*[[:space:]])?[\"']?(${_defaults})${_END}"
-  _re_new="git[[:space:]]+${_ARGS}(checkout|switch)[[:space:]]+([^;&|]*[[:space:]])?(-[bBcC]|--create|--orphan)[[:space:]]"
-  if [[ "$_scan" =~ $_re_to_default ]] && ! [[ "$_scan" =~ $_re_new ]]; then
+  # A command that CREATES a branch names its start point, not its
+  # destination: `git checkout -b feat/z main` does not check out main.
+  _nocreate="$(sed -E 's/git[[:space:]]+([^;&|]*[[:space:]])?(checkout|switch)[[:space:]]+([^;&|]*[[:space:]])?(-[bBcC]|--create|--orphan)[[:space:]][^;&|]*/true /g' <<<"$_scan")"
+  if [[ "$_nocreate" =~ $_re_to_default ]]; then
     _deny production "the command checks out the default branch and pushes"
   elif ! [[ "$_scan" =~ $_re_sw ]]; then
     _current="$(git -C "$_cwd" symbolic-ref --quiet --short HEAD 2>/dev/null)"
@@ -447,17 +488,6 @@ if { _runs "$_scan" "gh[[:space:]]+api${_END}" || [[ "$_scan" =~ api\.github\.co
 fi
 
 # -- database
-# Local: this machine, or a dotless name (a compose service). Everything else
-# is somebody's real database until proven otherwise.
-_is_local_host() {
-  local h="${1,,}"
-  h="${h#[}"; h="${h%]}"
-  case "$h" in
-    localhost|127.*|::1|0.0.0.0|host.docker.internal|"") return 0 ;;
-  esac
-  [[ "$h" != *.* && "$h" != *:* ]]
-}
-
 # Every database URL in the command, wherever it appears (an argument, an
 # inline DATABASE_URL=...).
 while IFS= read -r _url; do
@@ -479,7 +509,6 @@ while [[ "$_rest" =~ $_re ]]; do
   _rest="${_rest#*"${BASH_REMATCH[0]}"}"
 done
 
-_DB_CLIENTS='psql|mysql|mariadb|mongosh|mongo|redis-cli|sqlcmd|pg_restore|pg_dump|pg_dumpall|mongorestore|mongodump|clickhouse-client|cockroach'
 if _runs "$_scan" "(turso|pscale|neon|neonctl)${_END}"; then
   _deny database "the command runs a hosted-database CLI"
 fi
@@ -491,14 +520,6 @@ fi
 # psql -h remote` connects just the same.
 _re="(^|[^A-Za-z0-9_./-])(${_DB_CLIENTS})(\$|[[:space:]\"'])"
 if [[ "$_scan" =~ $_re ]]; then
-  # -h host / --host host / --host=host / -hhost / host=... in a conninfo string
-  _re="([[:space:]](-h[[:space:]]*|--host[=[:space:]]+)|[[:space:]\"']host(addr)?=)[\"']?([^[:space:];&|\"']+)"
-  _rest="$_scan"
-  while [[ "$_rest" =~ $_re ]]; do
-    _is_local_host "${BASH_REMATCH[4]}" \
-      || _deny database "the command connects to a database that is not on this machine (${BASH_REMATCH[4]})"
-    _rest="${_rest#*"${BASH_REMATCH[0]}"}"
-  done
   # A destination held in a variable cannot be judged from here.
   if [[ "$_scan" =~ \$\{?[A-Za-z_]*(DATABASE|DB|MONGO|REDIS|POSTGRES|PG|MYSQL|SUPABASE)[A-Za-z_]* ]]; then
     _deny database "the command takes its database address from a variable, so the destination is unknown — use an explicit local address"

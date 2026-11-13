@@ -109,6 +109,8 @@ bash_blocked production 'uv publish'
 bash_blocked production 'docker buildx build --push -t registry.example.com/api:1 .'
 bash_blocked production 'gh workflow run deploy.yml'
 bash_blocked production 'cdk deploy --all'
+bash_blocked production 'env FOO=1 vercel --prod'
+bash_blocked production 'git checkout -b tmp && git checkout main && git push'
 
 echo "=== production: pushing while the default branch is checked out ==="
 git -C "$WORK" checkout -q -b trunk
@@ -180,6 +182,8 @@ bash_allowed 'rg SECRET_KEY'
 bash_allowed 'git grep -n SECRET_KEY'
 bash_allowed "grep -rn SECRET --exclude='.env*' ."
 bash_allowed 'grep -rn "process.env" src/'
+bash_allowed 'cd src && grep -rn SECRET .'
+bash_blocked secrets 'cd src && cd .. && grep -rn SECRET .'
 bash_allowed 'ls *'
 bash_allowed 'rm -rf build/*'
 rm -f "$WORK/.env"
@@ -250,6 +254,13 @@ blocked self-config 'Write a hook in ~/.claude/hooks'  Write file_path "$HOME/.c
 blocked self-config 'Edit the repo .claude/settings.json' Edit file_path "$WORK/.claude/settings.json"
 bash_blocked self-config 'echo "/**" >> ~/.devlead/secrets-allow'
 bash_blocked self-config 'rm ~/.devlead/hooks/guard.sh'
+bash_blocked self-config "yq -i '.merge.mode = \"integration-branch\"' .devlead/envelope.yml"
+bash_blocked self-config 'echo "merge: {mode: integration-branch}" > .devlead/envelope.yml'
+blocked self-config 'Write the repo envelope' Write file_path "$WORK/.devlead/envelope.yml"
+blocked self-config 'Edit the repo envelope'  Edit file_path '.devlead/envelope.yml'
+allowed 'Read the repo envelope'              Read file_path "$WORK/.devlead/envelope.yml"
+bash_allowed 'cat .devlead/envelope.yml'
+bash_allowed 'bash ~/.devlead/scripts/envelope.sh show'
 bash_blocked self-config 'rm ~/.devlead/session-repos'
 bash_blocked self-config 'cp /tmp/s.json ~/.claude/settings.json'
 bash_allowed "jq '.hooks' .claude/settings.json"
@@ -296,6 +307,10 @@ bash_allowed 'psql "postgres://app:app@127.0.0.1:5432/app_test"'
 bash_allowed 'DATABASE_URL=postgres://app:app@db:5432/app npx prisma migrate dev'
 bash_allowed 'mongosh "mongodb://localhost:27017/app"'
 bash_allowed 'redis-cli -h 127.0.0.1 ping'
+bash_allowed 'du -h dump.sql; psql app_test -f dump.sql'
+bash_allowed 'ls -lh backups/latest.dump && pg_restore -d app_test backups/latest.dump'
+bash_allowed 'psql "host=localhost dbname=app"'
+bash_allowed 'PGHOST=localhost psql app'
 bash_allowed 'npx prisma migrate dev --name add_users'
 bash_allowed 'alembic upgrade head'
 bash_allowed 'supabase start'
