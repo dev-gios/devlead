@@ -4,7 +4,7 @@
 #
 # Usage:
 #   agenda.sh publish        store today's queue (stdin: `envelope.sh plan` output)
-#   agenda.sh show           the effective agenda: adjusted order, then what is skipped
+#   agenda.sh [show]         the effective agenda: adjusted order, then what is skipped
 #   agenda.sh first <N>      work on issue #N before everything else
 #   agenda.sh skip <N>       do not work on issue #N today
 #   agenda.sh reset          drop every adjustment
@@ -36,7 +36,8 @@
 #   ~/.devlead/agenda/<repo-key>/repo    the repository path the key stands for
 #
 # Exit codes: 0 ok · 1 misuse, input that is not a plan, an issue that is not
-# on the agenda, or a local write that failed.
+# on the agenda, a queue line that is not an issue number, adjustments that
+# cannot be read, or a local write that failed.
 #
 # Environment:
 #   DEVLEAD_AGENDA_DIR    state root (default: ~/.devlead/agenda)
@@ -82,7 +83,9 @@ _replace() {
 # _issue_number <arg> — echoes the bare number of `12` or `#12`; fails otherwise.
 _issue_number() {
   local n="${1#\#}"
-  [[ "$n" =~ ^[0-9]+$ ]] || return 1
+  # Nine digits at most: far beyond any issue number, and well inside what
+  # shell arithmetic holds without wrapping around.
+  [[ "$n" =~ ^[0-9]{1,9}$ ]] || return 1
   printf '%s' "$((10#$n))"
 }
 
@@ -137,7 +140,8 @@ _publish() {
     /^--- / || /^=== END PLAN/ { on = 0 }
     on && match($0, /^[0-9]+\. #[0-9]+  /) {
       head = substr($0, 1, RLENGTH); title = substr($0, RLENGTH + 1)
-      sub(/^[0-9]+\. #/, "", head); sub(/ +$/, "", head)
+      sub(/^[0-9]+\. #0*/, "", head); sub(/ +$/, "", head)
+      if (head == "") next
       if (title ~ /^".*"$/) title = substr(title, 2, length(title) - 2)
       gsub(/[\t\r]/, " ", title)
       print ENVIRON["DAY"] "\t" head "\t" substr(title, 1, ENVIRON["MAX"] + 0)
@@ -221,8 +225,27 @@ _reset() {
 }
 
 _apply() {
-  local input out queue skipped
-  input="$(cat)"
+  local input out queue skipped line num clean=""
+  # A queue line is one issue number, `12` or `#12`. Anything else means the
+  # caller's queue did not arrive intact, and answering with a shorter queue
+  # would lose an issue without a trace: refuse instead.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "${line//[[:space:]]/}" ]] && continue
+    if ! num="$(_issue_number "$line")"; then
+      echo "STATUS: bad-input"
+      echo "agenda: not an issue number on stdin: $line" >&2
+      return 1
+    fi
+    clean+="$num"$'\n'
+  done
+  # Adjustments that exist but cannot be read must not pass for "none".
+  if [[ -e "$ADJUST" && ! -r "$ADJUST" ]] || [[ -d "$ADJUST" ]]; then
+    echo "STATUS: unreadable"
+    echo "agenda: cannot read $ADJUST" >&2
+    return 1
+  fi
+  input="$clean"
   out="$(_adjusted <<<"$input")"
   queue="$(sed -n 's/^Q //p' <<<"$out" | tr '\n' ' ' | sed 's/ $//')"
   skipped="$(sed -n 's/^S //p' <<<"$out" | tr '\n' ' ' | sed 's/ $//')"
@@ -236,7 +259,7 @@ _apply() {
   echo "SKIPPED: $skipped"
 }
 
-case "${1:-}" in
+case "${1:-show}" in
   publish) _publish ;;
   show)    _show ;;
   first)   _adjust first "${2:-}" ;;

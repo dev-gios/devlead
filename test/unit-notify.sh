@@ -158,11 +158,21 @@ contains "list: counts info" "$out" "COUNT_INFO: 1"
 check "list: need entries come first" "$(grep -n '^\[' <<<"$out" | head -n 1 | grep -c then-need)" "1"
 check "list does not consume the inbox" "$(wc -l < "$DEVLEAD_NOTIFY_DIR/inbox.tsv" | tr -d ' ')" "2"
 
+send agenda "1 repo(s), 2 issue(s) today" "proj: #1 a; #2 b"
+out="$(bash "$NOTIFY" list)"
+contains "list: counts agenda" "$out" "COUNT_AGENDA: 1"
+check "list: agenda comes after need" "$(grep '^\[' <<<"$out" | sed -n 2p | grep -c '^\[agenda\]')" "1"
+check "list: info comes last" "$(grep '^\[' <<<"$out" | sed -n 3p | grep -c '^\[info\]')" "1"
+check "unconfigured agenda: push outcome off" "$(last_field 4)" "off"
+
 out="$(bash "$NOTIFY" ack)"
 contains "ack: STATUS: acked" "$out" "STATUS: acked"
-contains "ack: reports how many" "$out" "COUNT: 2"
+contains "ack: reports how many" "$out" "COUNT: 3"
 check "ack: inbox is empty afterwards" "$(bash "$NOTIFY" list)" "STATUS: empty"
-check "ack: entries are archived, not deleted" "$(wc -l < "$DEVLEAD_NOTIFY_DIR/inbox.read.tsv" | tr -d ' ')" "2"
+check "ack: entries are archived, not deleted" "$(wc -l < "$DEVLEAD_NOTIFY_DIR/inbox.read.tsv" | tr -d ' ')" "3"
+
+send bogus some-code "m"
+check "unknown level: nothing recorded" "$(bash "$NOTIFY" list)" "STATUS: empty"
 
 bash "$NOTIFY" 2>/dev/null
 check "no subcommand: exit 1" "$?" "1"
