@@ -85,12 +85,15 @@ bash ~/.devlead/scripts/state.sh
 ```bash
 bash ~/.devlead/scripts/notify.sh list
 ```
+```bash
+bash ~/.devlead/scripts/decisions.sh list --new
+```
 
 Responde en pocas líneas:
 - **Hecho** en esta sesión: PRs abiertos o mergeados, con su número.
 - **En curso**: en qué rama y en qué punto.
 - **Detenido**: qué tarea se detuvo y la razón exacta.
-- **Decidí por ti**: cada decisión tomada sin preguntar, con su razón.
+- **Decidí por ti**: lo que imprimió `decisions.sh list --new`, cada decisión con su razón y su id. Después de mostrarlas, ejecuta `bash ~/.devlead/scripts/decisions.sh shown`.
 - **Te necesito para**: lo que espera una respuesta tuya, si hay algo.
 
 Si había trabajo en curso, retómalo después de responder.
@@ -100,6 +103,14 @@ Si había trabajo en curso, retómalo después de responder.
 ## Paso 5 — Cambiar de rumbo
 
 Cambia sin discutir.
+
+Si el usuario te está corrigiendo una decisión que tomaste ("así no", "yo habría hecho X"), regístralo antes de seguir: es lo que más enseña sobre cómo decide.
+
+```bash
+bash ~/.devlead/scripts/decisions.sh correct {id} "{lo que el usuario quería en su lugar}"
+```
+
+El id sale de `decisions.sh list`. Si la decisión no estaba registrada, regístrala primero con `record` y luego corrígela.
 
 1. Deja lo que estabas haciendo en un estado limpio, **sin borrar nada**: haz commit en la rama de esa tarea, aunque el trabajo esté a medias (un commit `wip:` es válido). Nunca descartes cambios sin commit (`git checkout -- .`, `git restore`, `git reset --hard`, `git clean`, `git stash drop`): pueden ser del usuario. Si en el árbol hay cambios que no hiciste tú, no los toques y dilo.
 2. Di en una línea cómo quedó ("la issue 42 quedó en su rama, con las pruebas en verde y sin PR").

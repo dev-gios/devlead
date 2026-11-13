@@ -226,6 +226,18 @@ Las entradas quedan ACTIVAS apenas se registran. El Paso 4 le muestra al usuario
 
 Guardá la salida de `show` (después de agregar): es cómo le hablás al usuario durante toda la sesión y cómo decidís cuando no te dice qué hacer.
 
+**Correcciones a tus decisiones.** Lo que el usuario te corrigió es la mejor señal de cómo decide. Ejecutá:
+
+```bash
+bash ~/.devlead/scripts/decisions.sh corrections
+```
+
+Si da `STATUS: pending`: por cada corrección, preguntate si muestra un patrón que vale más allá de esa tarea. Si lo muestra, registralo como entrada `decision` del perfil (`profile.sh add decision corrections "{…}"`, con las mismas reglas de arriba); si era puntual, no registres nada. Después marcá las correcciones como leídas:
+
+```bash
+bash ~/.devlead/scripts/decisions.sh digested
+```
+
 Corré también la lectura de confianza y guardala para el Paso 4:
 
 ```bash
@@ -269,6 +281,28 @@ Si un ítem no encaja claramente en ningún bucket, ponelo en "En camino" con un
 ---
 
 ## Paso 4 — Mostrar el standup
+
+**Decisiones que tomaste sin el usuario.** Antes de armar el standup ejecutá:
+
+```bash
+bash ~/.devlead/scripts/decisions.sh list --new
+```
+
+Si da `STATUS: ok` (pasa, sobre todo, después de una corrida desatendida), mostrá esta sección justo después de "Mientras no estabas":
+
+```
+### Decidí por vos
+· [d7] {tarea}: {qué decidiste} — {por qué}
+Si alguna no era lo que querías, decime cuál y cómo la habrías resuelto.
+```
+
+Recién DESPUÉS de mostrarla:
+
+```bash
+bash ~/.devlead/scripts/decisions.sh shown
+```
+
+Si el usuario corrige una, registrala con `decisions.sh correct {id} "{…}"`.
 
 **Si el Paso 2.5 dio `STATUS: pending`**, abrí el standup con esta sección, ANTES de los tres buckets — primero las `[need]`, con el mensaje exacto de la bandeja sin parafrasear (§A4), después las `[info]` en una línea cada una:
 
@@ -494,7 +528,19 @@ Mostrá el plan del Paso 6 y, **en el mismo turno, sin esperar respuesta**, segu
 
 **Si el usuario te redirige** en cualquier momento ("dejá eso", "primero lo otro", "así no"): cambiá de rumbo sin discutir. Dejá el trabajo en curso en un estado limpio **sin borrar nada**: commit en la rama de esa tarea aunque esté a medias (un commit `wip:` es válido). Nunca descartes cambios sin commit (`git checkout -- .`, `git restore`, `git reset --hard`, `git clean`): pueden ser del usuario. Decí en una línea cómo quedó.
 
-**Cada vez que decidas algo por el usuario** — qué tarea va primero, qué enfoque, cómo resolver una ambigüedad del spec — decilo en una línea con su razón. Una decisión que no quedó dicha es una falla (Inv 6).
+**Cada vez que decidas algo por el usuario** — qué tarea va primero, qué enfoque, cómo resolver una ambigüedad del spec — decilo en una línea con su razón Y registralo. Una decisión que no quedó dicha es una falla (Inv 6):
+
+```bash
+bash ~/.devlead/scripts/decisions.sh record "{tarea, p. ej. issue #42}" "{qué decidiste}" "{por qué}"
+```
+
+Sin razón no hay registro: el script lo rechaza. Si el usuario te corrige una decisión ("así no", "prefería X"), registrá la corrección con el id que te dio `record` o `list`:
+
+```bash
+bash ~/.devlead/scripts/decisions.sh correct {id} "{qué quería el usuario en su lugar}"
+```
+
+El registro es solo eso: no autoriza ni frena nada.
 
 ---
 
@@ -851,6 +897,6 @@ Nunca reintentes un merge rechazado ni busques otra vía. La rama por defecto nu
 **Lo que sigue.** No preguntes si seguir:
 - Si quedan ítems en el plan del Paso 6 → seguí con el próximo desde el Paso 8, en el mismo turno.
 - Si un ítem quedó detenido por un gate rojo → decí la razón exacta y seguí con el próximo que no dependa de él.
-- Si no queda nada → mostrá el cierre: qué se hizo, qué PRs quedaron abiertos, qué decidiste solo y qué necesita al usuario.
+- Si no queda nada → mostrá el cierre: qué se hizo, qué PRs quedaron abiertos, qué decidiste solo y qué necesita al usuario. Para "qué decidiste solo" corré `bash ~/.devlead/scripts/decisions.sh list --new`, mostrá cada decisión con su razón, y después `bash ~/.devlead/scripts/decisions.sh shown`.
 
 Al final del cierre, una línea: "Cuando quieras registrar el journal, corré `/cerremos`."

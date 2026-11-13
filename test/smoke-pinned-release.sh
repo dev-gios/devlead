@@ -85,6 +85,7 @@ all_publish_targets() {
 .devlead/scripts/journal.sh
 .devlead/scripts/learn.sh
 .devlead/scripts/profile.sh
+.devlead/scripts/decisions.sh
 .devlead/scripts/agenda.sh
 .devlead/scripts/discover-fleet.sh
 .devlead/scripts/devlead-session.sh
@@ -128,6 +129,7 @@ all_source_paths() {
 .devlead/scripts/journal.sh
 .devlead/scripts/learn.sh
 .devlead/scripts/profile.sh
+.devlead/scripts/decisions.sh
 .devlead/scripts/agenda.sh
 .devlead/scripts/discover-fleet.sh
 .devlead/scripts/devlead-session.sh
