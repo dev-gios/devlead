@@ -430,7 +430,7 @@ Mostrá el plan del Paso 6 y, **en el mismo turno, sin esperar respuesta**, segu
 
 **Si el ítem es un PR y no una issue**, el Paso 8 no aplica (es el pipeline de una issue):
 - PR aprobado con CI verde → intentá el merge por la puerta (`merge.sh`, ver Paso 10). Si la puerta lo rechaza, el PR queda para el usuario: decilo y seguí.
-- PR con cambios pedidos → trabajá en su rama: aplicá lo pedido, corré el gate de Step 8.4 y empujá a esa misma rama. No abras un PR nuevo.
+- PR con cambios pedidos → trabajá en su rama: aplicá lo pedido y corré el gate de Step 8.4. Solo con el gate en verde empujás a esa misma rama; con el gate en rojo es un HALT y no se empuja nada (A4). No abras un PR nuevo.
 
 **No preguntes "¿arrancamos?".** Solo te detenés a preguntar en tres casos (GOVERNANCE.md §A1):
 1. Una decisión de producto que no podés predecir con lo que sabés del usuario. Preguntá UNA cosa y esperá.
@@ -455,7 +455,7 @@ Mostrá el plan del Paso 6 y, **en el mismo turno, sin esperar respuesta**, segu
      if a named sub-agent is not reachable.
 
      Task 3.3, 3.4, 3.5, 3.6 — sequential gate chain: each step is a HARD GATE.
-     If any step returns blocked/error → HALT, escalar al usuario, no continuar.
+     If any step returns blocked/error → HALT (defined below: stop THIS task, tell the user, go on with the next item).
      No continúes automáticamente si alguna etapa falla. (Inv 4/5) -->
 
 Ejecutá el pipeline en este orden exacto. Cada step es un gate — si falla, **HALT**.
@@ -501,12 +501,12 @@ Capturá del output: `BRANCH:`, `STATUS:`, y `STACKED:` (si aparece).
 
 Si el output muestra `STATUS: blocked`:
 - **HALT** — mostrá el `GAP:` al usuario con detalle exacto de qué falló (incluye dep-bloqueados)
-- No continúes a Step 8.3 hasta recibir instrucción explícita del usuario
+- Esta tarea no llega a Step 8.3
 
 ### Step 8.3 — Pipeline principal
 
 <!-- Task 3.5 — Spec as intention (Inv 7): the spec doc is input to SDD, not truth.
-     If the spec contradicts real code → divergence event (Inv 5): HALT and surface to user. -->
+     If the spec contradicts real code → divergence event (Inv 5): decide when the user's wish is predictable and say so; otherwise ask ONE question. -->
 
 **Preferencias aprendidas (siempre, con o sin spec, attended o autonomous).** Antes de implementar, ejecutá:
 
@@ -577,7 +577,7 @@ Antes de escribir el spec, creá el directorio si no existe (`mkdir -p .devlead/
 
 Este aislamiento evita que el estado SDD de esta issue colisione con el propio estado SDD de devlead.
 
-Si explore devolvió `DIVERGENCE: already-implemented` (o detectás divergencia por otra vía: el spec generado choca con el código real) → Inv 5: en `attended` HALT y escalá al usuario; en `autonomous` (vía B2.c de batch.md) PARK la issue con la razón exacta, sin rehacer trabajo ya completado.
+Si explore devolvió `DIVERGENCE: already-implemented` (o detectás divergencia por otra vía: el spec generado choca con el código real) → Inv 5: en `attended`, si podés predecir qué querría el usuario decidí y dejalo dicho, y si no preguntá UNA cosa; en `autonomous` (vía B2.c de batch.md) PARK la issue con la razón exacta, sin rehacer trabajo ya completado.
 
 **8.3-SDD.3 — Strict TDD forwarding desde el repo target (D5/REQ-3)**
 
@@ -737,7 +737,7 @@ Si el gate está activo:
 
 Usá `mcp__chrome-devtools__take_screenshot` en la URL local del proyecto.
 
-Si Chrome MCP no está disponible: **HALT**, avisá al usuario que no podés completar el gate visual sin Chrome MCP. Pedí instrucción.
+Si Chrome MCP no está disponible: **HALT**, avisá al usuario que no podés completar el gate visual sin Chrome MCP.
 
 **2. Compará contra el diseño**
 
@@ -755,7 +755,7 @@ Llevá la cuenta explícita: "Iteración 1 de 3", "Iteración 2 de 3", "Iteraci�
 **No ejecutés una cuarta iteración. Si llegaste a 3 y el gate sigue fallando:**
 - **HALT** — mostrá al usuario la última comparación con las diferencias pendientes
 - Describí qué diferencias quedan sin resolver
-- Esperá decisión explícita antes de continuar al PR
+- Esta tarea no llega al PR
 - Inv 5: esto es un evento de divergencia, no un auto-pass
 
 ---

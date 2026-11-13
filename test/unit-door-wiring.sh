@@ -59,7 +59,7 @@ if fenced_lines "$CMD_DIR/arranquemos.md" | grep -q 'scripts/merge\.sh {PR_URL}'
 else
   report "arranquemos.md: merges through merge.sh" "no fenced merge.sh invocation found"
 fi
-waits="$(grep -nE 'esperá decisión|hasta que el usuario resuelva|esperá confirmación explícita|No despacharás el pipeline hasta recibir un OK|¿Cuántas horas tenés disponibles|¿Aprobás este spec' "$CMD_DIR/arranquemos.md" || true)"
+waits="$(grep -nE '[Ee]sperá decisión|Pedí instrucción|hasta recibir instrucción explícita|hasta que el usuario resuelva|esperá confirmación explícita|No despacharás el pipeline hasta recibir un OK|¿Cuántas horas tenés disponibles|¿Aprobás este spec' "$CMD_DIR/arranquemos.md" || true)"
 report "arranquemos.md: no step waits for a per-issue or per-approach OK" "$waits"
 if grep -q 'sin esperar respuesta' "$CMD_DIR/arranquemos.md" && grep -q 'guard.sh' "$CMD_DIR/arranquemos.md"; then
   report "arranquemos.md: shows the plan and starts; the limits are guard.sh" ""
