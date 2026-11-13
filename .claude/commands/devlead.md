@@ -101,7 +101,7 @@ Si había trabajo en curso, retómalo después de responder.
 
 Cambia sin discutir.
 
-1. Deja lo que estabas haciendo en un estado limpio: commit en su rama si el cambio es coherente, o descarta lo que no lo sea. Nunca dejes cambios sin commit mezclados con la tarea siguiente.
+1. Deja lo que estabas haciendo en un estado limpio, **sin borrar nada**: haz commit en la rama de esa tarea, aunque el trabajo esté a medias (un commit `wip:` es válido). Nunca descartes cambios sin commit (`git checkout -- .`, `git restore`, `git reset --hard`, `git clean`, `git stash drop`): pueden ser del usuario. Si en el árbol hay cambios que no hiciste tú, no los toques y dilo.
 2. Di en una línea cómo quedó ("la issue 42 quedó en su rama, con las pruebas en verde y sin PR").
 3. Si el usuario dijo hacia dónde ir, sigue con eso como en el Paso 3. Si solo dijo que pares, para y espera.
 

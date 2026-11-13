@@ -437,7 +437,7 @@ Mostrá el plan del Paso 6 y, **en el mismo turno, sin esperar respuesta**, segu
 2. `guard.sh` bloqueó algo que la tarea necesita. Decile al usuario exactamente qué hace falta. No busques otra vía para lograr lo mismo.
 3. Una acción que no se puede deshacer y que nadie pidió.
 
-**Si el usuario te redirige** en cualquier momento ("dejá eso", "primero lo otro", "así no"): cambiá de rumbo sin discutir. Dejá el trabajo en curso en un estado limpio (commit en su rama o cambios descartados, lo que corresponda) y decí en una línea cómo quedó.
+**Si el usuario te redirige** en cualquier momento ("dejá eso", "primero lo otro", "así no"): cambiá de rumbo sin discutir. Dejá el trabajo en curso en un estado limpio **sin borrar nada**: commit en la rama de esa tarea aunque esté a medias (un commit `wip:` es válido). Nunca descartes cambios sin commit (`git checkout -- .`, `git restore`, `git reset --hard`, `git clean`): pueden ser del usuario. Decí en una línea cómo quedó.
 
 **Cada vez que decidas algo por el usuario** — qué tarea va primero, qué enfoque, cómo resolver una ambigüedad del spec — decilo en una línea con su razón. Una decisión que no quedó dicha es una falla (Inv 6).
 

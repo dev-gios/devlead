@@ -86,9 +86,23 @@ for intent in 'Empezar' 'Continuar' 'Una tarea concreta' 'Saber cómo va' 'Cambi
   if grep -qF "**$intent**" "$entry"; then report "devlead.md routes: $intent" ""
   else report "devlead.md routes: $intent" "intent missing from the table"; fi
 done
+# devlead.md names steps of the procedures it hands over to; they must exist.
+for step in '## Paso 0 ' '## Paso 1 ' '## Paso 2 ' '## Paso 6 ' '## Paso 7 ' '## Paso 8 '; do
+  if grep -q "^$step" "$CMD_DIR/arranquemos.md"; then report "arranquemos.md still has the step devlead.md points at: $step" ""
+  else report "arranquemos.md still has the step devlead.md points at: $step" "heading not found"; fi
+done
+destructive="$(grep -nE 'descarta lo que|o descarta|cambios descartados' "$entry" "$CMD_DIR/arranquemos.md" || true)"
+report "devlead.md: changing course never discards uncommitted work" "$destructive"
+if grep -qF 'Nunca descartes cambios sin commit' "$entry"; then report "devlead.md: says so explicitly" ""
+else report "devlead.md: says so explicitly" "the rule is missing"; fi
 asks="$(grep -nE '¿(Empezamos|Arrancamos|Seguimos|Procedo|Te parece)' "$entry" || true)"
 report "devlead.md: no confirmation question before starting" "$asks"
-regional="$(grep -nE '\b(tenés|querés|podés|hacé|decí|seguí|andá|mostrá|leé|usá|corré|fijate|vos)\b' "$entry" || true)"
+# Explicit word boundaries: \b does not see an accented letter as a word
+# character in every locale, and then this check would match nothing.
+regional="$(grep -nE '(^|[^[:alpha:]áéíóúñ])(tenés|querés|podés|hacé|decí|seguí|andá|mostrá|leé|usá|corré|fijate|vos)($|[^[:alpha:]áéíóúñ])' "$entry" || true)"
+probe="$(printf 'si tenés tiempo\n' | grep -cE '(^|[^[:alpha:]áéíóúñ])(tenés|vos)($|[^[:alpha:]áéíóúñ])' || true)"
+if [[ "$probe" == "1" ]]; then report "the register check can match (not vacuous)" ""
+else report "the register check can match (not vacuous)" "the pattern did not match a known regional form"; fi
 report "devlead.md: written in a neutral register" "$regional"
 
 # The old contradiction: previews promising "never merges" while Delta 6 merges.
