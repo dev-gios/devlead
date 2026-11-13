@@ -156,7 +156,7 @@ fi
 # ---------------------------------------------------------------------------
 _section "Slash commands"
 
-for _name in arranquemos.md cerremos.md batch.md; do
+for _name in devlead.md arranquemos.md cerremos.md batch.md; do
   _remove_devlead_link "$CLAUDE_COMMANDS_DIR/$_name" "$REPO_DIR/.claude/commands/$_name"
 done
 

@@ -33,7 +33,7 @@ fenced_lines() {
   awk '/^[[:space:]]*```/ { inside = !inside; next } inside { print NR ":" $0 }' "$1"
 }
 
-for f in arranquemos.md batch.md sweep-execute.md; do
+for f in devlead.md arranquemos.md batch.md sweep-execute.md; do
   hits="$(fenced_lines "$CMD_DIR/$f" \
     | grep -E '^[0-9]+:[[:space:]]*(.*(&&|;|\|)[[:space:]]*)?gh[[:space:]]+pr[[:space:]]+(create|merge)\b' || true)"
   report "$f: no direct gh pr create / gh pr merge in a code block" "$hits"
@@ -73,6 +73,23 @@ for anchor in '### §assistant-profile' '## §hard-limits' 'Autorizar no es apro
   if grep -qF "$anchor" "$gov"; then report "GOVERNANCE.md has: $anchor" ""
   else report "GOVERNANCE.md has: $anchor" "missing"; fi
 done
+
+# /devlead is the one entry: it routes by intent and never opens or merges a
+# PR itself — it hands over to the procedures, which go through the doors.
+entry="$CMD_DIR/devlead.md"
+for needle in '$ARGUMENTS' '~/.claude/commands/arranquemos.md' '~/.claude/commands/cerremos.md' \
+              'guard.sh' 'GOVERNANCE.md §assistant-profile' 'registro neutro'; do
+  if grep -qF -- "$needle" "$entry"; then report "devlead.md has: $needle" ""
+  else report "devlead.md has: $needle" "missing"; fi
+done
+for intent in 'Empezar' 'Continuar' 'Una tarea concreta' 'Saber cómo va' 'Cambiar de rumbo' 'Cerrar'; do
+  if grep -qF "**$intent**" "$entry"; then report "devlead.md routes: $intent" ""
+  else report "devlead.md routes: $intent" "intent missing from the table"; fi
+done
+asks="$(grep -nE '¿(Empezamos|Arrancamos|Seguimos|Procedo|Te parece)' "$entry" || true)"
+report "devlead.md: no confirmation question before starting" "$asks"
+regional="$(grep -nE '\b(tenés|querés|podés|hacé|decí|seguí|andá|mostrá|leé|usá|corré|fijate|vos)\b' "$entry" || true)"
+report "devlead.md: written in a neutral register" "$regional"
 
 # The old contradiction: previews promising "never merges" while Delta 6 merges.
 stale="$(grep -n 'MERGE: NUNCA' "$CMD_DIR/sweep-execute.md" || true)"

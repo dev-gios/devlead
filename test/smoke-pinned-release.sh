@@ -98,6 +98,7 @@ all_publish_targets() {
 .devlead/hooks/guard.sh
 .devlead/hooks/post-edit.sh
 .devlead/hooks/gate-check.sh
+.claude/commands/devlead.md
 .claude/commands/arranquemos.md
 .claude/commands/cerremos.md
 .claude/commands/batch.md
@@ -139,6 +140,7 @@ all_source_paths() {
 .claude/hooks/guard.sh
 .claude/hooks/post-edit.sh
 .claude/hooks/gate-check.sh
+.claude/commands/devlead.md
 .claude/commands/arranquemos.md
 .claude/commands/cerremos.md
 .claude/commands/batch.md

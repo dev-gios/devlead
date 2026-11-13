@@ -6,7 +6,9 @@ DevLead es el **front door** del día: un asistente que trabaja solo en el repos
 
 Vive en la sesión principal todo el día. Ve qué hay pendiente, decide qué hacer, lo dice en pocas líneas y lo hace. Te habla cuando te necesita, no para pedirte permiso.
 
-Cuando arrancás el día con `/arranquemos`, DevLead:
+La entrada es un solo comando, `/devlead`, y después le hablás en lenguaje natural: "sigue con lo de ayer", "haz la issue 42", "qué hiciste", "cerramos por hoy". (`/arranquemos` y `/cerremos` siguen funcionando como alias.)
+
+Cuando empezás el día con `/devlead`, DevLead:
 1. Re-deriva el estado en vivo usando el script (nunca memoria, nunca caché).
 2. Lee el journal para recuperar el *porqué* de lo que quedó a medias.
 3. Arma un standup corto.

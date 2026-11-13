@@ -38,7 +38,10 @@ Estas son las que NO se redecidan al construir. Cada una tiene su porqué para q
 
 ## 3. Cómo funciona — ciclo del día (modo single-task)
 
-### Al arrancar (`/arranquemos`)
+### Al empezar (`/devlead`)
+
+Un solo comando para todo. Después le hablas en lenguaje natural y él entiende la intención: empezar el día, continuar lo de ayer, hacer una tarea concreta, decir cómo va, cambiar de rumbo o cerrar. `/arranquemos` y `/cerremos` siguen existiendo como alias.
+
 1. Re-deriva el estado en vivo: ramas activas, PRs abiertos, estado de CI, issues asignadas.
 2. Lee el journal local para recuperar el *porqué* de lo que quedó a medias.
 3. Arma un **standup corto**: en camino / listo para review / nuevo entrante.

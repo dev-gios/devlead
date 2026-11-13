@@ -146,7 +146,7 @@ Por lo tanto: un modo que responde con PARK ante un gate rojo (en lugar de HALT)
 
 El perfil interactivo. Reemplaza al antiguo perfil `manual`, que pedía confirmación por issue y por enfoque.
 
-- **Comando/trigger:** `/arranquemos` — el usuario llama a DevLead en un repositorio y le habla en lenguaje natural
+- **Comando/trigger:** `/devlead` — el usuario llama a DevLead en un repositorio y le habla en lenguaje natural. El comando entiende la intención (empezar, continuar, una tarea concreta, cómo va, cambiar de rumbo, cerrar) y sigue el procedimiento que corresponde. `/arranquemos` y `/cerremos` siguen existiendo como alias y como los procedimientos que `/devlead` lee
 - **Autorizador:** el usuario, al llamarlo. Esa llamada autoriza el trabajo de la sesión en ESE repositorio y en ningún otro (§hard-limits, límite `scope`)
 - **Autor del work-list:** DevLead. Lo arma con el estado en vivo (§A2), el journal y lo que el usuario haya dicho; si el usuario nombra una prioridad, esa va primero
 - **Granularidad de autorización:** la sesión entera. No hay checkpoint por issue ni por enfoque
@@ -345,7 +345,7 @@ En el perfil `sweep-plan-driven` la cola de trabajo sale de `envelope.sh plan`: 
 
 **La envelope policy (`.devlead/envelope.yml`) es una DELEGACIÓN PERMANENTE PRE-AUTORIZADA que satisface A1.**
 
-Cuando DevLead deriva un work-list del envelope en modo sweep plan-driven, ejecuta scope que el usuario autorizó de antemano al configurar la policy. Esto no viola Inv 6 (la recomendación es sugerencia, no autoridad) porque el usuario ya tomó la decisión al configurar el envelope — DevLead no impone un scope, ejecuta uno que el usuario pre-aprobó.
+Cuando DevLead deriva un work-list del envelope en modo sweep plan-driven, ejecuta scope que el usuario autorizó de antemano al configurar la policy. Esto no amplía la autoridad de DevLead porque el usuario ya tomó la decisión al configurar el envelope — DevLead no impone un scope, ejecuta uno que el usuario pre-aprobó.
 
 **En una corrida desatendida, el scope AD-HOC generado por DevLead desde input no estructurado NO es una delegación permanente y NO satisface A1 por sí solo.** Requiere el gate generate→show→approve (ver §generate-show-approve) antes de ejecutarse. En el perfil `assistant` no hace falta ese gate: el usuario está en la conversación, llamó a DevLead en ese repositorio, y ve lo que DevLead dice que va a hacer antes de que lo haga (§assistant-profile).
 
@@ -374,6 +374,7 @@ Este gate es el mecanismo que satisface A1 en el perfil `sweep-local-plan`. Sin 
 | `GOVERNANCE.md` | Fuente normativa única | — |
 | `.claude/CLAUDE.md` | Espejo no-normativo de §Layer-0 (bloques A1-A4 inline por presencia-en-contexto) + referencias a perfiles | Ver §Layer-0 |
 | `DEVLEAD.md` | Documento narrativo/histórico. No es fuente de autoridad para invariantes. | Ver §Layer-0 + perfiles |
+| `.claude/commands/devlead.md` | Entrada única. Espejo no-normativo de A1-A4 inline + referencia a §assistant-profile | Ver §assistant-profile |
 | `.claude/commands/arranquemos.md` | Espejo no-normativo de A1-A4 inline + referencia a §assistant-profile | Ver §assistant-profile |
 | `.claude/commands/batch.md` | Espejo no-normativo de A1-A4 inline + referencia a §batch-profile | Ver §batch-profile |
 | `.claude/commands/sweep-execute.md` | Espejo no-normativo de A1-A4 inline + referencia a §sweep-scoped-profile / §sweep-plan-driven-profile / §sweep-local-plan-profile | Ver §sweep-scoped-profile, §sweep-plan-driven-profile, §sweep-local-plan-profile |
