@@ -75,6 +75,31 @@ El dev que lee el reporte debe saber exactamente qué falló sin tener que recon
 
 ---
 
+## §hard-limits — Los límites duros viven en código
+
+DevLead trabaja por su cuenta. Lo que NO puede hacer no depende de una frase en un prompt: lo decide `guard.sh`, un hook que corre antes de cada herramienta y bloquea la llamada con una razón exacta.
+
+| Límite | Qué bloquea |
+|---|---|
+| `production` | Deploys, cambios de infraestructura o de cluster, CLIs de nube, conexión a otra máquina, publicar paquetes o releases, push a la rama por defecto |
+| `merge-door` | Mergear un PR por cualquier vía que no sea `merge.sh` (que lee el envelope — §A3) |
+| `database` | Todo lo que apunte a una base de datos que no esté en esta máquina, incluida una dirección tomada de una variable |
+| `secrets` | Leer o escribir un archivo de credenciales fuera de los lugares permitidos; volcar el entorno; `gh auth token` |
+| `scope` | Escribir un archivo fuera del repositorio en el que se inició la sesión |
+| `self-config` | Cambiar los archivos que configuran estos límites (`~/.devlead/`, los settings de Claude Code) |
+
+**Quién concede una excepción.** Solo el usuario, y solo para credenciales: los lugares desde donde DevLead puede leer una clave se listan, un glob por línea, en `~/.devlead/secrets-allow`. Ningún script de DevLead escribe ese archivo y el guard bloquea a la sesión que lo intente. Los otros límites no tienen excepción.
+
+**Cuándo está activo.** En toda sesión interactiva de DevLead y en toda corrida desatendida (los lanzadores fijan `DEVLEAD_GUARD=1` en el proceso de Claude Code, donde la sesión no puede quitarlo). Fuera de DevLead no hace nada.
+
+**Un límite bloqueado no se rodea.** Si la tarea lo necesita, DevLead se detiene y le dice al usuario qué hace falta: manual → avisa y espera; autónomo → PARK con la razón exacta que imprimió el guard (§A4). Buscar otra vía para lograr el mismo efecto es una violación de esta sección.
+
+**Qué no es.** No es un sandbox: un comando de Bash se evalúa como texto, así que frena los errores de un agente honesto y no contiene a uno hostil. La defensa estructural de producción es que sus credenciales no estén en esta máquina.
+
+**La sesión nunca tiene el token de GitHub en la mano.** Para saber si hay auth usa `envelope-auth.sh auth`, que responde `available` o `unavailable`; los scripts que la necesitan la resuelven en su propio proceso.
+
+---
+
 ## §narrow-not-widen — Meta-regla: estrechar, no ensanchar
 
 **Un perfil de modo SOLO puede ESTRECHAR la autoridad de DevLead respecto a Layer 0; nunca ampliarla.**

@@ -519,7 +519,7 @@ _sweep_display() {
   local _v
   printf 'env'
   for _v in "${_LAUNCHER_ONLY_VARS[@]}"; do printf ' -u %s' "$_v"; done
-  printf ' %s -p "%s"' "$CLAUDE_BIN" "$(_sweep_prompt)"
+  printf ' DEVLEAD_GUARD=1 %s -p "%s"' "$CLAUDE_BIN" "$(_sweep_prompt)"
   if [[ ${#_CLAUDE_ARGS[@]} -gt 0 ]]; then
     printf ' %s' "${_CLAUDE_ARGS[@]}"
   else
@@ -617,7 +617,10 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
   fi
 
   echo "sweep-loop: iteration $_iter/$MAX_ITER — invoking $CLAUDE_BIN"
-  env "${_ENV_STRIP[@]}" "$CLAUDE_BIN" -p "$(_sweep_prompt)" "${_CLAUDE_ARGS[@]}" | tee "$_SWEEP_OUT"
+  # DEVLEAD_GUARD=1 turns on the hard limits (guard.sh) for this session. It
+  # is set here, on the Claude Code process, so nothing the session runs can
+  # unset it.
+  env "${_ENV_STRIP[@]}" DEVLEAD_GUARD=1 "$CLAUDE_BIN" -p "$(_sweep_prompt)" "${_CLAUDE_ARGS[@]}" | tee "$_SWEEP_OUT"
   _rc=${PIPESTATUS[0]}
   echo "sweep-loop: iteration $_iter exited $_rc"
 

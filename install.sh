@@ -99,7 +99,7 @@ _ok "~/.claude/commands/*.md → publicado (arranquemos, cerremos, batch, sweep-
 # ~/.devlead/hooks/ — ya publicados por bootstrap_symlinks arriba
 # ---------------------------------------------------------------------------
 _section "Hooks"
-_ok "~/.devlead/hooks/*.sh → publicado (post-edit, gate-check)"
+_ok "~/.devlead/hooks/*.sh → publicado (guard, post-edit, gate-check)"
 
 # ---------------------------------------------------------------------------
 # systemd user units — Nivel 2 sweep timer (opt-in; NOT auto-enabled)
@@ -172,13 +172,17 @@ fi
 _section "Claude settings"
 
 GLOBAL_SETTINGS="$HOME/.claude/settings.json"
-HOOKS_FRAGMENT='{"hooks":{"PostToolUse":[{"matcher":"Write|Edit","hooks":[{"type":"command","command":"bash ~/.devlead/hooks/post-edit.sh"}]}],"Stop":[{"hooks":[{"type":"command","command":"bash ~/.devlead/hooks/gate-check.sh"}]}]}}'
+HOOKS_FRAGMENT='{"hooks":{"PreToolUse":[{"matcher":"Bash|Read|Grep|Write|Edit|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"bash ~/.devlead/hooks/guard.sh"}]}],"PostToolUse":[{"matcher":"Write|Edit","hooks":[{"type":"command","command":"bash ~/.devlead/hooks/post-edit.sh"}]}],"Stop":[{"hooks":[{"type":"command","command":"bash ~/.devlead/hooks/gate-check.sh"}]}]}}'
 
 # Comandos que identifican unívocamente a los hooks de devlead. Sirven para
 # deduplicar: si ya existe una entrada con el mismo command, no se vuelve a
 # agregar (idempotente). Deben coincidir con los commands del fragmento.
 POST_EDIT_CMD="bash ~/.devlead/hooks/post-edit.sh"
 GATE_CHECK_CMD="bash ~/.devlead/hooks/gate-check.sh"
+# guard.sh: los límites duros (producción, base de datos, claves, alcance al
+# repo). Corre ANTES de cada herramienta; inerte fuera de DevLead.
+GUARD_CMD="bash ~/.devlead/hooks/guard.sh"
+GUARD_MATCHER="Bash|Read|Grep|Write|Edit|MultiEdit|NotebookEdit"
 
 # Programa jq idempotente: parte del settings existente ($base, primer input) y
 # le agrega SOLO las entradas devlead que falten, dedup por command string.
@@ -186,11 +190,17 @@ GATE_CHECK_CMD="bash ~/.devlead/hooks/gate-check.sh"
 # - PostToolUse: append del matcher "Write|Edit" -> post-edit.sh solo si ningún
 #   grupo existente ya contiene ese command.
 # - Stop: append de gate-check.sh solo si ningún grupo existente lo contiene.
+# - PreToolUse: append de guard.sh solo si ningún grupo existente lo contiene.
 # Cualquier otro hook preexistente queda intacto.
 JQ_MERGE_PROGRAM='
   .hooks //= {} |
   .hooks.PostToolUse //= [] |
   .hooks.Stop //= [] |
+  .hooks.PreToolUse //= [] |
+  ( [ .hooks.PreToolUse[]?.hooks[]?.command ] ) as $preCmds |
+  ( if ($preCmds | index($gd)) then . else
+      .hooks.PreToolUse += [ { "matcher": $gm, "hooks": [ { "type": "command", "command": $gd } ] } ]
+    end ) |
   ( [ .hooks.PostToolUse[]?.hooks[]?.command ] ) as $postCmds |
   ( [ .hooks.Stop[]?.hooks[]?.command ] ) as $stopCmds |
   ( if ($postCmds | index($pe)) then . else
@@ -204,7 +214,7 @@ JQ_MERGE_PROGRAM='
 if [[ -f "$GLOBAL_SETTINGS" ]]; then
   if command -v jq &>/dev/null; then
     _tmp=$(mktemp)
-    if jq --arg pe "$POST_EDIT_CMD" --arg gc "$GATE_CHECK_CMD" "$JQ_MERGE_PROGRAM" "$GLOBAL_SETTINGS" > "$_tmp"; then
+    if jq --arg pe "$POST_EDIT_CMD" --arg gc "$GATE_CHECK_CMD" --arg gd "$GUARD_CMD" --arg gm "$GUARD_MATCHER" "$JQ_MERGE_PROGRAM" "$GLOBAL_SETTINGS" > "$_tmp"; then
       mv "$_tmp" "$GLOBAL_SETTINGS"
       _ok "Hooks devlead asegurados en ~/.claude/settings.json (sin duplicar)"
     else
@@ -266,7 +276,8 @@ echo "             ~/.devlead/scripts/envelope.sh"
 echo "             ~/.devlead/scripts/envelope-auth.sh"
 echo "             ~/.devlead/scripts/sweep.sh"
 echo "  CLI:       ~/.local/bin/devlead → devlead <init|upgrade|plan|check|show|sweep>"
-echo "  Hooks:     ~/.devlead/hooks/post-edit.sh"
+echo "  Hooks:     ~/.devlead/hooks/guard.sh"
+echo "             ~/.devlead/hooks/post-edit.sh"
 echo "             ~/.devlead/hooks/gate-check.sh"
 echo "  Systemd:   ~/.config/systemd/user/devlead-sweep.service"
 echo "             ~/.config/systemd/user/devlead-sweep.timer (NOT enabled — opt-in)"

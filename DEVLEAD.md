@@ -349,6 +349,23 @@ Un run desatendido que no puede seguir solo avisa por `~/.devlead/scripts/notify
 
 ---
 
+## Límites duros — lo que DevLead no puede hacer (`guard.sh`)
+
+DevLead decide y ejecuta solo, pero hay seis cosas que un hook bloquea antes de que ocurran: tocar producción, mergear fuera de `merge.sh`, tocar una base de datos que no sea local, leer claves fuera de los lugares que permitiste, escribir fuera del repo en el que lo iniciaste, y cambiar su propia configuración. El detalle normativo está en `.claude/GOVERNANCE.md §hard-limits`.
+
+Para permitirle leer una clave, agregá su ruta (un glob por línea) a `~/.devlead/secrets-allow`:
+
+```
+# lugares desde donde DevLead puede leer claves
+~/Work/mi-proyecto/.env.local
+```
+
+Ese archivo lo escribís solo vos. No hay un archivo equivalente para producción ni para bases de datos: esos límites no tienen excepción.
+
+El guard queda registrado por `install.sh` como hook `PreToolUse`. Está activo en las sesiones de DevLead y en todas las corridas desatendidas; en cualquier otra sesión de Claude Code no hace nada.
+
+---
+
 ## Nivel 3 — Autonomous Execute (`/sweep-execute`)
 
 ### Qué es

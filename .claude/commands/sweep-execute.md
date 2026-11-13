@@ -175,7 +175,7 @@ PREVIEW-ONLY y corren igual en los tres modos — scoped, plan-driven y local-pl
 de health-check del repo:
 - `cd` al path — si falla, anotá `cannot-cd` para ese repo.
 - Corré `bash ~/.devlead/scripts/envelope.sh check` — si no está ENROLLED+ENABLED, anotá `skipped`. **En MODO LOCAL-PLAN este bullet se SALTEA** — no se requiere enrollment ni `envelope.yml`; LOCAL-PLAN opera sobre cualquier repo git sin enrollment.
-- Verificá auth con la lógica de 4 pasos de `sweep.sh:19-57` (leelo con Read tool — NO ejecutes `_ensure_auth` como comando, es una función interna de sweep.sh). Si ningún paso resuelve un token, anotá `auth-unavailable`. **Nota: este chequeo es PREVIEW-ONLY.** El token no se almacena como `_auth_token` acá; la resolución formal y el storage de `_auth_token` ocurren en E1.3 (por repo, durante el outer loop).
+- Verificá auth con `bash ~/.devlead/scripts/envelope-auth.sh auth`. Si imprime `AUTH: unavailable`, anotá `auth-unavailable`. **Nota: este chequeo es PREVIEW-ONLY**; el chequeo formal ocurre en E1.3 (por repo, durante el outer loop). Vos nunca leés el token: ni `~/.devlead/gh-token`, ni `gh auth token`, ni `$GH_TOKEN` — los límites duros (`guard.sh`) bloquean esas lecturas, y los scripts que necesitan auth la resuelven en su propio proceso.
 - Corré `bash ~/.devlead/scripts/envelope.sh show` y extraé `MAX_ISSUES:` de la salida — es el único subcomando que emite ese campo (`envelope.sh check` no lo emite). Recolectá este valor en los modos scoped y plan-driven; solo el preview SCOPED lo renderiza como línea de advertencia (ver "Mostrar preview completo" más abajo) — plan-driven no muestra hoy esa línea. **En MODO LOCAL-PLAN este bullet se SALTEA** — el presupuesto es M (longitud del plan aprobado), no se requiere `envelope.yml` ni se leen MAX_ISSUES/STOP_AT. **Este valor es BEST-EFFORT, mismo patrón que el bullet de plan-derivation de abajo: puede diferir del `MAX_ISSUES` re-derivado en E1.4 Paso 1 si el envelope cambia entre E0 y el outer loop. La fuente AUTORITATIVA sigue siendo `envelope.sh show` de E1.4 Paso 1 (Inv 2 — el estado siempre se re-deriva en vivo); este valor de pre-flight existe solo para poder mostrar el preview.**
   - De ESA MISMA salida ya capturada de `envelope.sh show` (sin llamada extra), extraé también `EXCLUDE_LABELS:` y `REQUIRE_READINESS:` — `_do_show` los emite en las líneas 434-435 de `envelope.sh` (`EXCLUDE_LABELS:` es la lista de labels join-comma; `REQUIRE_READINESS:` es un booleano). Estos dos valores alimentan las advertencias de política por-issue del preview SCOPED (ver "Mostrar preview completo"); son BEST-EFFORT igual que `MAX_ISSUES` y se recolectan SOLO para el preview (la política autoritativa la aplica `envelope.sh plan` en modo plan-driven, no acá). **Parsing de `EXCLUDE_LABELS:`:** `_emit` (envelope.sh:23-28) envuelve en comillas dobles cualquier valor que contenga `:`. La lista join-comma normalmente NO tiene `:` (p.ej. `EXCLUDE_LABELS: blocked,wip,discuss`, sin comillas), PERO un label puede contener `:` (p.ej. `priority:high` es un label válido de GitHub) — en ese caso el valor entero llega entrecomillado. Strippeá las comillas dobles circundantes ANTES de splitear en coma, usando el mismo patrón de de-quote que `_do_plan` aplica a PRIORITY_LABELS (envelope.sh:485-490: `pl_raw="${pl_raw#\"}"; pl_raw="${pl_raw%\"}"`). Luego splitea en coma y trimmeá cada elemento (mismo `xargs` trim que `_do_plan` en envelope.sh:608/611). `REQUIRE_READINESS:` es un booleano plano (`true`/`false`), sin comillas, sin de-quote. **Este bullet corre SOLO en MODO scoped** — plan-driven no consume estos dos campos acá (su política la resuelve `envelope-auth.sh plan` en E1.4).
 
@@ -383,21 +383,20 @@ Si `ENABLED: unknown` (switch no legible — yq ausente o `enabled:` no booleano
 - Registrá `REPO → STATUS: skipped — ENABLED: unknown — envelope.yml exists but its switch could not be read. Check: cd '$repo_path' && devlead check`
 - Continuá con el siguiente repo.
 
-### E1.3 — Gate: auth chain (resolve token)
+### E1.3 — Gate: auth disponible
 
-Ejecutá la cadena de 4 pasos de autenticación. Para el detalle exacto de cada paso, leelo con Read tool desde `~/.devlead/scripts/sweep.sh` (líneas 19-57).
+Ejecutá con el Bash tool:
+```
+bash ~/.devlead/scripts/envelope-auth.sh auth
+```
 
-Resumen de la cadena:
-1. `$GH_TOKEN` env var — si existe y no está vacío, usalo.
-2. `~/.devlead/gh-token` — requiere chmod 600 Y no vacío; si tiene otros permisos o está vacío, emit warning a stderr, continuá al paso 3.
-3. `gh auth token` CLI — si disponible y retorna token, usalo.
-4. Si ninguno resolvió: auth unavailable.
+Imprime `AUTH: available` o `AUTH: unavailable`. El wrapper prueba la misma cadena que `sweep.sh` (`$GH_TOKEN`, `~/.devlead/gh-token` con permisos 600, `gh auth token`) dentro de su propio proceso y **nunca imprime el token**.
 
-Si auth unavailable:
+Vos nunca leés ni guardás el token. Los límites duros (`guard.sh`) bloquean que la sesión lea `~/.devlead/gh-token` o corra `gh auth token`; los scripts que necesitan auth (`envelope-auth.sh`, `open-pr.sh`, `merge.sh`) la resuelven solos.
+
+Si `AUTH: unavailable`:
 - Registrá `REPO → STATUS: skipped — auth-unavailable`
 - Continuá con el siguiente repo.
-
-Guardá el token resuelto como `_auth_token` para usarlo en envelope plan y gh pr create.
 
 ### E1.4 — Envelope show + plan fresh + parse de cola
 
@@ -517,7 +516,7 @@ Ejecutá con el Bash tool:
 bash ~/.devlead/scripts/envelope-auth.sh plan
 ```
 
-El wrapper `envelope-auth.sh` resuelve el auth internamente (mismo chain de 4 pasos que `sweep.sh`) y lo exporta en su propio proceso antes de invocar `envelope.sh plan` — por eso ya no hace falta interpolar `_auth_token` en esta línea. (`_auth_token` resuelto en E1.3 sigue usándose para `gh pr create`, que queda fuera del alcance de este fix.)
+El wrapper `envelope-auth.sh` resuelve el auth internamente (mismo chain de 4 pasos que `sweep.sh`) y lo exporta en su propio proceso antes de invocar `envelope.sh plan` — la sesión nunca tiene el token en la mano.
 
 Capturá stdout completo. Procesá la salida con estas reglas (en orden):
 

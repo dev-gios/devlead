@@ -239,6 +239,7 @@ bootstrap_symlinks() {
     "$repo_dir/.devlead/scripts/doctor.sh|$devlead_dir/scripts/doctor.sh|x"
     "$repo_dir/.devlead/scripts/config.sh|$devlead_dir/scripts/config.sh|x"
     "$repo_dir/.devlead/bin/devlead|$local_bin/devlead|x"
+    "$repo_dir/.claude/hooks/guard.sh|$devlead_dir/hooks/guard.sh|x"
     "$repo_dir/.claude/hooks/post-edit.sh|$devlead_dir/hooks/post-edit.sh|x"
     "$repo_dir/.claude/hooks/gate-check.sh|$devlead_dir/hooks/gate-check.sh|x"
     "$repo_dir/.claude/commands/arranquemos.md|$claude_commands/arranquemos.md|"

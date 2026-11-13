@@ -95,6 +95,7 @@ all_publish_targets() {
 .devlead/scripts/doctor.sh
 .devlead/scripts/config.sh
 .local/bin/devlead
+.devlead/hooks/guard.sh
 .devlead/hooks/post-edit.sh
 .devlead/hooks/gate-check.sh
 .claude/commands/arranquemos.md
@@ -135,6 +136,7 @@ all_source_paths() {
 .devlead/scripts/doctor.sh
 .devlead/scripts/config.sh
 .devlead/bin/devlead
+.claude/hooks/guard.sh
 .claude/hooks/post-edit.sh
 .claude/hooks/gate-check.sh
 .claude/commands/arranquemos.md

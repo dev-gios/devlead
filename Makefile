@@ -18,6 +18,7 @@ test:
 	bash test/unit-envelope-schema.sh
 	bash test/unit-devlead-session.sh
 	bash test/unit-gate-check.sh
+	bash test/unit-guard.sh
 	bash test/unit-open-pr.sh
 	bash test/unit-merge-door.sh
 	bash test/unit-door-wiring.sh

@@ -54,6 +54,7 @@ EOF
 cat > "$SANDBOX/fakebin/claude" <<'EOF'
 #!/usr/bin/env bash
 { printf 'CWD=%s' "$PWD"; for a in "$@"; do printf '\t%s' "$a"; done
+  printf '\tGUARD=%s' "${DEVLEAD_GUARD:-}"
   printf '\tLEAK=%s%s%s\n' "${DEVLEAD_LOOP_CLAUDE_ARGS:-}" "${DEVLEAD_DISCOVER_CLAUDE_ARGS:-}" "${DEVLEAD_ALLOW_DRIFT:-}"; } >> "$CLAUDE_LOG"
 [[ -f .claude-rc ]] && exit "$(cat .claude-rc)"
 exit 0
@@ -111,6 +112,7 @@ check "pass: second session runs inside the second repo" "$(sed -n 2p <<<"$log" 
 check "pass: the command is /sweep-discover and nothing else" "$(sed -n 1p <<<"$log" | cut -f2,3)" "-p"$'\t'"/sweep-discover"
 contains "pass: the chosen permission flags are passed" "$log" "--permission-mode"$'\t'"default"$'\t'"--allowedTools"$'\t'"Bash,Read"
 check "pass: launcher knobs do not reach the session" "$(grep -c 'LEAK=$' <<<"$log")" "2"
+check "pass: every session starts with the hard limits on" "$(grep -c "$(printf '\tGUARD=1\t')" <<<"$log")" "2"
 lacks "pass: never enters a repo without discover.enabled" "$log" "CWD=$NODISC"
 lacks "pass: never enters a disabled repo" "$log" "CWD=$DISABLED"
 lacks "pass: never enters a repo without an envelope" "$log" "CWD=$UNENROLLED"
