@@ -53,7 +53,7 @@ _section "Scripts"
 
 # devlead-active.sh: pre-rename name, kept so a machine at any migration
 # stage is fully cleaned (REQ-6) — devlead-session.sh is the current name.
-for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh open-pr.sh merge.sh notify.sh journal.sh learn.sh devlead-active.sh devlead-session.sh envelope.sh envelope-auth.sh sweep.sh; do
+for _name in state.sh branch.sh ref-resolver.sh forbidden-check.sh open-pr.sh merge.sh notify.sh journal.sh learn.sh agenda.sh devlead-active.sh devlead-session.sh envelope.sh envelope-auth.sh sweep.sh; do
   _remove_devlead_link "$DEVLEAD_DIR/scripts/$_name" "$REPO_DIR/.devlead/scripts/$_name"
 done
 

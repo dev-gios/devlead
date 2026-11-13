@@ -228,6 +228,7 @@ bootstrap_symlinks() {
     "$repo_dir/.devlead/scripts/notify.sh|$devlead_dir/scripts/notify.sh|x"
     "$repo_dir/.devlead/scripts/journal.sh|$devlead_dir/scripts/journal.sh|x"
     "$repo_dir/.devlead/scripts/learn.sh|$devlead_dir/scripts/learn.sh|x"
+    "$repo_dir/.devlead/scripts/agenda.sh|$devlead_dir/scripts/agenda.sh|x"
     "$repo_dir/.devlead/scripts/devlead-session.sh|$devlead_dir/scripts/devlead-session.sh|x"
     "$repo_dir/.devlead/scripts/envelope.sh|$devlead_dir/scripts/envelope.sh|x"
     "$repo_dir/.devlead/scripts/envelope-auth.sh|$devlead_dir/scripts/envelope-auth.sh|x"
