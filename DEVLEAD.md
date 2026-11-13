@@ -250,6 +250,20 @@ Los units de usuario de systemd no heredan el PATH interactivo. El sweep invoca 
 
 ---
 
+## Loop nocturno (`devlead-loop.timer`) — qué necesita para correr
+
+`sweep-loop.sh` re-invoca `claude -p "/sweep-execute --plan ..."` sin humano presente. Por eso exige tres cosas y se niega (o se pausa) si falta alguna:
+
+- **`DEVLEAD_LOOP_REPO`** en `~/.devlead/loop.env`: el repo destino.
+- **`DEVLEAD_LOOP_CLAUDE_ARGS`** en `~/.devlead/loop.env`: los flags de permisos de la sesión headless, separados por espacios. Sin esta variable el loop **no invoca `claude`** y sale con error: una sesión desatendida corre con permisos que alguien eligió, nunca con los que la máquina tenga por defecto. Ejemplo:
+  ```
+  DEVLEAD_LOOP_CLAUDE_ARGS=--permission-mode acceptEdits --allowedTools Bash,Read,Edit,Write,Glob,Grep,Agent
+  ```
+  `DEVLEAD_LOOP_DRYRUN=1` imprime el comando exacto, flags incluidos, sin ejecutar nada.
+- **`enabled: true`** en el `.devlead/envelope.yml` de ese repo. Es el kill-switch: sin envelope, o con `enabled: false`, el loop imprime `STATUS: paused` y sale 0 sin invocar nada. Se consulta antes de cada iteración, así que apagarlo detiene un run en curso al terminar la iteración actual. (El LOCAL-PLAN interactivo no lo exige: ahí acabás de aprobar el plan vos.)
+
+---
+
 ## Nivel 3 — Autonomous Execute (`/sweep-execute`)
 
 ### Qué es

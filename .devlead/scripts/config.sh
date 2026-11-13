@@ -316,7 +316,7 @@ _machine_timers() {
     sweep) _machine_toggle_timer devlead-sweep.timer \
          "This timer only reads state and writes a plan-only report — it makes no repo changes." ;;
     loop) _machine_toggle_timer devlead-loop.timer \
-         "This timer runs the autonomous loop unattended — it CREATES BRANCHES, COMMITS, and OPENS PRs against enrolled repos." ;;
+         "This timer runs the autonomous loop unattended — it CREATES BRANCHES, COMMITS, and OPENS PRs against enrolled repos. It needs DEVLEAD_LOOP_REPO and DEVLEAD_LOOP_CLAUDE_ARGS (the permission flags for the headless session) in ~/.devlead/loop.env, and enabled: true in that repo's envelope." ;;
     b) return 0 ;;
     *) echo "config: unknown option '${choice#__invalid__}'" ;;
   esac

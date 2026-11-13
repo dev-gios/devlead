@@ -73,6 +73,13 @@
 #                           the loop declares convergence and stops (default 2;
 #                           0 disables the check and restores cap-only bounding)
 #   DEVLEAD_CLAUDE_BIN      claude binary (default: claude)
+#   DEVLEAD_LOOP_CLAUDE_ARGS  REQUIRED for a real run: the permission flags
+#                           passed to every `claude -p`, whitespace-separated,
+#                           e.g. "--permission-mode acceptEdits --allowedTools
+#                           Bash,Read,Edit,Write". Unset or empty -> the loop
+#                           refuses to invoke claude: an unattended session
+#                           must run with permissions someone chose, never
+#                           with whatever this machine's settings allow.
 #   DEVLEAD_LOOP_REPO       target repo path to cd into before running; --repo wins
 #                           when both are given (see FIX 7: the systemd unit has no
 #                           WorkingDirectory pointed at a real repo, so LOCAL-PLAN's
@@ -138,6 +145,10 @@ SLEEP_SECS="${DEVLEAD_LOOP_SLEEP:-5}"
 # flake and two as a pattern.
 STALL_LIMIT="${DEVLEAD_LOOP_STALL:-2}"
 DRYRUN="${DEVLEAD_LOOP_DRYRUN:-0}"
+# Whitespace-split on purpose: the value comes from a systemd EnvironmentFile,
+# which has no way to express an argument list.
+_CLAUDE_ARGS=()
+read -ra _CLAUDE_ARGS <<<"${DEVLEAD_LOOP_CLAUDE_ARGS:-}"
 PLAN_FILE=""
 REPO_DIR="${DEVLEAD_LOOP_REPO:-}"
 EXTRA_ARGS=""
@@ -476,6 +487,7 @@ _LAUNCHER_ONLY_VARS=(
   DEVLEAD_LOOP_SLEEP
   DEVLEAD_LOOP_STALL
   DEVLEAD_CLAUDE_BIN
+  DEVLEAD_LOOP_CLAUDE_ARGS
   DEVLEAD_LOOP_REPO
   DEVLEAD_ALLOW_DRIFT
   DEVLEAD_DOCTOR_BIN
@@ -492,6 +504,49 @@ _sweep_display() {
   printf 'env'
   for _v in "${_LAUNCHER_ONLY_VARS[@]}"; do printf ' -u %s' "$_v"; done
   printf ' %s -p "%s"' "$CLAUDE_BIN" "$(_sweep_prompt)"
+  if [[ ${#_CLAUDE_ARGS[@]} -gt 0 ]]; then
+    printf ' %s' "${_CLAUDE_ARGS[@]}"
+  else
+    printf ' <DEVLEAD_LOOP_CLAUDE_ARGS unset: a real run refuses to start>'
+  fi
+}
+
+# --- Explicit permissions ----------------------------------------------------
+# A real run needs permission flags someone chose. Without them `claude -p`
+# would run with whatever the machine's global settings happen to allow — on
+# one machine that blocks every tool and the night is wasted, on another it
+# allows everything and nobody decided that.
+if [[ "$DRYRUN" != "1" && ${#_CLAUDE_ARGS[@]} -eq 0 ]]; then
+  {
+    echo "sweep-loop: DEVLEAD_LOOP_CLAUDE_ARGS is not set — refusing to invoke $CLAUDE_BIN with ambient permissions"
+    echo "sweep-loop: set it in ~/.devlead/loop.env, for example:"
+    echo "sweep-loop:   DEVLEAD_LOOP_CLAUDE_ARGS=--permission-mode acceptEdits --allowedTools Bash,Read,Edit,Write,Glob,Grep,Agent"
+    echo "sweep-loop: preview the exact command with DEVLEAD_LOOP_DRYRUN=1"
+  } >&2
+  exit 1
+fi
+
+# --- Kill switch --------------------------------------------------------------
+# `enabled: false` in the repo's envelope is the user's off switch. An
+# interactive LOCAL-PLAN run does not need it: a human just approved that plan.
+# This loop has no human, so it honours the switch — before every iteration, so
+# flipping it stops a run that is already going. Fleet mode is exempt here
+# because sweep-execute checks each repo's switch itself (E1.2).
+# Read-only: `envelope.sh check` never writes.
+_ENVELOPE_SH="$_SCRIPT_DIR/envelope.sh"
+_kill_switch_reason() {
+  [[ "$_cwd_dependent" == "true" ]] || return 1
+  local _out
+  _out="$(bash "$_ENVELOPE_SH" check 2>/dev/null </dev/null)"
+  if ! grep -q '^ENROLLED: true' <<<"$_out"; then
+    echo "no .devlead/envelope.yml in $PWD — this repo is not enrolled for unattended runs"
+    return 0
+  fi
+  if ! grep -q '^ENABLED: true' <<<"$_out"; then
+    echo "the envelope in $PWD does not say enabled: true ($(grep -m1 '^ENABLED:' <<<"$_out" || echo 'ENABLED: unreadable'))"
+    return 0
+  fi
+  return 1
 }
 
 # --- Reactive not-a-git-repo detection --------------------------------------
@@ -533,8 +588,15 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
     continue
   fi
 
+  if _paused_reason="$(_kill_switch_reason)"; then
+    echo "STATUS: paused"
+    echo "sweep-loop: $_paused_reason"
+    echo "sweep-loop: nothing was invoked in iteration $_iter — set enabled: true in the envelope to let the loop run"
+    exit 0
+  fi
+
   echo "sweep-loop: iteration $_iter/$MAX_ITER — invoking $CLAUDE_BIN"
-  env "${_ENV_STRIP[@]}" "$CLAUDE_BIN" -p "$(_sweep_prompt)" | tee "$_SWEEP_OUT"
+  env "${_ENV_STRIP[@]}" "$CLAUDE_BIN" -p "$(_sweep_prompt)" "${_CLAUDE_ARGS[@]}" | tee "$_SWEEP_OUT"
   _rc=${PIPESTATUS[0]}
   echo "sweep-loop: iteration $_iter exited $_rc"
 
