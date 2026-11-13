@@ -182,6 +182,50 @@ Las preferencias quedan ACTIVAS apenas se registran — no esperan aprobación. 
 
 Guardá la salida de `outcomes` para el Paso 6.
 
+### Aprender de cómo escribís y decidís (el perfil)
+
+Además de los reviews, DevLead aprende de lo que VOS escribís en tus conversaciones de Claude Code — de todos tus proyectos — y de lo que ya quedó guardado en Engram. Ejecutá:
+
+```bash
+bash ~/.devlead/scripts/profile.sh capture
+bash ~/.devlead/scripts/profile.sh pending --limit 40
+bash ~/.devlead/scripts/profile.sh show
+bash ~/.devlead/scripts/profile.sh engram
+```
+
+`capture` guarda solo lo que el usuario tipeó: descarta en código resultados de herramientas, salida de hooks, notificaciones, resúmenes y todo bloque pegado. `STATUS: unavailable` o `none` no es un error: seguí.
+
+**Si `pending` dio `STATUS: pending`**, destilá esos mensajes en entradas del perfil. Dos clases, y solo dos:
+
+- `style` — cómo escribe y cómo quiere que le respondan ("respuestas cortas, lo mínimo útil primero", "escribe en español, informal").
+- `decision` — cómo decide cuando hay opciones ("entre dos caminos, el que se puede revertir", "prefiere corregir el diseño antes de correrlo").
+
+Reglas:
+
+1. Una entrada es un PATRÓN que se repite, no un pedido puntual. "Arreglá el login" no es una entrada; que tres veces haya pedido ver el riesgo antes del resumen, sí.
+2. UNA línea, de 10 a 200 caracteres, redactada como descripción del usuario. No copies su mensaje.
+3. El perfil es GLOBAL: describe a la persona, no a un proyecto. Nada con nombres de repos, clientes, rutas, tecnologías de un proyecto o datos de negocio. Eso es un hecho de UN repositorio: si vale la pena guardarlo va a `learn.sh pref-add` (que es por repo) y solo si salió de mensajes de ESTE repositorio (`profile.sh pending --here` los lista).
+4. Si `show` ya dice lo mismo con otras palabras, no la agregues: confirmala con `profile.sh confirm {id}`.
+5. Registrá cada una:
+
+```bash
+bash ~/.devlead/scripts/profile.sh add {style|decision} conversations "{la entrada en una línea}"
+```
+
+   - `STATUS: refused` → la entrada hablaba de qué puede hacer DevLead (merge, límites, gates, claves, producción). Eso no va al perfil: no la reformules para que pase.
+   - `STATUS: full` → el perfil llegó a su tope. Unificá dos entradas que digan lo mismo (`remove` de una, `add` de la versión unificada) o quitá una que ya no valga, y recién entonces agregá.
+   - `STATUS: removed-before` → el usuario ya la quitó. No vuelve.
+6. Lo que trajo `engram` son decisiones y convenciones ya guardadas de ESTE proyecto: usalas como contexto de la sesión. No las copies al perfil global.
+7. Cuando terminaste con lo que `pending` te mostró, marcalo procesado con la misma cantidad que leíste:
+
+```bash
+bash ~/.devlead/scripts/profile.sh digested {cantidad de mensajes que procesaste}
+```
+
+Las entradas quedan ACTIVAS apenas se registran. El Paso 4 le muestra al usuario las que agregaste hoy, para que quite las que no le representan (`profile.sh remove {id}`).
+
+Guardá la salida de `show` (después de agregar): es cómo le hablás al usuario durante toda la sesión y cómo decidís cuando no te dice qué hacer.
+
 Corré también la lectura de confianza y guardala para el Paso 4:
 
 ```bash
@@ -241,6 +285,17 @@ bash ~/.devlead/scripts/notify.sh ack
 ```
 
 Nunca corras `ack` antes de mostrar las entradas: archivar algo que el usuario no vio es perderlo.
+
+**Si hoy agregaste entradas al perfil (Paso 2.6)** — haya o no preferencias nuevas de reviews —, mostrá esta sección después de "Mientras no estabas", con una línea por entrada y su id:
+
+```
+### Lo que aprendí de vos
+· [p7] estilo · {entrada}
+· [p8] decisión · {entrada}
+Ya las estoy usando. Si alguna no te representa, decime cuál y la quito.
+```
+
+Una entrada que el usuario no vio no puede quitarla: nunca agregues al perfil sin mostrarlo en este standup. Si pide quitar una, corré `bash ~/.devlead/scripts/profile.sh remove {id}` y confirmalo en una línea. Si hoy no agregaste ninguna, omití la sección.
 
 **Si `bash ~/.devlead/scripts/learn.sh pref-new` da `STATUS: new`**, mostrá esta sección después de "Mientras no estabas" y antes de los tres buckets:
 
@@ -514,7 +569,15 @@ Si el output muestra `STATUS: blocked`:
 bash ~/.devlead/scripts/learn.sh pref-list
 ```
 
-Las líneas bajo `ACTIVE:` son cómo trabaja el usuario: aplicalas en esta implementación y pasalas tal cual, como lista de convenciones, a todo sub-agente que escriba código o tests (`sdd-apply`, `sdd-verify`, implementación en-sesión). Las de `REMOVED:` no se aplican. `STATUS: empty` → seguí sin más.
+Y el perfil global del usuario:
+
+```bash
+bash ~/.devlead/scripts/profile.sh show
+```
+
+Lo que imprime `show` es cómo escribe y cómo decide el usuario, en cualquier proyecto: usalo para resolver lo que el spec no dice y para redactar commits, PRs y mensajes como los redactaría él. Vale lo mismo que una preferencia: pierde contra Layer-0, el envelope, los gates y el spec (GOVERNANCE.md §learned-preferences).
+
+Las líneas bajo `ACTIVE:` de `pref-list` son cómo trabaja el usuario en este repo: aplicalas en esta implementación y pasalas tal cual, como lista de convenciones, a todo sub-agente que escriba código o tests (`sdd-apply`, `sdd-verify`, implementación en-sesión). Las de `REMOVED:` no se aplican. `STATUS: empty` → seguí sin más.
 
 Una preferencia es estilo de trabajo, nunca autoridad (GOVERNANCE.md §learned-preferences). Si una preferencia choca con Layer-0, el envelope, un gate, una zona prohibida, el spec o el plan → gana lo otro; no la apliques y anotalo en el PR ("preferencia pN no aplicada: {motivo}").
 

@@ -316,6 +316,27 @@ Todo vive en `~/.devlead/learn/<repo-key>/`, local y por repo. Una preferencia e
 
 El journal también es acumulativo: `/cerremos` archiva la entrada anterior en vez de pisarla (`journal.sh`), y `/arranquemos` lee los últimos días para detectar lo que se repite.
 
+## Perfil — DevLead aprende cómo escribes y decides (`profile.sh`)
+
+Además de tus reviews, DevLead aprende de lo que TÚ escribes en tus conversaciones de Claude Code, de todos tus proyectos, y de lo que ya está guardado en Engram.
+
+- **Qué lee:** solo lo que tecleaste. Descarta en código las respuestas del modelo, los resultados de herramientas, la salida de hooks, las notificaciones y todo lo que pegaste.
+- **Qué guarda:** un perfil corto con dos clases de entradas — cómo escribes y cómo decides. Tiene un tope de tamaño (3000 caracteres por defecto) y cada entrada vence a los 90 días si no se confirma.
+- **Qué no guarda:** nada de un proyecto concreto (nombres, clientes, rutas). Eso queda por repositorio, en `learn.sh`, y nunca pasa a otro.
+- **Qué no puede decir:** nada sobre lo que DevLead puede hacer. Una entrada que hable de merge, límites, claves o producción se rechaza en código.
+- **Dónde vive:** `~/.devlead/profile/`. Nada sale de tu máquina.
+
+Para verlo o corregirlo:
+
+```
+bash ~/.devlead/scripts/profile.sh list
+bash ~/.devlead/scripts/profile.sh remove p3
+```
+
+O simplemente díselo: "esa no me representa, quítala".
+
+---
+
 ## Agenda del día — qué va a hacer DevLead hoy (`agenda.sh`)
 
 Cada mañana el sweep arma la cola de cada repo enrolado con la policy de su envelope, la guarda como **agenda del día** y te manda un aviso al teléfono. DevLead no espera tu OK: a la hora del run arranca con esa cola. Si tenés otra prioridad, la cambiás antes:
