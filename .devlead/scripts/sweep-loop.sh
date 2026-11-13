@@ -73,6 +73,13 @@
 #                           the loop declares convergence and stops (default 2;
 #                           0 disables the check and restores cap-only bounding)
 #   DEVLEAD_CLAUDE_BIN      claude binary (default: claude)
+#   DEVLEAD_LOOP_CLAUDE_ARGS  REQUIRED for a real run: the permission flags
+#                           passed to every `claude -p`, whitespace-separated,
+#                           e.g. "--permission-mode acceptEdits --allowedTools
+#                           Bash,Read,Edit,Write". Unset or empty -> the loop
+#                           refuses to invoke claude: an unattended session
+#                           must run with permissions someone chose, never
+#                           with whatever this machine's settings allow.
 #   DEVLEAD_LOOP_REPO       target repo path to cd into before running; --repo wins
 #                           when both are given (see FIX 7: the systemd unit has no
 #                           WorkingDirectory pointed at a real repo, so LOCAL-PLAN's
@@ -138,6 +145,25 @@ SLEEP_SECS="${DEVLEAD_LOOP_SLEEP:-5}"
 # flake and two as a pattern.
 STALL_LIMIT="${DEVLEAD_LOOP_STALL:-2}"
 DRYRUN="${DEVLEAD_LOOP_DRYRUN:-0}"
+# Whitespace-split on purpose: the value comes from a systemd EnvironmentFile,
+# which has no way to express an argument list.
+_CLAUDE_ARGS=()
+read -ra _CLAUDE_ARGS <<<"${DEVLEAD_LOOP_CLAUDE_ARGS:-}"
+
+# --- Reaching the human -------------------------------------------------------
+# Nobody is watching this loop. When it cannot go on by itself it says so
+# through notify.sh: `need` reaches the phone, `info` only the inbox that
+# /arranquemos shows in the morning. Never in a dry run (nothing happened),
+# and never able to change this script's outcome: a missing or failing
+# notify.sh is ignored.
+_notify() {
+  [[ "$DRYRUN" == "1" ]] && return 0
+  local _bin
+  _bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/notify.sh"
+  [[ -f "$_bin" ]] || return 0
+  bash "$_bin" send "$1" "$2" "$3" >/dev/null 2>&1 || true
+  return 0
+}
 PLAN_FILE=""
 REPO_DIR="${DEVLEAD_LOOP_REPO:-}"
 EXTRA_ARGS=""
@@ -378,6 +404,7 @@ if [[ "$DRYRUN" != "1" ]]; then
         echo "sweep-loop: remedy: git checkout <trunk> && git pull && bash install.sh"
         echo "sweep-loop: escape hatch for supervised development: DEVLEAD_ALLOW_DRIFT=1"
       } >&2
+      _notify need loop-drift "$_reason"
       exit 1
     fi
   fi
@@ -476,6 +503,7 @@ _LAUNCHER_ONLY_VARS=(
   DEVLEAD_LOOP_SLEEP
   DEVLEAD_LOOP_STALL
   DEVLEAD_CLAUDE_BIN
+  DEVLEAD_LOOP_CLAUDE_ARGS
   DEVLEAD_LOOP_REPO
   DEVLEAD_ALLOW_DRIFT
   DEVLEAD_DOCTOR_BIN
@@ -492,6 +520,50 @@ _sweep_display() {
   printf 'env'
   for _v in "${_LAUNCHER_ONLY_VARS[@]}"; do printf ' -u %s' "$_v"; done
   printf ' %s -p "%s"' "$CLAUDE_BIN" "$(_sweep_prompt)"
+  if [[ ${#_CLAUDE_ARGS[@]} -gt 0 ]]; then
+    printf ' %s' "${_CLAUDE_ARGS[@]}"
+  else
+    printf ' <DEVLEAD_LOOP_CLAUDE_ARGS unset: a real run refuses to start>'
+  fi
+}
+
+# --- Explicit permissions ----------------------------------------------------
+# A real run needs permission flags someone chose. Without them `claude -p`
+# would run with whatever the machine's global settings happen to allow — on
+# one machine that blocks every tool and the night is wasted, on another it
+# allows everything and nobody decided that.
+if [[ "$DRYRUN" != "1" && ${#_CLAUDE_ARGS[@]} -eq 0 ]]; then
+  {
+    echo "sweep-loop: DEVLEAD_LOOP_CLAUDE_ARGS is not set — refusing to invoke $CLAUDE_BIN with ambient permissions"
+    echo "sweep-loop: set it in ~/.devlead/loop.env, for example:"
+    echo "sweep-loop:   DEVLEAD_LOOP_CLAUDE_ARGS=--permission-mode acceptEdits --allowedTools Bash,Read,Edit,Write,Glob,Grep,Agent"
+    echo "sweep-loop: preview the exact command with DEVLEAD_LOOP_DRYRUN=1"
+  } >&2
+  _notify need loop-no-permissions "DEVLEAD_LOOP_CLAUDE_ARGS is not set in ~/.devlead/loop.env — the nightly loop did not run"
+  exit 1
+fi
+
+# --- Kill switch --------------------------------------------------------------
+# `enabled: false` in the repo's envelope is the user's off switch. An
+# interactive LOCAL-PLAN run does not need it: a human just approved that plan.
+# This loop has no human, so it honours the switch — before every iteration, so
+# flipping it stops a run that is already going. Fleet mode is exempt here
+# because sweep-execute checks each repo's switch itself (E1.2).
+# Read-only: `envelope.sh check` never writes.
+_ENVELOPE_SH="$_SCRIPT_DIR/envelope.sh"
+_kill_switch_reason() {
+  [[ "$_cwd_dependent" == "true" ]] || return 1
+  local _out
+  _out="$(bash "$_ENVELOPE_SH" check 2>/dev/null </dev/null)"
+  if ! grep -q '^ENROLLED: true' <<<"$_out"; then
+    echo "no .devlead/envelope.yml in $PWD — this repo is not enrolled for unattended runs"
+    return 0
+  fi
+  if ! grep -q '^ENABLED: true' <<<"$_out"; then
+    echo "the envelope in $PWD does not say enabled: true ($(grep -m1 '^ENABLED:' <<<"$_out" || echo 'ENABLED: unreadable'))"
+    return 0
+  fi
+  return 1
 }
 
 # --- Reactive not-a-git-repo detection --------------------------------------
@@ -520,6 +592,9 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
 
   if _plan_settled; then
     echo "sweep-loop: every task in $PLAN_FILE is done — stopping after $((_iter - 1)) iteration(s)"
+    # Only when this run did the work: a plan that was already settled before
+    # the first iteration is not news.
+    [[ "$_iter" -gt 1 ]] && _notify info loop-done "every task in $PLAN_FILE is done after $((_iter - 1)) iteration(s)"
     exit 0
   fi
 
@@ -533,8 +608,16 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
     continue
   fi
 
+  if _paused_reason="$(_kill_switch_reason)"; then
+    echo "STATUS: paused"
+    echo "sweep-loop: $_paused_reason"
+    echo "sweep-loop: nothing was invoked in iteration $_iter — set enabled: true in the envelope to let the loop run"
+    _notify need loop-paused "$_paused_reason (stopped before iteration $_iter)"
+    exit 0
+  fi
+
   echo "sweep-loop: iteration $_iter/$MAX_ITER — invoking $CLAUDE_BIN"
-  env "${_ENV_STRIP[@]}" "$CLAUDE_BIN" -p "$(_sweep_prompt)" | tee "$_SWEEP_OUT"
+  env "${_ENV_STRIP[@]}" "$CLAUDE_BIN" -p "$(_sweep_prompt)" "${_CLAUDE_ARGS[@]}" | tee "$_SWEEP_OUT"
   _rc=${PIPESTATUS[0]}
   echo "sweep-loop: iteration $_iter exited $_rc"
 
@@ -543,6 +626,7 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
     echo "sweep-loop: cwd used was: $PWD" >&2
     echo "sweep-loop: pass --repo <path> or set \$DEVLEAD_LOOP_REPO to the target repo instead" >&2
     echo "sweep-loop: stopping after iteration $_iter — re-invoking would repeat the same failure" >&2
+    _notify need loop-no-repo "sweep-execute could not resolve a repo from $PWD — set DEVLEAD_LOOP_REPO"
     exit 1
   fi
 
@@ -561,6 +645,7 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
       echo "sweep-loop: stopping at iteration $_iter of $MAX_ITER; re-invoking would reproduce the same verdict"
       echo "sweep-loop: outstanding work and why it is stuck:"
       printf '%s\n' "$_snapshot" | sed 's/^/  /'
+      _notify need loop-stuck "no progress after $((_stall + 1)) iterations of ${PLAN_FILE:-the run}: $_snapshot"
       exit 0
     fi
   fi
@@ -572,7 +657,11 @@ done
 
 if _plan_settled; then
   echo "sweep-loop: every task in $PLAN_FILE is done — stopping"
+  _notify info loop-done "every task in $PLAN_FILE is done after $MAX_ITER iteration(s)"
 else
   echo "sweep-loop: iteration cap ($MAX_ITER) reached with work still outstanding"
+  # Fleet/planless runs have no plan to settle: reaching the cap is their
+  # normal ending, not a call for help.
+  [[ -n "$PLAN_FILE" ]] && _notify need loop-cap "iteration cap ($MAX_ITER) reached with tasks of $PLAN_FILE still not done"
 fi
 exit 0

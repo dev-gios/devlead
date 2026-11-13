@@ -2,11 +2,17 @@
 # sweep.sh — DevLead Nivel 2: plan-only autonomous multi-repo sweep.
 # Reads ~/.devlead/autonomous-repos (one absolute path per line; # = comment).
 # Per enrolled+enabled repo: resolves auth, runs envelope.sh check+plan (read-only).
-# ONLY filesystem write: ~/.devlead/reports/YYYY-MM-DD.md (OVERWRITE each run).
+# Filesystem writes, all local state under ~/.devlead: the digest
+# reports/YYYY-MM-DD.md (OVERWRITE each run), the outcomes history, and the
+# day's agenda of each included repo (agenda.sh publish). After the last repo
+# it tells the human ONCE what the fleet plans to work on (notify.sh agenda).
 # ZERO mutation verbs: no branch creation, no PRs, no commits, no pushes.
 set -uo pipefail
 
 ENVELOPE_BIN="$HOME/.devlead/scripts/envelope.sh"
+AGENDA_BIN="$HOME/.devlead/scripts/agenda.sh"
+NOTIFY_BIN="$HOME/.devlead/scripts/notify.sh"
+AGENDA_MESSAGE_MAX_CHARS=1500
 REPOS_FILE="$HOME/.devlead/autonomous-repos"
 REPORTS_DIR="$HOME/.devlead/reports"
 OUTCOMES_DIR="$HOME/.devlead/outcomes"
@@ -152,6 +158,7 @@ _sweep_repo() {
     echo "$plan_out" | sed 's/^~~~/~~~ /; s/^```/``` /'
     echo "~~~"
     echo ""
+    _publish_agenda "$repo_path" "$plan_out"
     _reckon_repo "$repo_path" "$_auth_token"
   else
     # Empty, crashed, or unknown output — honest error, NOT "success"
@@ -166,6 +173,47 @@ _sweep_repo() {
     fi
     echo "- $repo_path: no medible — plan-error; sin snapshot de PRs." >&4
   fi
+}
+
+# ---------------------------------------------------------------------------
+# _publish_agenda <repo_path> <plan_out> — stores the queue this plan produced
+# as the repo's agenda for today and appends one line to $_agenda_tmp:
+#   <issue count> TAB <repo name>: #N title; #N title
+# The line describes the EFFECTIVE agenda, so adjustments the human already
+# made today survive a second sweep. Writes nothing to fd 1 or fd 4 and
+# always returns 0: a repo whose agenda could not be stored is simply absent
+# from the notice, and its plan section and outcomes are unaffected.
+# ---------------------------------------------------------------------------
+_publish_agenda() {
+  local repo_path="$1" plan_out="$2" shown count items
+  [[ -f "$AGENDA_BIN" && -n "${_agenda_tmp:-}" ]] || return 0
+  bash "$AGENDA_BIN" publish <<<"$plan_out" >/dev/null 2>&1 4>&- || return 0
+  shown="$(bash "$AGENDA_BIN" show 2>/dev/null 4>&-)" || return 0
+  count="$(grep -cE '^[0-9]+\. #[0-9]+  ' <<<"$shown" || true)"
+  [[ "$count" -gt 0 ]] || return 0
+  items="$(sed -nE 's/^[0-9]+\. (#[0-9]+)  /\1 /p' <<<"$shown" | tr '\t\r' '  ' | paste -sd ';' - | sed 's/;/; /g')"
+  printf '%s\t%s: %s\n' "$count" "${repo_path##*/}" "$items" >> "$_agenda_tmp" 2>/dev/null
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _notify_agenda — ONE notice per sweep run, built from what _publish_agenda
+# collected. Sends nothing when no repo has work today. The code carries only
+# counts (it is what leaves the machine by default); the message carries the
+# list and stays in the local inbox unless the human opted into detail.
+# ---------------------------------------------------------------------------
+_notify_agenda() {
+  [[ -n "${_agenda_tmp:-}" && -s "$_agenda_tmp" && -f "$NOTIFY_BIN" ]] || return 0
+  local repos issues message
+  repos="$(grep -c . "$_agenda_tmp")"
+  issues="$(awk -F'\t' '{ n += $1 } END { print n + 0 }' "$_agenda_tmp")"
+  message="$(cut -f2- "$_agenda_tmp" | paste -sd '|' - | sed 's/|/ | /g')"
+  if [[ ${#message} -gt $AGENDA_MESSAGE_MAX_CHARS ]]; then
+    message="${message:0:$AGENDA_MESSAGE_MAX_CHARS}…"
+  fi
+  bash "$NOTIFY_BIN" send agenda "${repos} repo(s), ${issues} issue(s) today" \
+    "$message — change it per repo: devlead agenda first <N> | skip <N>" >/dev/null 2>&1
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -391,6 +439,11 @@ _included=0
 _excluded=0
 _digest_body=""
 _outcomes_body=""
+# Every repo runs in its own subshell, so the agenda lines travel through a
+# file. No temp file -> no agenda notice this run; the sweep itself goes on.
+_agenda_tmp="$(mktemp "$REPORTS_DIR/.agenda-XXXXXX" 2>/dev/null || true)"
+# A sweep killed mid-run must not leave the file behind.
+trap '[[ -n "${_agenda_tmp:-}" ]] && rm -f "$_agenda_tmp"' EXIT
 
 for _repo in "${_repos[@]}"; do
   # _sweep_repo is called EXACTLY ONCE per repo. It emits two streams:
@@ -452,6 +505,9 @@ for _repo in "${_repos[@]}"; do
   _digest_body+="$_section"$'\n'
   [[ -n "$_outc" ]] && _outcomes_body+="$_outc"$'\n'
 done
+
+_notify_agenda
+[[ -n "$_agenda_tmp" ]] && rm -f "$_agenda_tmp"
 
 # FIX 5: Atomic digest write via temp file + mv
 _tmp="$(mktemp "$REPORTS_DIR/.sweep-XXXXXX.md")"

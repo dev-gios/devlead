@@ -1,0 +1,15 @@
+[Unit]
+Description=DevLead fleet run timer
+
+[Timer]
+# After the morning sweep (07:00) has published the day's agenda and told you,
+# and after the plan loop (22:00) — see After= in devlead-fleet.service.
+OnCalendar=*-*-* 22:30:00
+# Deliberately NOT Persistent, like devlead-loop.timer: this run creates
+# branches, commits and PRs. A missed night firing the moment you open the
+# laptop, while you are working, is the opposite of what you asked for.
+Persistent=false
+Unit=devlead-fleet.service
+
+[Install]
+WantedBy=timers.target
