@@ -594,6 +594,9 @@ unset _leaky
 
 # Over-stripping is the opposite failure and just as real: run-state.sh runs
 # INSIDE the child and needs its sandbox root, so this one must survive.
+# The hard limits are on for every unattended session: the launcher sets
+# DEVLEAD_GUARD=1 on the Claude Code process itself.
+contains "guard: the session starts with DEVLEAD_GUARD=1" "$child_env" "DEVLEAD_GUARD=1"
 contains "env-leak: DEVLEAD_RUN_STATE_DIR still reaches the child" \
   "$child_env" "DEVLEAD_RUN_STATE_DIR="
 
@@ -603,7 +606,7 @@ envstrip_out="$(DEVLEAD_LOOP_DRYRUN=1 bash "$LOOP" --plan "$PLAN" --max-iteratio
 contains "env-leak: dry run renders the strip flags" \
   "$envstrip_out" "env -u DEVLEAD_LOOP_DRYRUN"
 contains "env-leak: dry run still shows the claude invocation" \
-  "$envstrip_out" "-u DEVLEAD_DOCTOR_BIN claude -p"
+  "$envstrip_out" "-u DEVLEAD_DOCTOR_BIN DEVLEAD_GUARD=1 claude -p"
 
 # --- The loop stops when it stops learning ---------------------------------
 # REGRESSION. The cap bounds the loop; it does not notice the loop has stopped

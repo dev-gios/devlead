@@ -1,0 +1,109 @@
+version: 1
+
+# Plan: Jarvis — Fase 5 (rediseño: un asistente que trabaja solo).
+#
+# Pedido del usuario (2026-11-13, textual):
+#   L1 "la idea es que este sea literalmente un Jarvis que vaya, haga, tome
+#       decisiones, aprenda no solamente de lo que se haga en GitHub, sino que
+#       también aprenda de lo que está en Engram, de todas las conversaciones
+#       que nosotros también estamos teniendo, mi forma de escribir [...] Y la
+#       idea es que literalmente yo hable con él y él ejecute."
+#   L2 "los límites aquí que deberían haber realmente son ya que él no pueda
+#       hacer cosas en producción a nivel de modificar base de datos, que las
+#       claves tenga que leerlas como de ciertos lugares si tiene el permiso,
+#       ese tipo de cosas, pero no límites así como de no voy a arrancar esta
+#       issue hasta que tú no me digas."
+#   L3 "tengamos un dialecto mucho más general, que podamos entenderlo todos"
+#   L4 "si yo inicio del lead de WebIA, debería trabajar solo ahí. Si digamos
+#       lo arranco de otro repo, que trabaje solo en ese repo."
+#   L5 "Por ahora enfoquémonos solamente en Claude Code"
+#
+# Qué cambia de fondo: la regla "nunca iniciar trabajo sin confirmación"
+# (Inv 1 / A1 / Inv 6) la escribió el usuario y el usuario la retira (L2). La
+# reemplazan límites duros verificados en código, no en prosa.
+#
+# Supuesto (no confirmado por el usuario): DevLead puede mergear a la rama de
+# integración; la rama por defecto sigue siendo del usuario (A3 no cambia).
+#
+# Ideas tomadas de proyectos parecidos (investigación del 2026-11-13):
+#   - límites estructurales en vez de instrucciones (Copilot coding agent, Codex)
+#   - perfil chico con tope duro + archivo buscable (Hermes Agent)
+#   - memoria con evidencia y vencimiento (Copilot Memory)
+#   - callado por defecto (OpenClaw)
+#
+# FUERA DE ALCANCE: otras terminales (L5); hablarle por un chat externo (el
+# usuario habla por Claude Code, incluida la app móvil); un intermediario de
+# credenciales (hoy la defensa es no leer las claves, no inyectarlas).
+
+tasks:
+  - id: hard-limits
+    title: "Límites duros en código — guard.sh antes de cada herramienta"
+    type: feat
+    # ACEPTACIÓN:
+    #   - Un hook PreToolUse (`guard.sh`) bloquea, con una razón exacta:
+    #     producción (deploys, infraestructura, publicar paquetes, push a la
+    #     rama por defecto), base de datos fuera de la máquina local, lectura de
+    #     claves fuera de los lugares permitidos, y escritura fuera del repo en
+    #     el que se inició (L4).
+    #   - Los lugares permitidos para claves los escribe el usuario en
+    #     `~/.devlead/secrets-allow`; el guard nunca escribe ese archivo y
+    #     bloquea que la sesión lo modifique, igual que su propia configuración.
+    #   - Activo en una sesión de DevLead y en toda corrida desatendida; inerte
+    #     en cualquier otra sesión de Claude Code.
+    #   - Si no puede leer la llamada, bloquea (falla cerrado).
+    #   - Suite nueva test/unit-guard.sh. shellcheck limpio.
+
+  - id: authority-model
+    title: "Nuevo modelo de autoridad — inicia solo, dentro de los límites"
+    type: docs
+    depends-on: hard-limits
+    # ACEPTACIÓN:
+    #   - GOVERNANCE.md, CLAUDE.md y DEVLEAD.md dicen lo mismo: DevLead inicia
+    #     trabajo por su cuenta en el repo donde se lo llamó; los límites son
+    #     los de `hard-limits` más el envelope (merge) y los gates.
+    #   - A3 (merge) y A4 (gate rojo detiene) no cambian.
+    #   - Los tests que fijan texto normativo siguen verdes o se actualizan
+    #     con la regla nueva.
+
+  - id: one-door
+    title: "Una sola entrada conversacional, con vocabulario general"
+    type: feat
+    depends-on: authority-model
+    # ACEPTACIÓN:
+    #   - Un comando (`/devlead`) reemplaza a /arranquemos y /cerremos: deriva
+    #     el estado, lee lo de ayer, dice qué va a hacer y empieza; entiende
+    #     pedidos en lenguaje natural ("sigue con lo de ayer", "para", "qué
+    #     hiciste", "cerramos por hoy").
+    #   - Trabaja solo en el repo donde se lo invocó (L4).
+    #   - Los nombres visibles dejan el dialecto regional (L3); los comandos
+    #     viejos quedan como alias mientras dure la transición.
+
+  - id: profile
+    title: "Perfil del usuario — aprende de Engram, conversaciones y correcciones"
+    type: feat
+    depends-on: one-door
+    # ACEPTACIÓN:
+    #   - Tres fuentes: Engram, los mensajes del propio usuario en las
+    #     conversaciones de Claude Code del repo, y los comentarios de PR.
+    #   - Perfil global (cómo escribe, cómo decide) con tope duro de tamaño;
+    #     hechos por repo, que nunca cruzan a otro repo.
+    #   - Cada entrada guarda de dónde salió y vence si no se confirma.
+    #   - Texto que no escribió el usuario nunca entra al perfil.
+    #   - Nada sale de la máquina.
+
+  - id: decision-log
+    title: "Registro de decisiones — qué decidió solo y por qué"
+    type: feat
+    depends-on: profile
+    # ACEPTACIÓN:
+    #   - Cada decisión tomada sin preguntar queda registrada con su razón.
+    #   - El usuario la corrige en lenguaje natural y la corrección alimenta
+    #     el perfil.
+
+  - id: simplify
+    title: "Recortes — lo que no se usa"
+    type: refactor
+    depends-on: decision-log
+    # ACEPTACIÓN:
+    #   - Fuera `learn.sh trust`; el nivel `info` no llega al teléfono ni
+    #     ocupa la bandeja por defecto; `fleet` y `loop` son un solo timer.

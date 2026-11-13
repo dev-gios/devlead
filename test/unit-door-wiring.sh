@@ -33,7 +33,7 @@ fenced_lines() {
   awk '/^[[:space:]]*```/ { inside = !inside; next } inside { print NR ":" $0 }' "$1"
 }
 
-for f in arranquemos.md batch.md sweep-execute.md; do
+for f in devlead.md arranquemos.md batch.md sweep-execute.md; do
   hits="$(fenced_lines "$CMD_DIR/$f" \
     | grep -E '^[0-9]+:[[:space:]]*(.*(&&|;|\|)[[:space:]]*)?gh[[:space:]]+pr[[:space:]]+(create|merge)\b' || true)"
   report "$f: no direct gh pr create / gh pr merge in a code block" "$hits"
@@ -52,6 +52,58 @@ if fenced_lines "$CMD_DIR/sweep-execute.md" | grep -q 'scripts/merge\.sh {PR_URL
 else
   report "sweep-execute.md: merges through merge.sh" "no fenced merge.sh invocation found"
 fi
+
+# The interactive command starts on its own and merges only through the door.
+if fenced_lines "$CMD_DIR/arranquemos.md" | grep -q 'scripts/merge\.sh {PR_URL}'; then
+  report "arranquemos.md: merges through merge.sh" ""
+else
+  report "arranquemos.md: merges through merge.sh" "no fenced merge.sh invocation found"
+fi
+waits="$(grep -nE '[Ee]sperá decisión|Pedí instrucción|hasta recibir instrucción explícita|hasta que el usuario resuelva|esperá confirmación explícita|No despacharás el pipeline hasta recibir un OK|¿Cuántas horas tenés disponibles|¿Aprobás este spec' "$CMD_DIR/arranquemos.md" || true)"
+report "arranquemos.md: no step waits for a per-issue or per-approach OK" "$waits"
+if grep -q 'sin esperar respuesta' "$CMD_DIR/arranquemos.md" && grep -q 'guard.sh' "$CMD_DIR/arranquemos.md"; then
+  report "arranquemos.md: shows the plan and starts; the limits are guard.sh" ""
+else
+  report "arranquemos.md: shows the plan and starts; the limits are guard.sh" "the start rule or the guard reference is missing"
+fi
+gov="$CMD_DIR/../GOVERNANCE.md"
+stale_profile="$(grep -rnE 'manual-profile|[Mm]odo manual|perfil manual' "$CMD_DIR" "$gov" "$CMD_DIR/../CLAUDE.md" || true)"
+report "no file still points at the retired manual profile" "$stale_profile"
+for anchor in '### §assistant-profile' '## §hard-limits' 'Autorizar no es aprobar cada paso'; do
+  if grep -qF "$anchor" "$gov"; then report "GOVERNANCE.md has: $anchor" ""
+  else report "GOVERNANCE.md has: $anchor" "missing"; fi
+done
+
+# /devlead is the one entry: it routes by intent and never opens or merges a
+# PR itself — it hands over to the procedures, which go through the doors.
+entry="$CMD_DIR/devlead.md"
+for needle in '$ARGUMENTS' '~/.claude/commands/arranquemos.md' '~/.claude/commands/cerremos.md' \
+              'guard.sh' 'GOVERNANCE.md §assistant-profile' 'registro neutro'; do
+  if grep -qF -- "$needle" "$entry"; then report "devlead.md has: $needle" ""
+  else report "devlead.md has: $needle" "missing"; fi
+done
+for intent in 'Empezar' 'Continuar' 'Una tarea concreta' 'Saber cómo va' 'Cambiar de rumbo' 'Cerrar'; do
+  if grep -qF "**$intent**" "$entry"; then report "devlead.md routes: $intent" ""
+  else report "devlead.md routes: $intent" "intent missing from the table"; fi
+done
+# devlead.md names steps of the procedures it hands over to; they must exist.
+for step in '## Paso 0 ' '## Paso 1 ' '## Paso 2 ' '## Paso 6 ' '## Paso 7 ' '## Paso 8 '; do
+  if grep -q "^$step" "$CMD_DIR/arranquemos.md"; then report "arranquemos.md still has the step devlead.md points at: $step" ""
+  else report "arranquemos.md still has the step devlead.md points at: $step" "heading not found"; fi
+done
+destructive="$(grep -nE 'descarta lo que|o descarta|cambios descartados' "$entry" "$CMD_DIR/arranquemos.md" || true)"
+report "devlead.md: changing course never discards uncommitted work" "$destructive"
+if grep -qF 'Nunca descartes cambios sin commit' "$entry"; then report "devlead.md: says so explicitly" ""
+else report "devlead.md: says so explicitly" "the rule is missing"; fi
+asks="$(grep -nE '¿(Empezamos|Arrancamos|Seguimos|Procedo|Te parece)' "$entry" || true)"
+report "devlead.md: no confirmation question before starting" "$asks"
+# Explicit word boundaries: \b does not see an accented letter as a word
+# character in every locale, and then this check would match nothing.
+regional="$(grep -nE '(^|[^[:alpha:]áéíóúñ])(tenés|querés|podés|hacé|decí|seguí|andá|mostrá|leé|usá|corré|fijate|vos)($|[^[:alpha:]áéíóúñ])' "$entry" || true)"
+probe="$(printf 'si tenés tiempo\n' | grep -cE '(^|[^[:alpha:]áéíóúñ])(tenés|vos)($|[^[:alpha:]áéíóúñ])' || true)"
+if [[ "$probe" == "1" ]]; then report "the register check can match (not vacuous)" ""
+else report "the register check can match (not vacuous)" "the pattern did not match a known regional form"; fi
+report "devlead.md: written in a neutral register" "$regional"
 
 # The old contradiction: previews promising "never merges" while Delta 6 merges.
 stale="$(grep -n 'MERGE: NUNCA' "$CMD_DIR/sweep-execute.md" || true)"
