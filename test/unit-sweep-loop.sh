@@ -28,6 +28,12 @@ LOOP="$REPO_ROOT/.devlead/scripts/sweep-loop.sh"
 RUN_STATE="$REPO_ROOT/.devlead/scripts/run-state.sh"
 SANDBOX="$(mktemp -d /tmp/devlead-sweeploop.XXXXXX)"
 export DEVLEAD_RUN_STATE_DIR="$SANDBOX/state"
+# The loop reports through notify.sh. Point its state at the sandbox so this
+# suite never writes the real inbox and never reads a real push configuration
+# (no notify.env exists here, so nothing can leave the machine).
+export DEVLEAD_NOTIFY_DIR="$SANDBOX/notify"
+INBOX="$DEVLEAD_NOTIFY_DIR/inbox.tsv"
+inbox_codes() { if [[ -f "$INBOX" ]]; then cut -f2,3 "$INBOX" | tr '\t' ':' | paste -sd, -; fi; }
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -794,6 +800,68 @@ out="$(DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DO
   bash "$LOOP" --repo "$FLIP_REPO" --plan "$PERM_PLAN" --max-iterations 5 2>&1)"
 check "switch flipped mid-run: exactly one iteration ran" "$(arg_calls)" "1"
 contains "switch flipped mid-run: reports STATUS: paused" "$out" "STATUS: paused"
+
+# ===========================================================================
+# Escalation: the loop tells the human when it cannot go on by itself
+# ===========================================================================
+rm -f "$INBOX"
+DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PERM_PLAN" --max-iterations 1 >/dev/null 2>&1
+check "no permissions -> need:loop-no-permissions" "$(inbox_codes)" "need:loop-no-permissions"
+
+rm -f "$INBOX"; run_switch "$NO_ENVELOPE_REPO" >/dev/null
+check "kill switch -> need:loop-paused" "$(inbox_codes)" "need:loop-paused"
+
+rm -f "$INBOX"
+DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_FAIL" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PERM_PLAN" --max-iterations 1 >/dev/null 2>&1
+check "drift guard refusal -> need:loop-drift" "$(inbox_codes)" "need:loop-drift"
+
+rm -f "$INBOX"
+DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_NOTAGITREPO" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PERM_PLAN" --max-iterations 3 >/dev/null 2>&1
+check "unresolvable repo -> need:loop-no-repo" "$(inbox_codes)" "need:loop-no-repo"
+
+rm -f "$INBOX"; run_switch "$ENABLED_REPO" 2 >/dev/null
+check "cap reached with work outstanding -> need:loop-cap" "$(inbox_codes)" "need:loop-cap"
+
+rm -f "$INBOX"
+DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" DEVLEAD_LOOP_SLEEP=0 DEVLEAD_LOOP_STALL=1 \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$PERM_PLAN" --max-iterations 6 >/dev/null 2>&1
+check "no progress -> need:loop-stuck" "$(inbox_codes)" "need:loop-stuck"
+
+# The plan completes during the run -> info only, never a push-level entry.
+DONE_PLAN="$SANDBOX/plan-done.yml"
+printf 'version: 1\ntasks:\n  - id: omega\n    title: "Finishes"\n    type: feat\n' > "$DONE_PLAN"
+DONE_RUN_ID="plan-$(sha256sum "$DONE_PLAN" | cut -c1-16)"
+FAKE_CLAUDE_FINISH="$SANDBOX/fake-claude-finish"
+cat > "$FAKE_CLAUDE_FINISH" <<FAKE
+#!/usr/bin/env bash
+DEVLEAD_RUN_STATE_DIR="$DEVLEAD_RUN_STATE_DIR" bash "$RUN_STATE" mark "$DONE_RUN_ID" omega done "pr-created https://example.test/pull/1"
+FAKE
+chmod +x "$FAKE_CLAUDE_FINISH"
+rm -f "$INBOX"
+DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_FINISH" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$DONE_PLAN" --max-iterations 4 >/dev/null 2>&1
+check "plan completed by the run -> info:loop-done" "$(inbox_codes)" "info:loop-done"
+
+rm -f "$INBOX"
+DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_FINISH" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$LOOP" --repo "$ENABLED_REPO" --plan "$DONE_PLAN" --max-iterations 4 >/dev/null 2>&1
+check "plan already settled before the run -> silence" "$(inbox_codes)" ""
+
+rm -f "$INBOX"
+DEVLEAD_LOOP_DRYRUN=1 bash "$LOOP" --repo "$NO_ENVELOPE_REPO" --plan "$PERM_PLAN" --max-iterations 2 >/dev/null 2>&1
+check "dry run never notifies" "$(inbox_codes)" ""
+
+# A broken channel never changes what the loop does.
+BROKEN_NOTIFY_DIR="$SANDBOX/notify-is-a-file"
+: > "$BROKEN_NOTIFY_DIR"
+out="$(DEVLEAD_NOTIFY_DIR="$BROKEN_NOTIFY_DIR/x" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" \
+  DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" DEVLEAD_LOOP_SLEEP=0 DEVLEAD_LOOP_STALL=0 \
+  bash "$LOOP" --repo "$NO_ENVELOPE_REPO" --plan "$PERM_PLAN" --max-iterations 2 2>&1)"
+check "unwritable inbox: the paused run still exits 0" "$?" "0"
+contains "unwritable inbox: the loop's own report is unchanged" "$out" "STATUS: paused"
 
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="

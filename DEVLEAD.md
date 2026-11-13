@@ -264,6 +264,25 @@ Los units de usuario de systemd no heredan el PATH interactivo. El sweep invoca 
 
 ---
 
+## Avisos — bandeja local y push al teléfono (`notify.sh`)
+
+Un run desatendido que no puede seguir solo avisa por `~/.devlead/scripts/notify.sh`. Todo queda en la bandeja local `~/.devlead/inbox.tsv`, que `/arranquemos` muestra a la mañana ("Mientras no estabas") y archiva. Solo los avisos de nivel `need` van además al teléfono. La lista de qué dispara un `need` está en `.claude/GOVERNANCE.md §escalation-channel`.
+
+**Activar el push** (sin esto, solo se escribe la bandeja y nada sale de la máquina):
+
+1. Instalá la app de ntfy en el teléfono y suscribite a un topic con un nombre largo e imposible de adivinar (el nombre del topic es lo único que protege el canal), en `ntfy.sh` o en un servidor ntfy propio.
+2. Creá la configuración:
+   ```bash
+   printf 'DEVLEAD_NTFY_URL=https://ntfy.sh/tu-topic-largo-y-secreto\n' > ~/.devlead/notify.env
+   chmod 600 ~/.devlead/notify.env
+   ```
+   `notify.sh` ignora el archivo si los permisos no son exactamente `600` o si la URL no es `https`.
+3. Probalo: `bash ~/.devlead/scripts/notify.sh send need prueba "hola"` y después `bash ~/.devlead/scripts/notify.sh list` — la entrada debe decir `push=sent`.
+
+**Privacidad:** el push pasa por un servicio externo. Por defecto lleva solo el código del aviso (`DevLead needs you: loop-paused`), sin nombre de repo ni detalle. Agregá `DEVLEAD_NOTIFY_DETAIL=1` al archivo si querés que incluya el nombre del repo y el mensaje. Opcional: `DEVLEAD_NTFY_TOKEN=...` para un servidor con autenticación.
+
+---
+
 ## Nivel 3 — Autonomous Execute (`/sweep-execute`)
 
 ### Qué es

@@ -149,6 +149,21 @@ DRYRUN="${DEVLEAD_LOOP_DRYRUN:-0}"
 # which has no way to express an argument list.
 _CLAUDE_ARGS=()
 read -ra _CLAUDE_ARGS <<<"${DEVLEAD_LOOP_CLAUDE_ARGS:-}"
+
+# --- Reaching the human -------------------------------------------------------
+# Nobody is watching this loop. When it cannot go on by itself it says so
+# through notify.sh: `need` reaches the phone, `info` only the inbox that
+# /arranquemos shows in the morning. Never in a dry run (nothing happened),
+# and never able to change this script's outcome: a missing or failing
+# notify.sh is ignored.
+_notify() {
+  [[ "$DRYRUN" == "1" ]] && return 0
+  local _bin
+  _bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/notify.sh"
+  [[ -f "$_bin" ]] || return 0
+  bash "$_bin" send "$1" "$2" "$3" >/dev/null 2>&1 || true
+  return 0
+}
 PLAN_FILE=""
 REPO_DIR="${DEVLEAD_LOOP_REPO:-}"
 EXTRA_ARGS=""
@@ -389,6 +404,7 @@ if [[ "$DRYRUN" != "1" ]]; then
         echo "sweep-loop: remedy: git checkout <trunk> && git pull && bash install.sh"
         echo "sweep-loop: escape hatch for supervised development: DEVLEAD_ALLOW_DRIFT=1"
       } >&2
+      _notify need loop-drift "$_reason"
       exit 1
     fi
   fi
@@ -523,6 +539,7 @@ if [[ "$DRYRUN" != "1" && ${#_CLAUDE_ARGS[@]} -eq 0 ]]; then
     echo "sweep-loop:   DEVLEAD_LOOP_CLAUDE_ARGS=--permission-mode acceptEdits --allowedTools Bash,Read,Edit,Write,Glob,Grep,Agent"
     echo "sweep-loop: preview the exact command with DEVLEAD_LOOP_DRYRUN=1"
   } >&2
+  _notify need loop-no-permissions "DEVLEAD_LOOP_CLAUDE_ARGS is not set in ~/.devlead/loop.env — the nightly loop did not run"
   exit 1
 fi
 
@@ -575,6 +592,9 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
 
   if _plan_settled; then
     echo "sweep-loop: every task in $PLAN_FILE is done — stopping after $((_iter - 1)) iteration(s)"
+    # Only when this run did the work: a plan that was already settled before
+    # the first iteration is not news.
+    [[ "$_iter" -gt 1 ]] && _notify info loop-done "every task in $PLAN_FILE is done after $((_iter - 1)) iteration(s)"
     exit 0
   fi
 
@@ -592,6 +612,7 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
     echo "STATUS: paused"
     echo "sweep-loop: $_paused_reason"
     echo "sweep-loop: nothing was invoked in iteration $_iter — set enabled: true in the envelope to let the loop run"
+    _notify need loop-paused "$_paused_reason (stopped before iteration $_iter)"
     exit 0
   fi
 
@@ -605,6 +626,7 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
     echo "sweep-loop: cwd used was: $PWD" >&2
     echo "sweep-loop: pass --repo <path> or set \$DEVLEAD_LOOP_REPO to the target repo instead" >&2
     echo "sweep-loop: stopping after iteration $_iter — re-invoking would repeat the same failure" >&2
+    _notify need loop-no-repo "sweep-execute could not resolve a repo from $PWD — set DEVLEAD_LOOP_REPO"
     exit 1
   fi
 
@@ -623,6 +645,7 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
       echo "sweep-loop: stopping at iteration $_iter of $MAX_ITER; re-invoking would reproduce the same verdict"
       echo "sweep-loop: outstanding work and why it is stuck:"
       printf '%s\n' "$_snapshot" | sed 's/^/  /'
+      _notify need loop-stuck "no progress after $((_stall + 1)) iterations of ${PLAN_FILE:-the run}: $_snapshot"
       exit 0
     fi
   fi
@@ -634,7 +657,11 @@ done
 
 if _plan_settled; then
   echo "sweep-loop: every task in $PLAN_FILE is done — stopping"
+  _notify info loop-done "every task in $PLAN_FILE is done after $MAX_ITER iteration(s)"
 else
   echo "sweep-loop: iteration cap ($MAX_ITER) reached with work still outstanding"
+  # Fleet/planless runs have no plan to settle: reaching the cap is their
+  # normal ending, not a call for help.
+  [[ -n "$PLAN_FILE" ]] && _notify need loop-cap "iteration cap ($MAX_ITER) reached with tasks of $PLAN_FILE still not done"
 fi
 exit 0

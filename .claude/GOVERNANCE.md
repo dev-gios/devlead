@@ -197,6 +197,40 @@ Por lo tanto: un modo que responde con PARK ante un gate rojo (en lugar de HALT)
 
 ---
 
+## §escalation-channel — Avisar no es decidir
+
+La columna "Mid-run notify" de la tabla de perfiles describe lo que hace **DevLead dentro de un run**: los perfiles autónomos no se detienen a preguntar por cada issue aparcada, y eso no cambia. PARK sigue siendo silencioso hacia adentro del run y visible en el reporte.
+
+Lo que esta sección agrega es un canal de **escalada de nivel run**, implementado en código (`.devlead/scripts/notify.sh`), para el caso que la tabla no cubría: un run desatendido que **no puede seguir solo**. Hasta ahora ese caso terminaba en un archivo y una línea de journald que nadie leía.
+
+**Dos niveles, y solo dos:**
+
+| Nivel | Cuándo | A dónde va |
+|-------|--------|------------|
+| `need` | El run no puede continuar sin una decisión o una acción del usuario | Bandeja local + push al teléfono |
+| `info` | Desenlace normal que conviene saber | Bandeja local únicamente |
+
+**Disparadores de `need` (lista cerrada; agregar uno es una edición de esta sección):**
+
+- el loop no tiene permisos configurados (`loop-no-permissions`)
+- el kill-switch del envelope lo pausó (`loop-paused`)
+- el drift guard se negó a correr con artefactos no verificados (`loop-drift`)
+- no se pudo resolver el repo destino (`loop-no-repo`)
+- el run convergió sin progreso: las mismas tareas aparcadas por las mismas razones (`loop-stuck`)
+- se alcanzó el tope de iteraciones con tareas del plan sin terminar (`loop-cap`)
+
+Una issue aparcada por un gate rojo NO es un disparador: es el funcionamiento normal del perfil y va al reporte. Lo que escala es que el run entero dejó de avanzar.
+
+**Lo que el canal no puede hacer:**
+
+1. **No concede ni transfiere autoridad.** `notify.sh` no ejecuta pasos del pipeline, no lee ni escribe el envelope, y una entrada de la bandeja nunca es una orden: retomar lo que quedó frenado requiere la misma autorización que cualquier otro trabajo (A1).
+2. **No cambia desenlaces.** `notify.sh send` siempre sale 0. Un canal caído no convierte un run fallido en exitoso ni al revés.
+3. **No saca información de la máquina sin que el usuario lo haya configurado.** Sin `~/.devlead/notify.env` no hay push. Con él, el push lleva por defecto solo el código del aviso; el repo y el detalle quedan en la bandeja local salvo opt-in explícito (`DEVLEAD_NOTIFY_DETAIL=1`).
+
+**Chequeo narrow-not-widen:** antes, un run frenado esperaba en silencio hasta que el usuario mirara. Después, espera igual — pero avisa. DevLead no hace nada que antes no pudiera; el usuario se entera antes.
+
+---
+
 ## §inv6-governance — Autoridad de la envelope policy
 
 **La envelope policy (`.devlead/envelope.yml`) es una DELEGACIÓN PERMANENTE PRE-AUTORIZADA que satisface A1.**
