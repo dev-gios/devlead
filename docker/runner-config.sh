@@ -46,11 +46,16 @@
 #                                  the loop job works only in a clone
 #   DEVLEAD_STATE_DIR              the host's ~/.devlead, absolute: compose
 #                                  mounts its state subdirectories (S14)
-#   DEVLEAD_GIT_NAME               the author of the commits made in the
-#   DEVLEAD_GIT_EMAIL              container; both, or neither. Required once
-#                                  a repo is enrolled. Written to git-identity,
-#                                  which the image's root-owned git config
-#                                  includes: no session can change it
+#   DEVLEAD_GIT_NAME               the default author of the commits made in
+#   DEVLEAD_GIT_EMAIL              the container; both, or neither. Required
+#                                  once a repo is enrolled. Written to
+#                                  git-identity, root's, which the image's
+#                                  root-owned git config includes: no session
+#                                  can change those files. A session can still
+#                                  set another author for its own commits —
+#                                  in the clone's .git/config, with git -c or
+#                                  GIT_AUTHOR_*/GIT_COMMITTER_* — until the
+#                                  next sync rewrites the clone's config
 #
 # The paths of DEVLEAD_REPOS are the repos' paths on the host: each clone sits
 # at that same path in the container, so the state the host's /devlead keys
