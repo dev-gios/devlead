@@ -165,6 +165,34 @@ out="$(cd "$A" && PATH="$SANDBOX/noflock" "$BASH" "$D" record "sin flock" "regis
 check "without flock: records as before" "$(field "$out" STATUS) $(tail -n 1 "$DIR/log.tsv" | cut -f3-8)" \
   "$(printf 'recorded new\tsin flock\tregistro igual\tflock no está instalado\t\t-')"
 
+echo "=== no write through a link planted in the state (A3) ==="
+# The server's sessions can write in these directories (S14). A link one of
+# them plants must never send a host write, or what a rewrite reads, anywhere
+# else: the command refuses and changes nothing.
+OUTSIDE="$SANDBOX/outside.txt"; printf 'outside\n' > "$OUTSIDE"
+mv "$DIR/log.tsv" "$SANDBOX/log.real"; ln -s "$OUTSIDE" "$DIR/log.tsv"
+out="$(a record "t" "w" "y" 2>&1)"; rc=$?
+check "a log that is a link: record refuses" "$rc" "1"
+contains "a log that is a link: says why" "$out" "$DIR/log.tsv is a symbolic link"
+out="$(a shown 2>&1)"; rc=$?
+check "a log that is a link: shown refuses" "$rc" "1"
+check "a log that is a link: the target is untouched" "$(cat "$OUTSIDE")" "outside"
+check "a log that is a link: still the planted link (no copy of the target)" "$(readlink "$DIR/log.tsv")" "$OUTSIDE"
+rm "$DIR/log.tsv"; mv "$SANDBOX/log.real" "$DIR/log.tsv"
+mv "$DIR/repo" "$SANDBOX/repo.real"; ln -s "$SANDBOX/made-outside" "$DIR/repo"
+out="$(a record "t" "w" "y" 2>&1)"; rc=$?
+check "a dangling link as the repo file: refused, nothing created outside" "$rc $([[ -e "$SANDBOX/made-outside" ]] && echo created || echo none)" "1 none"
+rm "$DIR/repo"; mv "$SANDBOX/repo.real" "$DIR/repo"
+mv "$DIR" "$SANDBOX/dir.real"; mkdir -p "$SANDBOX/elsewhere"; ln -s "$SANDBOX/elsewhere" "$DIR"
+out="$(a record "t" "w" "y" 2>&1)"; rc=$?
+check "the repository's state directory as a link: refused" "$rc" "1"
+contains "the state directory as a link: says why" "$out" "$DIR is a symbolic link"
+check "the state directory as a link: nothing written where it points" "$(ls -A "$SANDBOX/elsewhere" | wc -l | tr -d ' ')" "0"
+rm "$DIR"; mv "$SANDBOX/dir.real" "$DIR"
+rows_before="$(wc -l < "$DIR/log.tsv")"
+out="$(a record "sin links" "registro igual" "no hay links")"
+check "without links: records as before" "$(field "$out" STATUS) $(wc -l < "$DIR/log.tsv")" "recorded $((rows_before + 1))"
+
 echo "=== it is only a record ==="
 for f in .devlead/scripts/open-pr.sh .devlead/scripts/merge.sh .devlead/scripts/envelope.sh \
          .devlead/scripts/forbidden-check.sh .claude/hooks/gate-check.sh .claude/hooks/guard.sh; do

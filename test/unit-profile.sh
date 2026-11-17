@@ -426,6 +426,19 @@ mkdir -p "$SANDBOX/noflock"; cp -s /usr/bin/* "$SANDBOX/noflock/" 2>/dev/null; r
 out="$(PATH="$SANDBOX/noflock" "$BASH" "$P" remove "$lock_id")"
 check "without flock: remove works as before" "$(field "$out" STATUS) $(awk -F'\t' -v id="$lock_id" '$1 == id {print $4}' "$DEVLEAD_PROFILE_DIR/profile.tsv")" "removed removed"
 
+echo "=== no write through a link planted in the state (A3) ==="
+OUTSIDE="$SANDBOX/outside.txt"; printf 'outside\n' > "$OUTSIDE"
+mv "$DEVLEAD_PROFILE_DIR/profile.tsv" "$SANDBOX/profile.real"; ln -s "$OUTSIDE" "$DEVLEAD_PROFILE_DIR/profile.tsv"
+out="$(bash "$P" add style tests "Una entrada que iria a un link plantado" 2>&1)"; rc=$?
+check "a profile that is a link: add refuses" "$rc" "1"
+contains "a profile that is a link: says why" "$out" "$DEVLEAD_PROFILE_DIR/profile.tsv is a symbolic link"
+out="$(bash "$P" show 2>&1)"; rc=$?
+check "a profile that is a link: show (which touches the files) refuses" "$rc" "1"
+check "a profile that is a link: the target is untouched, the link stays" "$(cat "$OUTSIDE") $(readlink "$DEVLEAD_PROFILE_DIR/profile.tsv")" "outside $OUTSIDE"
+rm -f "$DEVLEAD_PROFILE_DIR/profile.tsv"; mv "$SANDBOX/profile.real" "$DEVLEAD_PROFILE_DIR/profile.tsv"
+out="$(bash "$P" add style tests "Sin links la entrada se agrega como antes")"
+check "without links: add works as before" "$(field "$out" STATUS)" "added"
+
 echo "=== nothing else reads the profile ==="
 for f in .devlead/scripts/open-pr.sh .devlead/scripts/merge.sh .devlead/scripts/envelope.sh \
          .devlead/scripts/forbidden-check.sh .claude/hooks/gate-check.sh .claude/hooks/guard.sh; do

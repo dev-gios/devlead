@@ -213,6 +213,28 @@ check "without flock: send writes as before" "$(tail -n 1 "$INB" | cut -f2,3,4,6
 out="$(PATH="$SANDBOX/noflock" "$BASH" "$NOTIFY" ack)"
 check "without flock: ack works as before" "$out" "$(printf 'STATUS: acked\nCOUNT: 2')"
 
+# No write through a link planted in the state (A3): send and ack refuse,
+# change nothing and push nothing.
+OUTSIDE="$SANDBOX/outside.txt"; printf 'outside\n' > "$OUTSIDE"
+mv "$INB" "$SANDBOX/inbox.real"; ln -s "$OUTSIDE" "$INB"
+: > "$CURL_LOG"
+out="$(PATH="$FAKEBIN:$PATH" bash "$NOTIFY" send need linked "never written" 2>&1)"; rc=$?
+check "an inbox that is a link: send still exits 0" "$rc" "0"
+contains "an inbox that is a link: says why" "$out" "$INB is a symbolic link"
+check "an inbox that is a link: nothing pushed" "$(wc -l < "$CURL_LOG" | tr -d ' ')" "0"
+out="$(bash "$NOTIFY" ack 2>&1)"; rc=$?
+check "an inbox that is a link: ack refuses" "$rc" "1"
+check "an inbox that is a link: the target is untouched, nothing archived from it" \
+  "$(cat "$OUTSIDE") $(grep -c outside "$DEVLEAD_NOTIFY_DIR/inbox.read.tsv")" "outside 0"
+rm -f "$INB"; mv "$SANDBOX/inbox.real" "$INB"
+send info after-links "x"
+mv "$DEVLEAD_NOTIFY_DIR/inbox.read.tsv" "$SANDBOX/archive.real"; ln -s "$OUTSIDE" "$DEVLEAD_NOTIFY_DIR/inbox.read.tsv"
+out="$(bash "$NOTIFY" ack 2>&1)"; rc=$?
+check "an archive that is a link: ack refuses, the inbox keeps its entry" "$rc $(wc -l < "$INB" | tr -d ' ') $(cat "$OUTSIDE")" "1 1 outside"
+rm -f "$DEVLEAD_NOTIFY_DIR/inbox.read.tsv"; mv "$SANDBOX/archive.real" "$DEVLEAD_NOTIFY_DIR/inbox.read.tsv"
+out="$(bash "$NOTIFY" ack)"
+check "without links: ack works as before" "$out" "$(printf 'STATUS: acked\nCOUNT: 1')"
+
 bash "$NOTIFY" 2>/dev/null
 check "no subcommand: exit 1" "$?" "1"
 

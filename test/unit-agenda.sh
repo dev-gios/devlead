@@ -298,6 +298,35 @@ check "without flock: the queue applies it as before" "$(queue_of "$(printf '12\
 bash "$AGENDA" reset >/dev/null
 
 # ===========================================================================
+# No write through a link planted in the state (A3): the server's sessions can
+# write in these directories (S14); the command refuses and changes nothing.
+# ===========================================================================
+plan "#12  Fix login" "#20  Add search" | bash "$AGENDA" publish >/dev/null
+OUTSIDE="$SANDBOX/outside.txt"; printf 'outside\n' > "$OUTSIDE"
+rm -f "$STATE/adjust.tsv"; ln -s "$OUTSIDE" "$STATE/adjust.tsv"
+out="$(bash "$AGENDA" skip 12 2>&1)"; rc=$?
+check "adjustments that are a link: skip refuses" "$rc" "1"
+contains "adjustments that are a link: says why" "$out" "$STATE/adjust.tsv is a symbolic link"
+check "adjustments that are a link: the target is untouched" "$(cat "$OUTSIDE")" "outside"
+out="$(bash "$AGENDA" reset 2>&1)"; rc=$?
+check "adjustments that are a link: reset refuses, the link stays" "$rc $(readlink "$STATE/adjust.tsv")" "1 $OUTSIDE"
+rm -f "$STATE/adjust.tsv"
+mv "$STATE/agenda.tsv" "$SANDBOX/agenda.real"; ln -s "$OUTSIDE" "$STATE/agenda.tsv"
+out="$(plan "#30  Other" | bash "$AGENDA" publish 2>&1)"; rc=$?
+check "an agenda that is a link: publish refuses" "$rc" "1"
+check "an agenda that is a link: the target is untouched" "$(cat "$OUTSIDE")" "outside"
+rm -f "$STATE/agenda.tsv"; mv "$SANDBOX/agenda.real" "$STATE/agenda.tsv"
+mv "$STATE" "$SANDBOX/state.real"; mkdir -p "$SANDBOX/linked"; ln -s "$SANDBOX/linked" "$STATE"
+out="$(plan "#30  Other" | bash "$AGENDA" publish 2>&1)"; rc=$?
+check "the repository's state directory as a link: publish refuses" "$rc" "1"
+contains "the state directory as a link: says why" "$out" "$STATE is a symbolic link"
+check "the state directory as a link: nothing written where it points" "$(ls -A "$SANDBOX/linked" | wc -l | tr -d ' ')" "0"
+rm -f "$STATE"; mv "$SANDBOX/state.real" "$STATE"
+out="$(bash "$AGENDA" skip 12)"
+check "without links: skip records as before" "$(sed -n 's/^STATUS: //p' <<<"$out") $(cut -f2,3 "$STATE/adjust.tsv")" "$(printf 'recorded skip\t12')"
+bash "$AGENDA" reset >/dev/null
+
+# ===========================================================================
 # A1/A3 — nothing that grants or gates authority reads the agenda
 # ===========================================================================
 for f in .devlead/scripts/open-pr.sh .devlead/scripts/merge.sh .devlead/scripts/envelope.sh \

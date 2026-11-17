@@ -96,6 +96,20 @@ _push() {
   if curl "${args[@]}" "$url" 2>/dev/null; then echo "sent"; else echo "failed"; fi
 }
 
+# _no_links <path>... — never write through a symbolic link in the state
+# (A3). The DevLead server's sessions write in these directories too (S14):
+# a link one of them planted would send this write — or what a rewrite reads
+# — somewhere else. The command refuses before it changes anything.
+_no_links() {
+  local p
+  for p in "$@"; do
+    if [[ -L "$p" ]]; then
+      echo "notify: $p is a symbolic link — DevLead does not write through links in its state; nothing changed" >&2
+      return 1
+    fi
+  done
+}
+
 # _lock_inbox <open mode: < or >> > — hold the inbox's lock until this
 # script exits. `>>` creates the file, as the append that follows would.
 _lock_inbox() {
@@ -114,6 +128,10 @@ _send() {
   local level="${1:-}" code="${2:-}" message="${3:-}" repo outcome
   if [[ "$level" != "need" && "$level" != "agenda" && "$level" != "info" ]] || [[ -z "$code" ]]; then
     echo "notify: usage: notify.sh send <need|agenda|info> <code> <message>" >&2
+    return 0
+  fi
+  if ! _no_links "$INBOX" "$ARCHIVE"; then
+    echo "notify: nothing written or pushed — [$level] $(_flat "$code"): $(_flat "$message")" >&2
     return 0
   fi
   code="$(_flat "$code")"
@@ -151,6 +169,7 @@ _list() {
 }
 
 _ack() {
+  _no_links "$INBOX" "$ARCHIVE" || { echo "STATUS: error"; return 1; }
   if [[ ! -s "$INBOX" ]]; then
     echo "STATUS: empty"
     return 0

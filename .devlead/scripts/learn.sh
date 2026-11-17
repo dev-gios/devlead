@@ -71,10 +71,27 @@ PREFS="$STATE_DIR/prefs.tsv"
 # _flat <text> — one line, no tabs: both files are line- and tab-delimited.
 _flat() { printf '%s' "$1" | tr '\t\r\n' '   ' | sed 's/^ *//; s/ *$//'; }
 
+# _no_links <path>... — never write through a symbolic link in the state
+# (A3). The DevLead server's sessions write in these directories too (S14):
+# a link one of them planted would send this write — or what a rewrite reads
+# — somewhere else. The command refuses before it changes anything.
+_no_links() {
+  local p
+  for p in "$@"; do
+    if [[ -L "$p" ]]; then
+      echo "learn: $p is a symbolic link — DevLead does not write through links in its state; nothing changed" >&2
+      return 1
+    fi
+  done
+}
+_state_links() { _no_links "$STATE_DIR" "$FEEDBACK" "$PREFS" "$STATE_DIR/repo"; }
+
 # _lock_state — hold the state directory's lock until this script exits.
 _LOCKED=0
 _lock_state() {
-  [[ $_LOCKED -eq 1 || ! -d "$STATE_DIR" ]] && return 0
+  [[ $_LOCKED -eq 1 ]] && return 0
+  _state_links || return 1
+  [[ -d "$STATE_DIR" ]] || return 0
   command -v flock >/dev/null 2>&1 || return 0
   { exec {_LOCK_FD}<"$STATE_DIR"; } 2>/dev/null || return 0
   if ! flock -w "$LOCK_WAIT_SECS" "$_LOCK_FD"; then
@@ -85,6 +102,7 @@ _lock_state() {
 }
 
 _ensure_state() {
+  _state_links || return 1
   if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
     echo "learn: cannot create $STATE_DIR" >&2
     return 1
