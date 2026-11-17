@@ -42,13 +42,41 @@
 # left as the caller gave it. A token never reaches the ledger, a message or a
 # log: only the account's name does.
 #
+# Usage limits (S22). The highest-priority account is the first one that is
+# not resting. When a session ends with an error (not at its time limit), the
+# last message of its transcript says why — Claude Code 2.1.326 records it
+# there whatever the output format (test/fixtures/claude-2.1.326/):
+#   - a usage limit: an assistant message with isApiErrorMessage true, error
+#     "rate_limit", apiError "usage_limit_reached" and
+#     apiErrorParams.rate_limit_info {rateLimitType (five_hour, seven_day,
+#     ...), resetsAt (epoch seconds, when it resets; absent when the API sent
+#     none)}. The account rests until resetsAt — DEFAULT_REST (5 hours) when
+#     it is missing or not believable (in the past, or more than MAX_REST
+#     ahead);
+#   - a token the API refused: error "authentication_failed" with
+#     apiErrorStatus 401 or 403 (invalid, expired or revoked). The account
+#     rests until the operator renews the token and restarts the container:
+#     the entrypoint drops these marks at start.
+# Anything else — another rate limit, an overloaded API, a network error, no
+# transcript — is an ordinary failure and rests nothing. A mark is one line
+# appended to /var/lib/devlead/accounts.tsv (root's directory, like the
+# ledger): account TAB until (epoch seconds, or - until a restart) TAB kind
+# (the rateLimitType, or auth) TAB utc time TAB session id TAB run id TAB
+# source (reported, default or auth); an account's last line is its mark.
+# The next session takes the next account; when a mark expires, its account
+# is the highest-priority one again. With every account resting no session
+# starts: the refusal is "limited", it does not count toward the daily cap,
+# and stdout gets the line `STATUS: claude-limited`, which the launchers
+# read to stop instead of trying again. run-job.sh sends the one notice.
+#
 # Every start, end and refusal is one line of /var/lib/devlead/sessions.tsv,
 # the ledger that run-job.sh reads to audit a run:
 #   day TAB utc time TAB start|end|refused TAB session id TAB run id TAB exit
 #   code TAB detail (the account's name, or -, on a start line; timeout on an
-#   end line; root, paused, busy, nolock, cap, noconf or noledger on a
-#   refusal). busy is another session holding the lock; nolock, a lock file
-#   that cannot be opened.
+#   end line; root, paused, busy, nolock, cap, noconf, noledger, nomarks or
+#   limited on a refusal). busy is another session holding the lock; nolock,
+#   a lock file that cannot be opened; nomarks, an account marks file that
+#   cannot be read; limited, every account resting.
 # Its first line is a header root writes at container start (a ledger that is
 # empty at the start of a run was emptied). Root owns /var/lib/devlead — a
 # volume, so the day's count survives a recreated container — and the ledger
@@ -75,8 +103,13 @@ RUNNER_CONF=/etc/devlead/runner.conf
 LEDGER=/var/lib/devlead/sessions.tsv
 SESSION_LOCK=/var/lib/devlead/session.lock
 PAUSE_FILE=/home/devlead/.devlead/PAUSE
+ACCOUNTS_FILE=/var/lib/devlead/accounts.tsv
 CONF_OWNER_UID=0
 # ------------------------------------------------------------------------------
+# An account whose usage limit Claude reported without a reset time rests this
+# long; a reported reset further ahead than MAX_REST is not believed either.
+DEFAULT_REST=18000
+MAX_REST=$((8 * 86400))
 
 for arg in "$@"; do
   case "$arg" in
@@ -178,11 +211,56 @@ for _item in "${_items[@]}"; do
     || _refuse noconf "$_noconf"
   _names+=("${BASH_REMATCH[1]}"); _vars+=("${BASH_REMATCH[2]}")
 done
+# _at <epoch> — the time in the configured TZ, for messages.
+_at() { TZ="$_TZ" date -d "@$1" '+%Y-%m-%d %H:%M %Z' 2>/dev/null; }
+
+# _resting — reads the marks into _rest (account -> epoch, or - until a
+# restart); _available <index> — that account is not resting now.
+declare -A _rest=()
+_resting() {
+  local a u
+  _rest=()
+  while IFS=$'\t' read -r a u _; do
+    [[ "$a" =~ ^[a-z][a-z0-9-]{0,23}$ && "$u" =~ ^(-|[0-9]{1,12})$ ]] && _rest[$a]="$u"
+  done < "$ACCOUNTS_FILE"
+}
+_available() {
+  local u="${_rest[${_names[$1]}]:-0}"
+  [[ "$u" != "-" ]] && (( 10#$u <= $(date +%s) ))
+}
+# _resting_list — "team until <time>, ultra until its token is renewed".
+_resting_list() {
+  local i u out=""
+  for i in "${!_names[@]}"; do
+    u="${_rest[${_names[$i]}]:-0}"
+    if [[ "$u" == "-" ]]; then out+="${out:+, }${_names[$i]} until its token is renewed"
+    else out+="${out:+, }${_names[$i]} until $(_at "$u")"; fi
+  done
+  printf '%s' "$out"
+}
+
 _account="-"
 _token=""
+_sel=-1
 if (( ${#_names[@]} > 0 )); then
-  _account="${_names[0]}"
-  _token="${!_vars[0]:-}"
+  [[ -f "$ACCOUNTS_FILE" && ! -L "$ACCOUNTS_FILE" && -r "$ACCOUNTS_FILE" && -w "$ACCOUNTS_FILE" ]] \
+    || _refuse nomarks "cannot read the Claude account marks $ACCOUNTS_FILE (root prepares it when the container starts) — no session can start"
+  _resting
+  for _i in "${!_names[@]}"; do
+    _available "$_i" && { _sel=$_i; break; }
+  done
+  if (( _sel < 0 )); then
+    _earliest=""
+    for _u in "${_rest[@]}"; do
+      [[ "$_u" != "-" ]] && { [[ -z "$_earliest" ]] || (( 10#$_u < 10#$_earliest )); } && _earliest="$_u"
+    done
+    _when="a token is renewed and the container restarted"
+    [[ -n "$_earliest" ]] && _when="$(_at "$_earliest")"
+    echo "STATUS: claude-limited"
+    _refuse limited "every Claude account is resting ($(_resting_list)) — no session starts until $_when"
+  fi
+  _account="${_names[$_sel]}"
+  _token="${!_vars[$_sel]:-}"
 fi
 # The session sees one token at most, its account's.
 for _v in $(compgen -e); do
@@ -229,4 +307,68 @@ if (( (_rc == 124 || _rc == 137) && _elapsed >= _timeout_secs )); then
   echo "claude: the session ran past the limit of $_timeout and was stopped" >&2
 fi
 _ledger end "$_sid" "$_rc" "$_detail"
+
+# --- Usage limit or refused token (S22) -----------------------------------------
+# _limit_of <session id> — "limit <rateLimitType> <resetsAt>" or "auth - -"
+# from the last main-chain assistant message of the session's transcript, or
+# nothing. The transcript is the session's file, so it is read as data: the
+# last lines only, size-bounded, parsed by jq, every field checked again here.
+_limit_of() {
+  local t f=""
+  for t in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$1.jsonl"; do
+    [[ -f "$t" && ! -L "$t" ]] && { f="$t"; break; }
+  done
+  [[ -n "$f" ]] || return 0
+  tail -n 64 -- "$f" 2>/dev/null | head -c 8388608 | jq -R -r -n '
+    [ inputs | fromjson? | objects | select(.type == "assistant" and (.isSidechain != true)) ] | last // {}
+    | if .isApiErrorMessage != true then empty
+      elif .error == "rate_limit" and .apiError == "usage_limit_reached" then
+        (.apiErrorParams.rate_limit_info // {}) as $i
+        | "limit \(($i.rateLimitType // "") | tostring | if test("^[a-z0-9_]{1,40}$") then . else "unknown" end) \(($i.resetsAt // "-") | tostring)"
+      elif .error == "authentication_failed" and (.apiErrorStatus == 401 or .apiErrorStatus == 403) then "auth - -"
+      else empty end' 2>/dev/null | head -n 1
+}
+_limit_name() {
+  case "$1" in
+    five_hour) echo "5-hour limit" ;; seven_day) echo "weekly limit" ;;
+    seven_day_opus) echo "weekly Opus limit" ;; seven_day_sonnet) echo "weekly Sonnet limit" ;;
+    *) echo "usage limit" ;;
+  esac
+}
+if (( _sel >= 0 && _rc != 0 )) && [[ "$_detail" != "timeout" ]]; then
+  read -r _kind _type _reset <<<"$(_limit_of "$_sid")"
+  _now="$(date +%s)"
+  _until=""
+  case "${_kind:-}" in
+    limit)
+      if [[ "$_reset" =~ ^[0-9]{9,11}$ ]] && (( 10#$_reset > _now && 10#$_reset <= _now + MAX_REST )); then
+        _until=$((10#$_reset)); _src=reported
+        _why="its $(_limit_name "$_type")"
+      else
+        _until=$((_now + DEFAULT_REST)); _src=default
+        _why="its $(_limit_name "$_type") (Claude gave no usable reset time: it rests $((DEFAULT_REST / 3600)) hours)"
+      fi
+      ;;
+    auth)
+      _until="-"; _type=auth; _src=auth
+      _why="a refused token (invalid, expired or revoked): renew it and restart the container"
+      ;;
+  esac
+  if [[ -n "$_until" ]]; then
+    if printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$_account" "$_until" "$_type" "$(date -u +%FT%TZ)" \
+         "$_sid" "$_RUN_ID" "$_src" >> "$ACCOUNTS_FILE" 2>/dev/null; then
+      _resting
+      _next=""
+      for _i in "${!_names[@]}"; do _available "$_i" && { _next="${_names[$_i]}"; break; }; done
+      _rested="until $(_at "$_until")"; [[ "$_until" == "-" ]] && _rested="until its token is renewed"
+      if [[ -n "$_next" ]]; then
+        echo "claude: the Claude account $_account rests $_rested — $_why; the next session uses $_next" >&2
+      else
+        echo "claude: the Claude account $_account rests $_rested — $_why; every account is resting now ($(_resting_list))" >&2
+      fi
+    else
+      echo "claude: the Claude account $_account reached $_why, but $ACCOUNTS_FILE cannot be written — the next session may try it again" >&2
+    fi
+  fi
+fi
 exit "$_rc"

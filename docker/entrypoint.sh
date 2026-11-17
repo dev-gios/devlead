@@ -33,11 +33,13 @@
 #      DEVLEAD_REPOS, root's and read-only to the user: no session can enroll
 #      a repo (Inv 3);
 #   7. prepare /var/lib/devlead, where the claude wrapper keeps its session
-#      ledger and locks: root's directory, so the user can neither remove nor
-#      replace them, and a volume of its own, so the day's session count
-#      survives a recreated container (L18). Ledger lines older than two days
-#      are dropped, and its first line is root's header: a ledger found
-#      empty at the start of a run was emptied by someone (run-job.sh);
+#      ledger, its locks and the Claude account marks (S22): root's
+#      directory, so the user can neither remove nor replace them, and a
+#      volume of its own, so the day's session count and an account resting
+#      until its reset survive a recreated container (L18). Ledger lines older
+#      than two days are dropped, and its first line is root's header: a
+#      ledger found empty at the start of a run was emptied by someone
+#      (run-job.sh). Expired marks and refused-token marks are dropped;
 #   8. switch to the devlead user for good — same UID/GID as the host user,
 #      every capability gone, no way back through setuid binaries —, prune the
 #      run transcripts past their retention, and run the command (S9): by
@@ -229,6 +231,23 @@ _tmp="$(mktemp)"
 rm -f "$_tmp"
 chown "$_uid:$_gid" "$_ledger"
 chmod 0600 "$_ledger"
+# The Claude account marks (S22): the wrapper appends one line when an
+# account reaches a usage limit or its token is refused. A mark whose time
+# has passed is dropped, and so is every refused-token mark: restarting the
+# container is how the operator says the token was renewed. Limit marks with
+# a reset still ahead survive, like the ledger, a recreated container.
+_marks="$_state/accounts.tsv"
+_mheader="# DevLead Claude account marks: account, resting until (epoch seconds, or - until a restart), kind, set at, session, run, source; the claude wrapper appends them, root writes this line at container start"
+if [[ -L "$_marks" || ! -f "$_marks" ]]; then
+  rm -f "$_marks"
+  install -m 0600 -o "$_uid" -g "$_gid" /dev/null "$_marks"
+fi
+_tmp="$(mktemp)"
+{ printf '%s\n' "$_mheader"; awk -F'\t' -v now="$(date +%s)" '!/^#/ && $2 ~ /^[0-9]+$/ && $2 + 0 > now + 0' "$_marks"; } > "$_tmp" \
+  && cat "$_tmp" > "$_marks" || die "cannot prepare the account marks $_marks"
+rm -f "$_tmp"
+chown "$_uid:$_gid" "$_marks"
+chmod 0600 "$_marks"
 
 _as_devlead=(setpriv --reuid="$_uid" --regid="$_gid" --init-groups
              --inh-caps=-all --bounding-set=-all --no-new-privs --
