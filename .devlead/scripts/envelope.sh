@@ -13,6 +13,10 @@ set -uo pipefail
 source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/bootstrap-lib.sh"
 
 _repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
+# The untrusted-content scanner (S6, GOVERNANCE.md §untrusted-content), as a
+# sibling of this script's real location — same resolution as bootstrap-lib.
+# Missing or failing, every candidate issue fails closed in `plan`.
+UNTRUSTED_BIN="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/untrusted.sh"
 ENV_FILE="$(_repo_root)/.devlead/envelope.yml"
 
 # LOCKED schema whitelists (D5)
@@ -858,15 +862,19 @@ _do_plan() {
     exit 0
   fi
 
-  # Supplement body if require_readiness is true
-  local body_json=""
-  if [[ "$require_readiness" == "true" ]]; then
-    if ! body_json=$(gh issue list --assignee @me --state open \
-      --limit 50 --json number,body 2>/dev/null); then
+  # Body of every candidate: the untrusted-content scan (S6) reads it, and
+  # so does the readiness check. When readiness needs it, a failed fetch
+  # still blocks the plan as before; otherwise the list stays empty and
+  # every issue without a body to scan is excluded below (fail closed).
+  local body_json
+  if ! body_json=$(gh issue list --assignee @me --state open \
+    --limit 50 --json number,body 2>/dev/null); then
+    if [[ "$require_readiness" == "true" ]]; then
       echo "STATUS: blocked"
       echo "GAP:    gh issue list (body) failed — check gh auth status"
       exit 0
     fi
+    body_json="[]"
   fi
 
   # 6. Intake by label (S5): open issues carrying select.intake_label that
@@ -958,6 +966,27 @@ _do_plan() {
         excluded_issues+=("${issue_num}|${title}|intake-label-untrusted (applied by ${_actor})")
         continue
       fi
+    fi
+
+    # Issue text is untrusted data (S6, GOVERNANCE.md §untrusted-content):
+    # title and body go through the deterministic scan before every other
+    # check, so an instruction aimed at the agent is reported even when
+    # another rule would also have excluded the issue. No body to scan, or
+    # a scanner that cannot answer, fails closed.
+    local _scan_body _scan_out _scan_rc
+    if ! _scan_body=$(printf '%s' "$body_json" | jq -er --arg n "$issue_num" \
+        'first(.[] | select(.number == ($n | tonumber))) | .body // ""' 2>/dev/null); then
+      excluded_issues+=("${issue_num}|${title}|untrusted-content-unverified")
+      continue
+    fi
+    _scan_out=$(printf '%s\n%s\n' "$title" "$_scan_body" | bash "$UNTRUSTED_BIN" scan 2>/dev/null)
+    _scan_rc=$?
+    if [[ $_scan_rc -eq 1 && -n "$_scan_out" ]] && ! grep -qvE '^[a-z-]+$' <<< "$_scan_out"; then
+      excluded_issues+=("${issue_num}|${title}|untrusted-content ($(paste -sd, - <<< "$_scan_out"))")
+      continue
+    elif [[ $_scan_rc -ne 0 ]]; then
+      excluded_issues+=("${issue_num}|${title}|untrusted-content-unverified")
+      continue
     fi
 
     # 5a. nuevo-entrante check: no branch issue-N- and no PR headRefName issue-N-

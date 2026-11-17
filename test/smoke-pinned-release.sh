@@ -96,6 +96,7 @@ all_publish_targets() {
 .devlead/scripts/sweep-loop.sh
 .devlead/scripts/doctor.sh
 .devlead/scripts/config.sh
+.devlead/scripts/untrusted.sh
 .local/bin/devlead
 .devlead/hooks/guard.sh
 .devlead/hooks/post-edit.sh
@@ -140,6 +141,7 @@ all_source_paths() {
 .devlead/scripts/sweep-loop.sh
 .devlead/scripts/doctor.sh
 .devlead/scripts/config.sh
+.devlead/scripts/untrusted.sh
 .devlead/bin/devlead
 .claude/hooks/guard.sh
 .claude/hooks/post-edit.sh
