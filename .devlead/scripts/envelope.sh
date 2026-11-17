@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # envelope.sh — DevLead persisted per-repo envelope: parser + enrollment + dry-run planner.
-# Subcommands: check | init | show | plan | upgrade | schema. KEY:value stdout. Always exits 0 on operational outcomes.
+# Subcommands: check | init | show [--origin] | plan | upgrade | schema. KEY:value stdout. Always exits 0 on operational outcomes.
 # Envelope file: <git-root>/.devlead/envelope.yml (committed, auditable). READ-ONLY except `init` scaffold.
 set -uo pipefail
 
@@ -409,6 +409,36 @@ _do_upgrade() {
   echo "STATUS: ok"
   echo "VERSION: $head_sha ($stamp)"
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# show --origin — the envelope as committed on origin's default branch,
+# fetched now, instead of the working tree's copy. The DevLead server's doors
+# (merge.sh, open-pr.sh) read merge authority this way (L21 A1): a session can
+# rewrite the working-tree file through paths the guard allows (`git checkout
+# <ref> -- …`, an interpreter, `patch`, `git apply`), but not what origin's
+# default branch holds. Points ENV_FILE at a private copy of that blob; any
+# step that cannot be completed blocks (fail closed). Replace objects are
+# ignored: a planted refs/replace/ entry cannot swap the blob read here.
+# ---------------------------------------------------------------------------
+_ORIGIN_TMP=""
+_origin_envelope() {
+  local d _t=()
+  command -v timeout &>/dev/null && _t=(timeout 60)
+  d="$(_resolve_default_branch)" || d=""
+  [[ -n "$d" ]] \
+    || _block "cannot resolve origin's default branch — the envelope committed there cannot be read"
+  [[ "$d" =~ ^[A-Za-z0-9._/-]+$ && "$d" != *..* && "$d" != -* ]] \
+    || _block "origin's default branch has a name DevLead does not read — the envelope committed there cannot be read"
+  "${_t[@]}" git -c fetch.prune=false fetch --quiet --no-tags origin \
+      "+refs/heads/$d:refs/remotes/origin/$d" </dev/null >/dev/null 2>&1 \
+    || _block "cannot fetch origin's default branch '$d' — the envelope committed there cannot be read"
+  _ORIGIN_TMP="$(mktemp "${TMPDIR:-/tmp}/devlead-envelope.XXXXXX")" \
+    || _block "cannot create a private copy of the envelope committed on origin"
+  trap 'rm -f "$_ORIGIN_TMP"' EXIT
+  git --no-replace-objects show "refs/remotes/origin/$d:.devlead/envelope.yml" > "$_ORIGIN_TMP" 2>/dev/null \
+    || _block "no envelope.yml on origin's default branch '$d' — repo not enrolled"
+  ENV_FILE="$_ORIGIN_TMP"
 }
 
 # ---------------------------------------------------------------------------
@@ -1388,8 +1418,12 @@ case "$_cmd" in
     exit 0
     ;;
   upgrade) _do_upgrade "${2:-}"; exit 0 ;;
-  show)   _do_show ;;
+  show)
+    # `show --origin`: read the envelope committed on origin's default branch
+    # (see _origin_envelope). Plain `show` reads the working tree, as always.
+    [[ "${2:-}" == "--origin" ]] && _origin_envelope
+    _do_show ;;
   plan)   _do_plan ;;
   schema) _do_schema ;;
-  *) echo "uso: envelope.sh {check|init|show|plan|upgrade|schema}" >&2; exit 2 ;;
+  *) echo "uso: envelope.sh {check|init|show [--origin]|plan|upgrade|schema}" >&2; exit 2 ;;
 esac
