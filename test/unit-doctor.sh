@@ -371,6 +371,110 @@ contains "unknown install + old token: STATUS still unknown" "$out" "STATUS: unk
 contains "unknown install + old token: WARN still printed" "$out" "WARN:   the Claude token (DEVLEAD_CLAUDE_TOKEN_ISSUED=2025-12-16) is 11 months old"
 check "unknown install + old token: exits 1" "$(token_doctor "$HOME_4" 2025-12-16 >/dev/null 2>&1; echo $?)" "1"
 
+# ===========================================================================
+# The server image (F1 follow-up a). The image has no SOURCE_REPO: its build
+# installs DevLead root-owned and writes an install stamp — the source
+# revision and the SHA-256 of every installed file. doctor recognizes the
+# image by its server-mode marker and checks the files against the stamp.
+# The marker, the stamp and the owner they must have are fixed paths in
+# doctor.sh; this runs a COPY that points them into a sandbox image tree.
+# ===========================================================================
+IMG="$SANDBOX/image"
+IMG_HOME="$SANDBOX/image-home"
+REV=0123456789abcdef0123456789abcdef01234567
+mkdir -p "$IMG/opt/devlead/scripts" "$IMG/opt/devlead/hooks" "$IMG/etc/claude-code" \
+         "$IMG/etc/devlead" "$IMG/usr/local/bin" "$IMG_HOME"
+echo "sweep" > "$IMG/opt/devlead/scripts/sweep.sh"
+echo "guard" > "$IMG/opt/devlead/hooks/guard.sh"
+echo "{}" > "$IMG/etc/claude-code/managed-settings.json"
+echo "wrapper" > "$IMG/usr/local/bin/claude"
+echo "marker" > "$IMG/etc/devlead/server-mode"
+# The stamp, as docker/Dockerfile writes it.
+mk_stamp() {
+  { echo "# DevLead server image install stamp"
+    echo "REVISION: $1"
+    echo "ROOT: $IMG/opt/devlead"
+    echo "ROOT: $IMG/etc/claude-code"
+    find "$IMG/opt/devlead" "$IMG/etc/claude-code" -type f -print0 | sort -z | xargs -0 sha256sum
+    sha256sum "$IMG/usr/local/bin/claude" "$IMG/etc/devlead/server-mode"
+  } > "$IMG/etc/devlead/install-stamp"
+  chmod 0644 "$IMG/etc/devlead/install-stamp"
+}
+IMG_DOCTOR="$SANDBOX/doctor-image.sh"
+cp "$DOCTOR" "$IMG_DOCTOR"
+for kv in "_IMAGE_MARKER=$IMG/etc/devlead/server-mode" "_IMAGE_STAMP=$IMG/etc/devlead/install-stamp" \
+          "_IMAGE_OWNER_UID=$(id -u)"; do
+  key="${kv%%=*}"
+  check "doctor.sh has the fixed path $key" "$(grep -c "^$key=" "$IMG_DOCTOR")" "1"
+  sed -i "s|^$key=.*|$kv|" "$IMG_DOCTOR"
+done
+image_doctor() {
+  ( HOME="$IMG_HOME" PATH="$FAKEBIN:$PATH" env -u DEVLEAD_CLAUDE_TOKEN_ISSUED -u DEVLEAD_DOCTOR_DATE "$@" bash "$IMG_DOCTOR" 2>&1 )
+}
+
+mk_stamp "$REV"
+out="$(image_doctor)"; rc=$?
+check "image: STATUS ok" "$(printf '%s\n' "$out" | grep '^STATUS:')" "STATUS: ok"
+check "image: MATCHES names the image and its revision" "$(printf '%s\n' "$out" | grep '^MATCHES:')" "MATCHES: image @ 0123456789ab"
+check "image: SOURCE names the stamp" "$(printf '%s\n' "$out" | grep '^SOURCE:')" \
+  "SOURCE: DevLead server image (install stamp $IMG/etc/devlead/install-stamp)"
+check "image: zero drift over every stamped file" "$(printf '%s\n' "$out" | grep '^DRIFT:')" \
+  "DRIFT:  0 of 5 artifacts differ from the image's install stamp"
+not_contains "image: no provenance NOTE (sweep-loop and discover-fleet run)" "$out" "NOTE:"
+check "image: exits 0" "$rc" "0"
+check "image: the report is these four lines" "$(printf '%s\n' "$out" | cut -d: -f1 | tr '\n' ' ')" "STATUS MATCHES SOURCE DRIFT "
+out="$(image_doctor DEVLEAD_CLAUDE_TOKEN_ISSUED=2025-12-16 DEVLEAD_DOCTOR_DATE=2026-11-16)"; rc=$?
+contains "image + old token: the WARN line is still printed" "$out" "WARN:   the Claude token (DEVLEAD_CLAUDE_TOKEN_ISSUED=2025-12-16) is 11 months old"
+check "image + old token: STATUS and exit unchanged" "$(printf '%s\n' "$out" | grep '^STATUS:') $rc" "STATUS: ok 0"
+
+image_drift() { # image_drift <label> <expected DIFF line>
+  local out rc
+  out="$(image_doctor)"; rc=$?
+  check "$1: STATUS drifted" "$(printf '%s\n' "$out" | grep '^STATUS:')" "STATUS: drifted"
+  contains "$1: names the file and why" "$out" "DIFF:   $2"
+  check "$1: exits 1" "$rc" "1"
+}
+cp "$IMG/opt/devlead/scripts/sweep.sh" "$SANDBOX/sweep.bak"
+echo "changed" >> "$IMG/opt/devlead/scripts/sweep.sh"
+image_drift "image, changed file" "$IMG/opt/devlead/scripts/sweep.sh (content differs from the install stamp)"
+cp "$SANDBOX/sweep.bak" "$IMG/opt/devlead/scripts/sweep.sh"
+rm "$IMG/usr/local/bin/claude"
+image_drift "image, missing file" "$IMG/usr/local/bin/claude (missing)"
+echo "wrapper" > "$IMG/usr/local/bin/claude"
+echo "planted" > "$IMG/opt/devlead/scripts/planted.sh"
+image_drift "image, file added under an install root" "$IMG/opt/devlead/scripts/planted.sh (not in the install stamp)"
+rm "$IMG/opt/devlead/scripts/planted.sh"
+chmod 0666 "$IMG/opt/devlead/hooks/guard.sh"
+image_drift "image, file writable by others" "$IMG/opt/devlead/hooks/guard.sh (writable by others than its root owner)"
+chmod 0644 "$IMG/opt/devlead/hooks/guard.sh"
+out="$(image_doctor)"
+check "image restored: STATUS ok again" "$(printf '%s\n' "$out" | grep '^STATUS:')" "STATUS: ok"
+
+image_unknown() { # image_unknown <label> <expected GAP substring>
+  local out rc
+  out="$(image_doctor)"; rc=$?
+  check "$1: STATUS unknown" "$(printf '%s\n' "$out" | grep '^STATUS:')" "STATUS: unknown"
+  contains "$1: says why" "$out" "GAP:    $2"
+  check "$1: exits 1" "$rc" "1"
+}
+mk_stamp ""
+image_unknown "image built without a revision" "the image was built without DEVLEAD_SOURCE_REV"
+mk_stamp "not-a-sha"
+image_unknown "image with a malformed revision" "the image was built without DEVLEAD_SOURCE_REV"
+mk_stamp "$REV"
+chmod 0666 "$IMG/etc/devlead/install-stamp"
+image_unknown "image stamp writable by others" "the install stamp $IMG/etc/devlead/install-stamp is not root-owned and read-only"
+rm "$IMG/etc/devlead/install-stamp"
+image_unknown "image without a stamp" "no install stamp at $IMG/etc/devlead/install-stamp"
+
+# Previous behaviour: where the marker does not exist (any machine but the
+# image) the image block does nothing — the copy answers exactly like doctor.
+sed -i "s|^_IMAGE_MARKER=.*|_IMAGE_MARKER=$SANDBOX/no-such-marker|" "$IMG_DOCTOR"
+check "no marker: the report is the host's, unchanged" \
+  "$(HOME="$HOME_1" PATH="$FAKEBIN:$PATH" env -u DEVLEAD_CLAUDE_TOKEN_ISSUED bash "$IMG_DOCTOR" 2>&1)" "$(doctor "$HOME_1")"
+check "no marker: an unverifiable host install is still unknown" \
+  "$(HOME="$HOME_4" PATH="$FAKEBIN:$PATH" env -u DEVLEAD_CLAUDE_TOKEN_ISSUED bash "$IMG_DOCTOR" 2>&1)" "$(doctor "$HOME_4")"
+
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
 rm -rf "$SANDBOX"

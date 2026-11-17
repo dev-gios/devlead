@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # docker-smoke.sh — builds the DevLead server image and checks its limits from
-# inside a container (F1: S7-S10, S12, S15, S20).
+# inside a container (F1: S7-S10, S12, S15, S20; F2: S11, S16-S19).
 #
 #   make docker-test
 #
@@ -62,16 +62,22 @@ DEVLEAD_NTFY_URL=https://ntfy.sh/devlead-smoke-dummy-topic
 DEVLEAD_NTFY_TOKEN=tk_DUMMY_not_a_real_token
 DEVLEAD_LOOP_CLAUDE_ARGS=--permission-mode acceptEdits --allowedTools Bash,Read,Edit,Write,Glob,Grep,Agent
 DEVLEAD_EGRESS_ALLOW=
+TZ=America/Bogota
+DEVLEAD_MAX_SESSIONS_PER_DAY=50
 EOF
 )
+# The image is built from this checkout's commit (doctor.sh's install stamp).
+SOURCE_REV="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 # Interpolation values for compose.yaml, so neither a real .env in the repo
 # nor the caller's shell decides what this run builds or reads.
 COMPOSE_ENV="$SCRATCH/compose.env"
-printf 'DEVLEAD_UID=%s\nDEVLEAD_GID=%s\nDEVLEAD_IMAGE=%s\nDEVLEAD_ENV_FILE=%s\n' \
-  "$HOST_UID" "$HOST_GID" "$IMAGE" "$ENV_FILE" > "$COMPOSE_ENV"
+printf 'DEVLEAD_UID=%s\nDEVLEAD_GID=%s\nDEVLEAD_IMAGE=%s\nDEVLEAD_ENV_FILE=%s\nDEVLEAD_SOURCE_REV=%s\n' \
+  "$HOST_UID" "$HOST_GID" "$IMAGE" "$ENV_FILE" "$SOURCE_REV" > "$COMPOSE_ENV"
 
+# SERVICE_ENV, when set, replaces the env file (the F2 service section).
 compose() {
-  DEVLEAD_UID="$HOST_UID" DEVLEAD_GID="$HOST_GID" DEVLEAD_IMAGE="$IMAGE" DEVLEAD_ENV_FILE="$ENV_FILE" \
+  DEVLEAD_UID="$HOST_UID" DEVLEAD_GID="$HOST_GID" DEVLEAD_IMAGE="$IMAGE" \
+  DEVLEAD_ENV_FILE="${SERVICE_ENV:-$ENV_FILE}" DEVLEAD_SOURCE_REV="$SOURCE_REV" \
     docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" \
       -p "$PROJECT" --env-file "$COMPOSE_ENV" "$@"
 }
@@ -92,7 +98,9 @@ check ".env (the secrets) is git-ignored" \
 _tpl="$(cat "$REPO_ROOT/$TEMPLATE" 2>/dev/null)"
 for var in DEVLEAD_UID DEVLEAD_GID CLAUDE_CODE_OAUTH_TOKEN DEVLEAD_CLAUDE_TOKEN_ISSUED GH_TOKEN \
            DEVLEAD_NTFY_URL DEVLEAD_NTFY_TOKEN DEVLEAD_NOTIFY_DETAIL DEVLEAD_LOOP_CLAUDE_ARGS \
-           DEVLEAD_DISCOVER_CLAUDE_ARGS DEVLEAD_EGRESS_ALLOW; do
+           DEVLEAD_DISCOVER_CLAUDE_ARGS DEVLEAD_EGRESS_ALLOW TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP \
+           DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT \
+           DEVLEAD_AUDIT_RETENTION_DAYS; do
   check "the template lists $var" "$(grep -cE "^#?${var}=" <<<"$_tpl")" "1"
 done
 for line in "Contents        Read and write" "Pull requests   Read and write" \
@@ -220,6 +228,25 @@ p egress_ip "$(yn curl -fsS --max-time 10 -o /dev/null https://1.1.1.1/)"
 p egress_github "$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' https://api.github.com/ 2>/dev/null)"
 p gh_reaches "$(gh api /zen 2>&1 | grep -c 'HTTP 401')"
 p claude_reaches "$(cd /tmp/work && timeout 90 claude -p hi </dev/null 2>&1 | grep -c '401')"
+
+# --- F2: the runner's files and limits (S11, S16-S18) -------------------------
+p supercronic "$(supercronic -version 2>&1 | head -n 1)"
+p crontab_meta "$(stat -c '%U %a' /etc/devlead/crontab /etc/devlead/runner.conf /etc/devlead/install-stamp | paste -sd, -)"
+p crontab_write "$(yn sh -c 'echo "* * * * * id" >> /etc/devlead/crontab')"
+p conf_write "$(yn sh -c 'echo MAX_SESSIONS_PER_DAY=999 >> /etc/devlead/runner.conf')"
+p runner_state_dir "$(stat -c '%U:%G %a' /var/lib/devlead)"
+p ledger_meta "$(stat -c '%u %a' /var/lib/devlead/sessions.tsv)"
+p locks_meta "$(stat -c '%U %a' /var/lib/devlead/session.lock /var/lib/devlead/job.lock | paste -sd, -)"
+p ledger_remove "$(yn rm -f /var/lib/devlead/sessions.tsv)"
+p ledger_replace "$(yn mv /var/lib/devlead/sessions.tsv /var/lib/devlead/old.tsv)"
+p state_new_file "$(yn touch /var/lib/devlead/x)"
+p pause_create "$(yn touch "$HOME/.devlead/PAUSE")"
+p tz_offset "$(date +%z)"
+p doctor_report "$(bash "$HOME/.devlead/scripts/doctor.sh" 2>&1 | grep -E '^(STATUS|MATCHES|NOTE)' | paste -sd'|' -)"
+p doctor_rc "$(bash "$HOME/.devlead/scripts/doctor.sh" >/dev/null 2>&1; echo $?)"
+p refuse_resume "$(claude --resume x -p hi </dev/null >/dev/null 2>&1; echo $?)"
+p refuse_continue "$(claude -c -p hi </dev/null >/dev/null 2>&1; echo $?)"
+p refuse_bg "$(claude --bg -p hi </dev/null >/dev/null 2>&1; echo $?)"
 
 # --- Claude sessions against the mock ----------------------------------------
 cat > /tmp/mock.js <<'JS'
@@ -442,21 +469,190 @@ check "repo settings.json apiKeyHelper planted by session 1 does not run in sess
 check "repo settings env (GIT_CONFIG_*) planted by session 1 does not reach session 2" "$(v s_repo_git)" '"planted" "count=[]" git=no'
 check "the user cannot write .claude.json" "$(v cc_state_write)" "no"
 check "env, apiKeyHelper and MCP servers aimed at .claude.json stay out of the next session" "$(v s_state)" '"vf=[]" mcp=no akh=no git=no'
+# F2
+check "supercronic is installed, the pinned version" "$(v supercronic)" "v0.2.51"
+check "crontab, runner.conf and the install stamp are root's, 0644" "$(v crontab_meta)" "root 644,root 644,root 644"
+check "the user cannot change the schedule" "$(v crontab_write)" "no"
+check "the user cannot change the limits" "$(v conf_write)" "no"
+check "/var/lib/devlead is root's" "$(v runner_state_dir)" "root:root 755"
+check "the session ledger is the user's, 0600" "$(v ledger_meta)" "$HOST_UID 600"
+check "the lock files are root's" "$(v locks_meta)" "root 644,root 644"
+check "the user cannot remove the ledger" "$(v ledger_remove)" "no"
+check "the user cannot replace the ledger" "$(v ledger_replace)" "no"
+check "the user cannot add files to /var/lib/devlead" "$(v state_new_file)" "no"
+check "the user cannot create the pause file" "$(v pause_create)" "no"
+check "TZ from the env file is a real zone (tzdata)" "$(v tz_offset)" "-0500"
+check "doctor recognizes the image: ok, its revision, no NOTE" "$(v doctor_report)" "STATUS: ok|MATCHES: image @ ${SOURCE_REV:0:12}"
+check "doctor exits 0 in the image" "$(v doctor_rc)" "0"
+check "the wrapper refuses --resume" "$(v refuse_resume)" "2"
+check "the wrapper refuses -c" "$(v refuse_continue)" "2"
+check "the wrapper refuses --bg" "$(v refuse_bg)" "2"
 
-echo "=== the long-lived service ==="
+echo "=== the long-lived service: scheduler and runner (F2) ==="
+# Its own env file: no push channel (the failures below send `need`), a
+# morning job every minute (to watch supercronic run one), discovery off, a
+# cap of 4 sessions a day and a 20-second session limit.
+SERVICE_ENV="$SCRATCH/service.env"
+( umask 077
+  grep -vE '^(DEVLEAD_NTFY_URL|DEVLEAD_NTFY_TOKEN|DEVLEAD_MAX_SESSIONS_PER_DAY)=' "$ENV_FILE"
+  cat <<'EOF'
+DEVLEAD_NTFY_URL=
+DEVLEAD_CRON_MORNING=* * * * *
+DEVLEAD_CRON_DISCOVER=off
+DEVLEAD_MAX_SESSIONS_PER_DAY=4
+DEVLEAD_SESSION_TIMEOUT=20s
+EOF
+) > "$SERVICE_ENV"
+export SERVICE_ENV
+MOCK_JS="$(sed -n "/^cat > \/tmp\/mock.js <<'JS'\$/,/^JS\$/p" <<<"$PROBE" | sed '1d;$d')"
+dx() { compose exec -T -u devlead devlead "$@"; }
+rx() { compose exec -T -u root devlead "$@"; }
+MOCK_ENV=(-e ANTHROPIC_BASE_URL=http://127.0.0.1:8099 -e ANTHROPIC_API_KEY=sk-ant-api03-DUMMY)
+# mock <label> <command the mock asks claude to run> — the mock and its log
+# live in ~/.cache, out of the /tmp the jobs clean up after themselves. Claude
+# Code refuses `sleep N; ...` in a Bash call, so the commands that must take a
+# while run `tail -f /dev/null` under `timeout`.
+mock() {
+  dx sh -c "pkill -f '^node /home/devlead/.cache/smoke/mock.js' ; : > /home/devlead/.cache/smoke/mock-$1.log" >/dev/null 2>&1
+  for _ in $(seq 1 25); do dx pgrep -f '^node /home/devlead/.cache/smoke/mock.js' >/dev/null 2>&1 || break; sleep 0.2; done
+  compose exec -d -u devlead -e "MOCK_LOG=/home/devlead/.cache/smoke/mock-$1.log" -e "MOCK_CMD=$2" devlead \
+    node /home/devlead/.cache/smoke/mock.js
+  for _ in $(seq 1 50); do dx grep -q LISTEN "/home/devlead/.cache/smoke/mock-$1.log" 2>/dev/null && return 0; sleep 0.2; done
+  echo "mock $1 did not start" >&2
+}
+job() { compose exec -T -u devlead "${MOCK_ENV[@]}" devlead env -u CLAUDE_CODE_OAUTH_TOKEN /opt/devlead/docker/run-job.sh "$1"; }
+session() { compose exec -T -u devlead "${MOCK_ENV[@]}" devlead env -u CLAUDE_CODE_OAUTH_TOKEN \
+  claude -p hi --permission-mode acceptEdits --allowedTools Bash </dev/null; }
+# audit <jq filter> — over the month's audit lines of the forced fleet runs.
+audit() { dx sh -c 'cat "$HOME/.devlead/audit/$(date +%Y-%m).jsonl"' 2>/dev/null | jq -c -s "map(select(.trigger == \"fleet\")) | $1"; }
+starts() { dx sh -c "grep -c \"\$(printf '\\tstart\\t')\" /var/lib/devlead/sessions.tsv" 2>/dev/null; }
+
 if compose up -d --wait --wait-timeout 180 >"$SCRATCH/up.log" 2>&1; then
   cid="$(compose ps -q devlead)"
   check "the service is healthy" "$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null)" "healthy"
   check "restart policy is unless-stopped" "$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$cid" 2>/dev/null)" "unless-stopped"
-  check "the main process runs as the host UID" \
-    "$(compose exec -T devlead ps -o uid=,args= --ppid 1 2>/dev/null | awk '{$1=$1; print}')" "$HOST_UID sleep infinity"
+  check "the main process is supercronic, PID 1's child, as the host UID" \
+    "$(compose exec -T devlead ps -o uid=,args= --ppid 1 2>/dev/null | awk '{$1=$1; print}')" \
+    "$HOST_UID /usr/local/bin/supercronic -passthrough-logs /etc/devlead/crontab"
   check "the healthcheck passes while the firewall holds" \
     "$(compose exec -T devlead /opt/devlead/docker/init-firewall.sh --check >/dev/null 2>&1; echo $?)" "0"
+
+  # The schedule is the env file's, root's.
+  crontab="$(dx cat /etc/devlead/crontab)"
+  check "the crontab is root's, 0644" "$(dx stat -c '%U %a' /etc/devlead/crontab)" "root 644"
+  check "the crontab: morning as the env file says" "$(grep -c '^\* \* \* \* \* /opt/devlead/docker/run-job.sh morning$' <<<"$crontab")" "1"
+  check "the crontab: loop at its default" "$(grep -c '^0 22 \* \* \* /opt/devlead/docker/run-job.sh loop$' <<<"$crontab")" "1"
+  check "the crontab: fleet at its default (devlead-fleet.timer, 22:30)" "$(grep -c '^30 22 \* \* \* /opt/devlead/docker/run-job.sh fleet$' <<<"$crontab")" "1"
+  check "the crontab: discover off, as the env file says" "$(grep -c 'run-job.sh discover' <<<"$crontab")" "0"
+  check "the limits are the env file's" "$(dx grep -E '^(TZ|MAX_SESSIONS_PER_DAY|SESSION_TIMEOUT)=' /etc/devlead/runner.conf | paste -sd, -)" \
+    "TZ=America/Bogota,MAX_SESSIONS_PER_DAY=4,SESSION_TIMEOUT=20s"
+
+  # Setup, as the operator: an (empty) fleet list, so the fleet job runs.
+  rx sh -c 'touch /home/devlead/.devlead/autonomous-repos && chmod 0644 /home/devlead/.devlead/autonomous-repos'
+  dx mkdir -p /home/devlead/.cache/smoke
+  printf '%s\n' "$MOCK_JS" | dx sh -c 'cat > /home/devlead/.cache/smoke/mock.js'
+
+  # 1. A forced job: one session, its audit line and transcript, and nothing
+  #    it left behind survives it.
+  mock leftovers 'bash -c "exec -a leftover-a tail -f /dev/null" >/dev/null 2>&1 & setsid bash -c "exec -a leftover-b tail -f /dev/null" >/dev/null 2>&1 & setsid env -i bash -c "exec -a leftover-c tail -f /dev/null >/dev/null 2>&1 &"; echo spawned'
+  out="$(job fleet 2>&1)"; rc=$?
+  check "a forced fleet job exits 0" "$rc" "0"
+  contains "the job's audit line reaches the container log" "$out" 'devlead-audit {"run_id":'
+  a="$(audit 'last')"
+  check "audit: trigger, outcome, exit code" "$(jq -c '[.trigger, .outcome, .exit_code]' <<<"$a")" '["fleet","ok",0]'
+  check "audit: one session, not timed out, not refused" "$(jq -c '[(.session_ids | length), .timed_out, .cap_refused]' <<<"$a")" '[1,false,false]'
+  check "audit: the mock's Bash call is counted" "$(jq -c '.tool_uses.Bash' <<<"$a")" "1"
+  check "audit: nothing notified" "$(jq -c '.notified' <<<"$a")" "false"
+  run_id="$(jq -r .run_id <<<"$a")"; sid="$(jq -r '.session_ids[0]' <<<"$a")"
+  check "the session's transcript is kept, found by its session id" \
+    "$(dx sh -c "grep -q toolu_mock /home/devlead/.devlead/audit/runs/$run_id/$sid.jsonl && echo kept" 2>/dev/null)" "kept"
+  contains "the mock's command ran in the session" "$(dx cat /home/devlead/.cache/smoke/mock-leftovers.log)" "spawned"
+  check "no process the job left behind survives it (in its session, setsid, setsid env -i)" "$(dx pgrep -fc '^leftover-')" "0"
+  check "audit: the leftovers were stopped" "$(jq -c '.leftovers_killed >= 3' <<<"$a")" "true"
+  check "the job's private TMPDIR is gone" "$(dx sh -c 'ls -d /tmp/devlead-job.* 2>/dev/null | wc -l')" "0"
+
+  # 2. One session at a time: a session started while a job's session runs is
+  #    refused; a job started meanwhile waits for the first job.
+  mock slow 'timeout 12 tail -f /dev/null; echo slow'
+  before="$(starts)"
+  compose exec -d -u devlead "${MOCK_ENV[@]}" devlead env -u CLAUDE_CODE_OAUTH_TOKEN /opt/devlead/docker/run-job.sh fleet
+  for _ in $(seq 1 100); do [[ "$(starts)" -gt "$before" ]] && break; sleep 0.3; done
+  out="$(session 2>&1)"; rc=$?
+  check "a second session while one runs: refused (75)" "$rc" "75"
+  contains "a second session while one runs: says why" "$out" "another claude session is running"
+  out="$(dx /opt/devlead/docker/run-job.sh discover 2>&1)"
+  contains "a job started meanwhile waits for the running one" "$out" "another job is running — discover waits for it"
+  check "the waiting job's wait is audited" \
+    "$(dx sh -c 'cat "$HOME/.devlead/audit/$(date +%Y-%m).jsonl"' | jq -s 'map(select(.trigger == "discover")) | last | .lock_wait_seconds >= 1')" "true"
+  check "the first job finished first" "$(audit 'length')" "2"
+
+  # 3. The time limit stops a session, is audited and sends `need`.
+  mock late 'timeout 60 tail -f /dev/null; echo late'
+  start="$(date +%s)"
+  out="$(job fleet 2>&1)"; rc=$?
+  elapsed=$(( $(date +%s) - start ))
+  a="$(audit 'last')"
+  check "timeout: the run is reported failed (exit 1)" "$rc" "1"
+  check "timeout: stopped at the 20s limit, not after the 60s command" "$([[ $elapsed -lt 55 ]] && echo stopped || echo "ran ${elapsed}s")" "stopped"
+  check "timeout: audited" "$(jq -c '[.outcome, .timed_out, .notify_codes]' <<<"$a")" '["timeout",true,["job-timeout"]]'
+  check "timeout: need job-timeout in the inbox" "$(dx bash /home/devlead/.devlead/scripts/notify.sh list | grep -c 'job-timeout')" "1"
+  check "timeout: the session's command did not survive" "$(dx pgrep -fc '^tail -f /dev/null')" "0"
+
+  # 4. The daily cap: 3 sessions so far; the 4th runs, the 5th is refused and
+  #    a job that needs one is audited and sends `need`.
+  mock cap 'echo capped'
+  session >/dev/null 2>&1; rc=$?
+  check "cap: the 4th session of the day runs" "$rc" "0"
+  out="$(session 2>&1)"; rc=$?
+  check "cap: the 5th session is refused (75)" "$rc" "75"
+  contains "cap: says the daily limit is reached" "$out" "the daily limit of 4 claude sessions is reached"
+  job fleet >/dev/null 2>&1
+  a="$(audit 'last')"
+  check "cap: the job's session refused, audited" "$(jq -c '[.outcome, .cap_refused, .refusals, .notify_codes]' <<<"$a")" '["refused",true,["cap"],["job-refused"]]'
+  check "cap: need job-refused in the inbox" "$(dx bash /home/devlead/.devlead/scripts/notify.sh list | grep -c 'job-refused')" "1"
+
+  # 5. The pause file: the operator's; it stops jobs and sessions.
+  rx touch /home/devlead/.devlead/PAUSE
+  dx rm -f /home/devlead/.devlead/PAUSE >/dev/null 2>&1
+  check "pause: the user cannot remove the pause file" "$(dx sh -c 'test -e /home/devlead/.devlead/PAUSE && echo kept || echo removed')" "kept"
+  before="$(starts)"
+  job fleet >/dev/null 2>&1
+  check "pause: a job does not run" "$(audit 'last | .outcome')" '"paused"'
+  out="$(session 2>&1)"; rc=$?
+  check "pause: a session is refused (75)" "$rc" "75"
+  contains "pause: says DevLead is paused" "$out" "DevLead is paused"
+  check "pause: no session started" "$(starts)" "$before"
+  rx rm -f /home/devlead/.devlead/PAUSE
+
+  # 5b. Never as root: neither a session nor a job; --version still answers.
+  fleet_runs="$(audit 'length')"
+  out="$(compose exec -T -u root "${MOCK_ENV[@]}" devlead claude -p hi </dev/null 2>&1)"; rc=$?
+  check "root: a claude session is refused (75)" "$rc" "75"
+  contains "root: says why" "$out" "never starts a claude session as root"
+  out="$(rx /opt/devlead/docker/run-job.sh fleet 2>&1)"; rc=$?
+  check "root: a job is refused (1)" "$rc" "1"
+  contains "root: says to run it as devlead" "$out" "never runs a job as root"
+  check "root: the refused job left no audit line" "$(audit 'length')" "$fleet_runs"
+  check "root: claude --version still answers" "$(rx claude --version 2>/dev/null)" "2.1.326 (Claude Code)"
+
+  # 6. Retention: an old run's transcripts are pruned.
+  dx mkdir -p /home/devlead/.devlead/audit/runs/20200101T000000Z-fleet-aaaaaa
+  dx /opt/devlead/docker/run-job.sh --prune >/dev/null 2>&1
+  check "prune: a run from 2020 is removed" "$(dx sh -c 'ls /home/devlead/.devlead/audit/runs | grep -c 20200101')" "0"
+
+  # 7. supercronic itself ran the morning job (every minute here), as devlead.
+  for _ in $(seq 1 45); do
+    dx sh -c 'cat "$HOME/.devlead/audit/$(date +%Y-%m).jsonl"' 2>/dev/null | jq -e -s 'any(.trigger == "morning")' >/dev/null && break
+    sleep 2
+  done
+  check "supercronic ran the scheduled morning job" \
+    "$(dx sh -c 'cat "$HOME/.devlead/audit/$(date +%Y-%m).jsonl"' | jq -s -c 'map(select(.trigger == "morning")) | first | [.outcome, .exit_code]')" '["ok",0]'
 else
   tail -n 20 "$SCRATCH/up.log"
   check "the service starts and turns healthy" "no" "yes"
 fi
 compose down --volumes --remove-orphans >/dev/null 2>&1
+unset SERVICE_ENV
 
 echo "=== startup fails closed ==="
 out="$(docker run --rm --env-file "$ENV_FILE" "$IMAGE" id -u 2>&1)"; rc=$?
@@ -468,10 +664,24 @@ out="$(compose run --rm -T -e 'DEVLEAD_EGRESS_ALLOW=not_a_host!' devlead id -u 2
 check "a malformed DEVLEAD_EGRESS_ALLOW entry stops the start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
 contains "the malformed entry is named" "$out" "'not_a_host!' is not a valid host name"
 
+out="$(compose run --rm -T -e 'DEVLEAD_CRON_LOOP=61 22 * * *' devlead id -u 2>&1)"; rc=$?
+check "an invalid cron expression stops the start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
+contains "the invalid expression is named" "$out" "DEVLEAD_CRON_LOOP='61 22 * * *' is not a valid schedule"
+check "the command never runs on an invalid schedule" "$(printf '%s\n' "$out" | grep -cx "$HOST_UID")" "0"
+
+out="$(compose run --rm -T -e 'TZ=Mars/Olympus' devlead id -u 2>&1)"; rc=$?
+check "an unknown time zone stops the start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
+contains "the time zone is named" "$out" "TZ='Mars/Olympus' is not a time zone"
+
+out="$(compose run --rm -T -e DEVLEAD_CLAUDE_BIN=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe devlead id -u 2>&1)"; rc=$?
+check "DEVLEAD_CLAUDE_BIN set to the real binary stops the start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
+contains "it says the binary is not the wrapper" "$out" "is not the claude wrapper"
+
 out="$(docker run --rm --user "$HOST_UID" --cap-add NET_ADMIN --env-file "$ENV_FILE" "$IMAGE" id -u 2>&1)"; rc=$?
 check "started as a non-root user, the container does not start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
 
-out="$(DOCKER_BUILDKIT=1 docker build -q --build-arg DEVLEAD_UID=0 -f "$REPO_ROOT/docker/Dockerfile" "$REPO_ROOT" 2>&1)"; rc=$?
+out="$(DOCKER_BUILDKIT=1 docker build -q --build-arg DEVLEAD_UID=0 --build-arg DEVLEAD_SOURCE_REV="$SOURCE_REV" \
+  -f "$REPO_ROOT/docker/Dockerfile" "$REPO_ROOT" 2>&1)"; rc=$?
 check "the image refuses to build for UID 0" "$([[ $rc -ne 0 ]] && echo refused || echo built)" "refused"
 [[ $rc -eq 0 && -n "$out" ]] && docker image rm -f "$out" >/dev/null 2>&1
 

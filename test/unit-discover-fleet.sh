@@ -122,6 +122,11 @@ contains "pass: says why the unenrolled repo was skipped" "$out" "skipped $UNENR
 contains "pass: says why the missing path was skipped" "$out" "missing — not a directory"
 contains "pass: summary" "$out" "2 repo(s) explored, 0 failed"
 check "pass: one info entry, never a push-level one" "$(inbox | cut -f2,3)" "info"$'\t'"discover-done"
+# F1 follow-up c: every session starts fresh — the launcher never resumes,
+# continues or forks an earlier one, nor picks a session id.
+for flag in --resume -r --continue -c --fork-session --session-id --from-pr --teleport; do
+  check "pass: no session gets $flag" "$(cut -f2- "$CLAUDE_LOG" | tr '\t' '\n' | grep -cxe "$flag" -e "$flag=.*")" "0"
+done
 
 # ===========================================================================
 # one session per repository, however the list spells it

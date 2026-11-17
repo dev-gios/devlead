@@ -269,6 +269,13 @@ Lo que esta sección agrega es un canal de **escalada de nivel run**, implementa
 - el discover programado no tiene flags de permisos elegidos por el usuario (`discover-no-permissions`)
 - el discover programado encontró artefactos instalados que no verifican como el trunk revisado (`discover-drift`)
 - el texto de una o más issues trae instrucciones dirigidas al agente y quedaron fuera del plan o aparcadas (`untrusted-content`, §untrusted-content); el aviso lleva solo el repo y los números de issue, y el sweep matutino manda uno solo por corrida
+- en el servidor (Docker), un trabajo programado falló: salió con código distinto de 0, se cayó, o no pudo arrancar (sin la configuración de límites, sin directorio de auditoría, o con un `DEVLEAD_CLAUDE_BIN` que no es el wrapper) (`job-failed`)
+- en el servidor, una sesión de `claude` llegó al tiempo máximo por corrida y se la detuvo (`job-timeout`)
+- en el servidor, se rechazó una sesión de `claude` por el tope diario, porque otra sesión estaba corriendo o porque no se pudieron leer los límites (`job-refused`)
+- en el servidor, el log de auditoría o el registro de sesiones cambió durante una corrida (`audit-tampered`)
+- `doctor` avisa que el token de Claude tiene 11 meses o más, o que su fecha de emisión no es válida; como máximo un aviso por día, que dice cómo renovarlo sin repetir la fecha (`token-expiring`)
+
+Los avisos del servidor llevan solo el nombre del trabajo, el motivo corto y el id de la corrida: nunca texto de issues, valores del entorno ni secretos. Pausar el servidor (`~/.devlead/PAUSE`) es una decisión del usuario y no avisa.
 
 Una issue aparcada por un gate rojo NO es un disparador: es el funcionamiento normal del perfil y va al reporte. Lo que escala es que el run entero dejó de avanzar. Única excepción: una issue que quedó fuera o aparcada por `untrusted-content` sí avisa, porque alguien intentó dar órdenes a DevLead desde GitHub y eso lo tiene que ver el usuario aunque el resto del run siga.
 

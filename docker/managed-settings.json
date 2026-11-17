@@ -6,6 +6,7 @@
       "Edit(//etc/claude-code/**)",
       "Edit(//etc/devlead/**)",
       "Edit(//opt/devlead/**)",
+      "Edit(//var/lib/devlead/**)",
       "Edit(~/.devlead/**)",
       "Edit(~/.claude/settings.json)",
       "Edit(~/.claude/settings.local.json)",
