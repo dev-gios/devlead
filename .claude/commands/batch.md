@@ -177,6 +177,7 @@ Cuando cualquier sub-paso de B2.b retorna blocked o error, aplicá esta tabla:
 | `branch.sh STATUS: blocked` (dirty repo, detached HEAD, no dev) | **PARK** con razón exacta del GAP | 🅿️ Aparcadas |
 | `branch.sh STATUS: blocked` GAP `predecesor #N no encontrado y no mergeado` | **PARK** con razón exacta + agregar issue a BLOQUEADAS | 🅿️ Aparcadas |
 | `ref-resolver GAP: file not found` (spec no existe en esa ruta) | **PARK** "spec referenciado no encontrado: {path}" | 🅿️ Aparcadas |
+| `ref-resolver GAP: spec path rejected` (el `Spec:` apunta fuera del repo) | **PARK** "spec path rechazado: fuera del repositorio" | 🅿️ Aparcadas |
 | `ref-resolver GAP: multi-predecesor no soportado en v1` | **PARK** "multi-predecesor declarado — resolución manual requerida" | 🅿️ Aparcadas |
 | `DEPENDS-ON: A` y A ∈ BLOQUEADAS | **PARK** "dep-blocked: predecesor #A aparcado", agregar issue a BLOQUEADAS | 🅿️ Aparcadas |
 | `ref-resolver SPEC: none` (sin spec) | **Continuar** corriendo `Step 8.3-SDD` (ciclo SDD completo) con `SDD_MODE=autonomous` — OJO: el comportamiento de single-task para este caso YA NO es "implementación directa" (cambió con este mismo release, ver `arranquemos.md` Step 8.3-SDD); "igual que single-task" acá significa "corré el mismo Step 8.3-SDD que corre `/arranquemos`, sin la pausa de aprobación" | — |

@@ -567,6 +567,7 @@ bash ~/.devlead/scripts/ref-resolver.sh {issue_num}
 Capturá toda la salida. Interpretá:
 - `SPEC: none` → continuá sin spec (implementación directa); anotá en la sesión: "no Spec: reference — proceeding without spec doc"
 - `GAP: file not found at {path}` → **HALT**, avisá al usuario que el spec referenciado no existe en esa ruta; no continúes
+- `GAP: spec path rejected …` → **HALT**: el `Spec:` de la issue apunta fuera del repo (ruta absoluta, con `..`, o un symlink que sale del repo) y no se leyó nada. Decíselo al usuario con el número de issue; no busques el archivo por otro camino. Un `Design:` en la misma situación no aparece en la salida (el aviso va a stderr): seguí como si la issue no tuviera diseño.
 - `GAP: gh unavailable` → continuá sin spec (degradación honesta); anotá la ausencia
 - `DEP-CHECK: unavailable` → no se pudo verificar si la issue declara una dependencia. Emití este warning al usuario y **continuá** el flow sin hacer halt:
   > ⚠️ No pude verificar dependencias (gh no disponible). Si esta issue declara `Depends-on: #A`, la rama sale del tag y la base puede estar incompleta — revisá antes de mergear.
