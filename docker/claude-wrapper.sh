@@ -15,6 +15,9 @@
 # win. --settings is refused too: it loads settings on top of the user's
 # (an apiKeyHelper or env included) whatever --setting-sources says.
 #
+# A session never starts as root: the sessions are the devlead user's, like
+# the files they leave and the ledger that counts them.
+#
 # It is also where the server's session limits hold (S17), for every session —
 # the ones run-job.sh's jobs start, each iteration of sweep-loop.sh, one typed
 # by hand. They are read from /etc/devlead/runner.conf, which root writes at
@@ -31,8 +34,8 @@
 # Every start, end and refusal is one line of /var/lib/devlead/sessions.tsv,
 # the ledger that run-job.sh reads to audit a run:
 #   day TAB utc time TAB start|end|refused TAB session id TAB run id TAB exit
-#   code TAB detail (timeout on an end line; paused, busy, cap or noconf on a
-#   refusal)
+#   code TAB detail (timeout on an end line; root, paused, busy, cap,
+#   noconf or noledger on a refusal)
 # Root owns /var/lib/devlead, so the ledger cannot be removed or replaced; see
 # run-job.sh for what the user can still do to it.
 #
@@ -41,8 +44,9 @@
 # earlier session (--resume, --continue, ...), nor take a session out of these
 # limits (--bg, --cloud, --remote-control, --no-session-persistence).
 #
-# Exit codes: the session's own; 2 for a refused flag; 75 when the limits
-# refuse the session. --version and --help skip the limits.
+# Exit codes: the session's own; 2 for a refused flag; 75 when the limits,
+# or a root caller, refuse the session. --version and --help skip the limits
+# and run as root too (the image build checks the version).
 #
 # Not a sandbox: the real binary is executable by the user, so a session that
 # runs it directly is outside these limits. They bound what the scheduler and
@@ -112,6 +116,10 @@ _secs() { # _secs <n><s|m|h> -> seconds, or returns 1
     h) echo $(( BASH_REMATCH[1] * 3600 )) ;;
   esac
 }
+
+# EUID is set by bash itself; the environment cannot change it.
+(( EUID != 0 )) \
+  || _refuse root "the DevLead server never starts a claude session as root — run it as the devlead user: docker compose exec -u devlead devlead claude ..."
 
 _noconf="no usable runner configuration at $RUNNER_CONF (it is written by root when the container starts) — no session can start"
 [[ -f "$RUNNER_CONF" && ! -L "$RUNNER_CONF" ]] || _refuse noconf "$_noconf"

@@ -162,6 +162,24 @@ check "a run id that is not a plain token is recorded as -" "$(awk -F'\t' '$3 ==
 check "and the ledger keeps seven fields" "$(awk -F'\t' '{print NF}' "$LEDGER" | sort -u)" "7"
 
 # ===========================================================================
+# Never as root. `unshare -r` makes the caller UID 0 in a user namespace, so
+# this is the wrapper's real check, unmodified.
+# ===========================================================================
+reset
+OUT="$(unshare -r "$WRAPPER" -p hi </dev/null 2>&1)"; RC=$?
+check "as root: a session is refused (75)" "$RC" "75"
+contains "as root: says why" "$OUT" "never starts a claude session as root"
+check "as root: nothing started" "$(calls)" "0"
+check "as root: the refusal is in the ledger" "$(awk -F'\t' '{print $3 "/" $7}' "$LEDGER")" "refused/root"
+OUT="$(unshare -r "$WRAPPER" --version </dev/null 2>&1)"; RC=$?
+check "as root: --version still runs (the image build checks it)" "$RC" "0"
+OUT="$(unshare -r "$WRAPPER" --help </dev/null 2>&1)"; RC=$?
+check "as root: --help still runs" "$RC" "0"
+reset
+w -p hi
+check "as the user: the session still runs" "$RC" "0"
+
+# ===========================================================================
 # Pause file (S17): no new session while it exists
 # ===========================================================================
 reset

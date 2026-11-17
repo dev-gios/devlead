@@ -4,7 +4,9 @@
 #
 #   run-job.sh <job>     run one job of the table below. supercronic calls it at
 #                        the times of /etc/devlead/crontab; the operator can too:
-#                        docker compose exec devlead /opt/devlead/docker/run-job.sh fleet
+#                        docker compose exec -u devlead devlead /opt/devlead/docker/run-job.sh fleet
+#                        A job never runs as root (--list does: runner-config.sh
+#                        reads the table at container start).
 #   run-job.sh --list    print the job table: name|schedule variable|default
 #                        schedule (runner-config.sh builds the crontab from it)
 #   run-job.sh --prune   delete the kept transcripts of runs older than
@@ -40,10 +42,13 @@
 #      job-failed (non-zero exit, a crash, a refused start), job-timeout (a
 #      session stopped at its time limit), job-refused (a session refused by
 #      the daily cap or because another was running). doctor.sh's Claude token
-#      warning becomes a `need` token-expiring, once a day.
+#      warning becomes a `need` token-expiring, once a day; like every notice it
+#      carries no environment value (not even the token's issue date).
 #
 # The audit line: run_id, trigger, repos, started_at, ended_at, exit_code,
-# timed_out, cap_refused, paused, skipped (the reason, or null), sessions
+# timed_out, cap_refused (a session refused by the daily cap), refusals (the
+# reason of every refused session: cap, busy, paused, noconf, noledger, root),
+# paused, skipped (the reason, or null), sessions
 # [{id, exit_code, timed_out}], session_ids, tool_uses {tool: count},
 # files_changed, prs_opened, transcripts_kept, outcome (ok, failed, timeout,
 # refused, paused, skipped), notified, notify_codes, leftovers_killed,
@@ -269,7 +274,13 @@ _token_check() {
   [[ -n "$warn" ]] || return 0
   today="$(date +%F)"
   [[ "$(cat "$TOKEN_STAMP" 2>/dev/null)" == "$today" ]] && return 0
-  _need token-expiring "$warn"
+  # doctor's line names DEVLEAD_CLAUDE_TOKEN_ISSUED with its value: the notice
+  # says what it means instead.
+  if [[ "$warn" == *"not a valid issue date"* ]]; then
+    _need token-expiring "DEVLEAD_CLAUDE_TOKEN_ISSUED in the env file is not a valid date, so the Claude token's age cannot be checked — set it to the day you ran claude setup-token (YYYY-MM-DD) and restart the container"
+  else
+    _need token-expiring "the Claude token was issued 11 or more months ago and lasts one year — renew it: run claude setup-token, put the new token in .env, update DEVLEAD_CLAUDE_TOKEN_ISSUED and restart the container"
+  fi
   mkdir -p "${TOKEN_STAMP%/*}" 2>/dev/null
   printf '%s\n' "$today" > "$TOKEN_STAMP" 2>/dev/null || true
 }
@@ -339,7 +350,8 @@ _audit() { # _audit <outcome> <exit code> [skipped reason]
     { run_id: $run_id, trigger: $trigger, repos: $repos, started_at: $started, ended_at: $ended,
       exit_code: $rc,
       timed_out: ([$s.sessions[] | select(.timed_out)] | length > 0),
-      cap_refused: ([$s.refusals[] | select(. != "paused")] | length > 0),
+      cap_refused: ([$s.refusals[] | select(. == "cap")] | length > 0),
+      refusals: $s.refusals,
       paused: $paused,
       skipped: (if $skipped == "" then null else $skipped end),
       sessions: $s.sessions, session_ids: [$s.sessions[].id],
@@ -364,6 +376,12 @@ case "${1:-}" in
   ""|-*) _usage; exit 2 ;;
 esac
 [[ $# -eq 1 ]] || { _usage; exit 2; }
+# EUID is set by bash itself; the environment cannot change it. Nothing is
+# written and nobody is notified: root's HOME is not the user's.
+if (( EUID == 0 )); then
+  echo "run-job: the DevLead server never runs a job as root — run it as the devlead user: docker compose exec -u devlead devlead /opt/devlead/docker/run-job.sh $1" >&2
+  exit 1
+fi
 
 JOB="$1"
 JOB_ENTRY=""

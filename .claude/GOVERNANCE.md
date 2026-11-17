@@ -273,7 +273,7 @@ Lo que esta sección agrega es un canal de **escalada de nivel run**, implementa
 - en el servidor, una sesión de `claude` llegó al tiempo máximo por corrida y se la detuvo (`job-timeout`)
 - en el servidor, se rechazó una sesión de `claude` por el tope diario, porque otra sesión estaba corriendo o porque no se pudieron leer los límites (`job-refused`)
 - en el servidor, el log de auditoría o el registro de sesiones cambió durante una corrida (`audit-tampered`)
-- `doctor` avisa que el token de Claude vence o ya venció; como máximo un aviso por día (`token-expiring`)
+- `doctor` avisa que el token de Claude tiene 11 meses o más, o que su fecha de emisión no es válida; como máximo un aviso por día, que dice cómo renovarlo sin repetir la fecha (`token-expiring`)
 
 Los avisos del servidor llevan solo el nombre del trabajo, el motivo corto y el id de la corrida: nunca texto de issues, valores del entorno ni secretos. Pausar el servidor (`~/.devlead/PAUSE`) es una decisión del usuario y no avisa.
 

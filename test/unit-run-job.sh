@@ -148,6 +148,7 @@ check "start and end are ISO 8601 with offset" \
   "$(field '[.started_at, .ended_at] | map(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}[+-][0-9]{2}:[0-9]{2}$")) | all')" "true"
 check "exit code" "$(field .exit_code)" "0"
 check "flags: no timeout, no cap refusal, not paused, not skipped" "$(field '[.timed_out, .cap_refused, .paused, .skipped]')" '[false,false,false,null]'
+check "no session was refused" "$(field .refusals)" "[]"
 check "the session id" "$(field .session_ids)" "[\"$SID\"]"
 check "sessions with their exit codes" "$(field .sessions)" "[{\"id\":\"$SID\",\"exit_code\":0,\"timed_out\":false}]"
 check "tool uses, subagents included" "$(field '.tool_uses')" '{"Bash":2,"Edit":1,"Read":1,"Write":1}'
@@ -223,23 +224,40 @@ fresh
 behaviour <<<'refused cap'
 run fleet
 check "cap refusal: outcome refused, flagged, notified" "$(field '[.outcome, .cap_refused, .notify_codes]')" '["refused",true,["job-refused"]]'
+check "cap refusal: the reason is recorded" "$(field .refusals)" '["cap"]'
 contains "cap refusal: the message names the cap" "$(cut -f6 "$INBOX")" "the daily limit of 8 claude sessions is reached"
 fresh
 behaviour <<<'refused busy'
 run fleet
 contains "busy refusal: the message says another session ran" "$(cut -f6 "$INBOX")" "another claude session was running"
 check "busy refusal: job-refused" "$(need_codes)" "job-refused"
+check "busy refusal: not a cap refusal; the reason is recorded" "$(field '[.cap_refused, .refusals]')" '[false,["busy"]]'
 
 fresh
 behaviour <<<'refused paused'
 run fleet
 check "a session refused by the pause: outcome paused, no need" "$(field '[.outcome, .paused, .notified]')" '["paused",true,false]'
+check "a session refused by the pause: not a cap refusal; the reason is recorded" "$(field '[.cap_refused, .refusals]')" '[false,["paused"]]'
 
 fresh
 behaviour <<<'kill -9 $$'
 run fleet
 check "a crash (killed by a signal) is a failure" "$(field '[.outcome, .exit_code]')" '["failed",137]'
 check "a crash sends job-failed" "$(need_codes)" "job-failed"
+
+# ===========================================================================
+# Never as root: `unshare -r` makes the caller UID 0 in a user namespace.
+# runner-config.sh reads the job table as root, so --list still works.
+# ===========================================================================
+fresh
+: > "$SANDBOX_LOG"
+OUT="$(unshare -r bash "$RUNJOB" fleet 2>&1)"; RC=$?
+check "as root: a job is refused (exit 1)" "$RC" "1"
+contains "as root: says why" "$OUT" "never runs a job as root"
+check "as root: nothing ran" "$(wc -l < "$SANDBOX_LOG" | tr -d ' ')" "0"
+check "as root: no audit line, no file written" "$([[ -e "$(MONTH_FILE)" ]] && echo written || echo none)" "none"
+check "as root: no notice" "$(need_codes)" ""
+check "as root: --list still prints the table" "$(unshare -r bash "$RUNJOB" --list 2>/dev/null | wc -l | tr -d ' ')" "4"
 
 # ===========================================================================
 # The pause file and DEVLEAD_CLAUDE_BIN stop the job before it starts
@@ -337,13 +355,24 @@ fresh
 echo "WARN:   the Claude token (DEVLEAD_CLAUDE_TOKEN_ISSUED=2025-12-01) is 11 months old and expires one year after it was issued" > "$SANDBOX_WARN"
 run morning
 check "token warning: need token-expiring" "$(need_codes)" "token-expiring"
-contains "token warning: the message is doctor's" "$(cut -f6 "$INBOX")" "is 11 months old"
+msg="$(cut -f6 "$INBOX")"
+contains "token warning: says the token is 11 or more months old" "$msg" "the Claude token was issued 11 or more months ago"
+contains "token warning: says how to renew it" "$msg" "claude setup-token"
+lacks "token warning: the issue date (an environment value) is not in the notice" "$msg" "2025-12-01"
+lacks "token warning: no environment assignment in the notice" "$msg" "DEVLEAD_CLAUDE_TOKEN_ISSUED="
 check "token warning: recorded on the run" "$(field .notify_codes)" '["token-expiring"]'
 run morning
 check "token warning: not again the same day" "$(need_codes)" "token-expiring"
 echo "2000-01-01" > "$HOME/.devlead/run/token-warned"
 run morning
 check "token warning: again on another day" "$(need_codes)" "token-expiring,token-expiring"
+fresh
+echo "WARN:   DEVLEAD_CLAUDE_TOKEN_ISSUED is not a valid issue date (YYYY-MM-DD, not in the future), so the Claude token's age cannot be checked" > "$SANDBOX_WARN"
+run morning
+msg="$(cut -f6 "$INBOX")"
+check "unreadable issue date: need token-expiring" "$(need_codes)" "token-expiring"
+contains "unreadable issue date: says the age cannot be checked" "$msg" "is not a valid date, so the Claude token's age cannot be checked"
+contains "unreadable issue date: says how to fix it" "$msg" "claude setup-token"
 rm -f "$SANDBOX_WARN"
 
 # ===========================================================================

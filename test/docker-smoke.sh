@@ -608,7 +608,7 @@ if compose up -d --wait --wait-timeout 180 >"$SCRATCH/up.log" 2>&1; then
   contains "cap: says the daily limit is reached" "$out" "the daily limit of 4 claude sessions is reached"
   job fleet >/dev/null 2>&1
   a="$(audit 'last')"
-  check "cap: the job's session refused, audited" "$(jq -c '[.outcome, .cap_refused, .notify_codes]' <<<"$a")" '["refused",true,["job-refused"]]'
+  check "cap: the job's session refused, audited" "$(jq -c '[.outcome, .cap_refused, .refusals, .notify_codes]' <<<"$a")" '["refused",true,["cap"],["job-refused"]]'
   check "cap: need job-refused in the inbox" "$(dx bash /home/devlead/.devlead/scripts/notify.sh list | grep -c 'job-refused')" "1"
 
   # 5. The pause file: the operator's; it stops jobs and sessions.
@@ -623,6 +623,17 @@ if compose up -d --wait --wait-timeout 180 >"$SCRATCH/up.log" 2>&1; then
   contains "pause: says DevLead is paused" "$out" "DevLead is paused"
   check "pause: no session started" "$(starts)" "$before"
   rx rm -f /home/devlead/.devlead/PAUSE
+
+  # 5b. Never as root: neither a session nor a job; --version still answers.
+  fleet_runs="$(audit 'length')"
+  out="$(compose exec -T -u root "${MOCK_ENV[@]}" devlead claude -p hi </dev/null 2>&1)"; rc=$?
+  check "root: a claude session is refused (75)" "$rc" "75"
+  contains "root: says why" "$out" "never starts a claude session as root"
+  out="$(rx /opt/devlead/docker/run-job.sh fleet 2>&1)"; rc=$?
+  check "root: a job is refused (1)" "$rc" "1"
+  contains "root: says to run it as devlead" "$out" "never runs a job as root"
+  check "root: the refused job left no audit line" "$(audit 'length')" "$fleet_runs"
+  check "root: claude --version still answers" "$(rx claude --version 2>/dev/null)" "2.1.326 (Claude Code)"
 
   # 6. Retention: an old run's transcripts are pruned.
   dx mkdir -p /home/devlead/.devlead/audit/runs/20200101T000000Z-fleet-aaaaaa

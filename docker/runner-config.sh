@@ -9,7 +9,9 @@
 # entrypoint.sh runs `render /etc/devlead` as root, before privileges are
 # dropped, so both files are root's: no session can change its own schedule
 # or its own limits. Every invalid value is named and stops the start (fail
-# closed); nothing is written until all of them are valid.
+# closed); nothing is written until all of them are valid. A value holding a
+# newline, a carriage return or any other control character is refused, never
+# echoed: written to the crontab it would add a line of its own.
 #
 # Settings, from the env file (all optional; empty means the default):
 #   TZ                             time zone of the schedule and of the daily
@@ -91,9 +93,15 @@ _cron_field() {
   return 0
 }
 
+# _has_control <value> — holds a newline, a carriage return, a tab or any
+# other control character.
+_has_control() { [[ "$1" == *[[:cntrl:]]* ]]; }
+_CONTROL="contains a newline, a carriage return or another control character — give the value on one line, in plain text"
+
 # _valid_cron <expression>
 _valid_cron() {
   local f=()
+  _has_control "$1" && return 1
   read -ra f <<<"$1"
   [[ ${#f[@]} -eq 5 ]] || return 1
   _cron_field "${f[0]}" 0 59 num || return 1
@@ -145,6 +153,10 @@ _render() {
 
   while IFS='|' read -r name var default; do
     [[ -n "$name" ]] || continue
+    if _has_control "${!var:-}"; then
+      errors+=("$var $_CONTROL")
+      continue
+    fi
     value="$(_trim "${!var:-}")"
     if [[ -z "$value" ]]; then
       value="$default"
@@ -159,29 +171,34 @@ _render() {
     cron_lines+=("# $name ($var)" "$value $RUN_JOB $name")
   done <<<"$table"
 
+  for var in TZ DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT DEVLEAD_AUDIT_RETENTION_DAYS DEVLEAD_CLAUDE_BIN; do
+    _has_control "${!var:-}" && errors+=("$var $_CONTROL")
+  done
+
   tz="$(_trim "${TZ:-}")"
   [[ -n "$tz" ]] || tz=UTC
-  _valid_tz "$tz" || errors+=("TZ='$tz' is not a time zone of $ZONEINFO (e.g. Europe/Madrid, America/Bogota, UTC)")
+  _has_control "${TZ:-}" || _valid_tz "$tz" \
+    || errors+=("TZ='$tz' is not a time zone of $ZONEINFO (e.g. Europe/Madrid, America/Bogota, UTC)")
 
   max="$(_trim "${DEVLEAD_MAX_SESSIONS_PER_DAY:-}")"
   [[ -n "$max" ]] || max="$DEFAULT_MAX_SESSIONS"
-  if _whole "$max" 0 1000; then max=$((10#$max)); else
+  if _whole "$max" 0 1000; then max=$((10#$max)); elif ! _has_control "${DEVLEAD_MAX_SESSIONS_PER_DAY:-}"; then
     errors+=("DEVLEAD_MAX_SESSIONS_PER_DAY='$max' must be a whole number from 0 to 1000")
   fi
 
   timeout="$(_trim "${DEVLEAD_SESSION_TIMEOUT:-}")"
   [[ -n "$timeout" ]] || timeout="$DEFAULT_TIMEOUT"
-  _timeout_secs "$timeout" >/dev/null \
+  _has_control "${DEVLEAD_SESSION_TIMEOUT:-}" || _timeout_secs "$timeout" >/dev/null \
     || errors+=("DEVLEAD_SESSION_TIMEOUT='$timeout' needs a unit and a value from 1s to 24h: e.g. 90s, 60m, 2h")
 
   retention="$(_trim "${DEVLEAD_AUDIT_RETENTION_DAYS:-}")"
   [[ -n "$retention" ]] || retention="$DEFAULT_RETENTION"
-  if _whole "$retention" 1 3650; then retention=$((10#$retention)); else
+  if _whole "$retention" 1 3650; then retention=$((10#$retention)); elif ! _has_control "${DEVLEAD_AUDIT_RETENTION_DAYS:-}"; then
     errors+=("DEVLEAD_AUDIT_RETENTION_DAYS='$retention' must be a whole number from 1 to 3650")
   fi
 
   bin="${DEVLEAD_CLAUDE_BIN:-}"
-  if [[ -n "$bin" && "$bin" != "claude" && "$bin" != "$WRAPPER" ]]; then
+  if [[ -n "$bin" && "$bin" != "claude" && "$bin" != "$WRAPPER" ]] && ! _has_control "$bin"; then
     errors+=("DEVLEAD_CLAUDE_BIN='$bin' is not the claude wrapper ($WRAPPER): every session in the server goes through it, so its limits and settings hold — remove the variable from the env file")
   fi
 
@@ -227,7 +244,7 @@ case "${1:-}" in
     ;;
   check-cron)
     [[ $# -eq 2 ]] || { _usage; exit 2; }
-    _valid_cron "$(_trim "$2")" || exit 1
+    ! _has_control "$2" && _valid_cron "$(_trim "$2")" || exit 1
     ;;
   *)
     _usage

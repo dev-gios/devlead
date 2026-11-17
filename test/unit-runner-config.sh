@@ -118,7 +118,7 @@ bad() { # bad <label> <expected message> VAR=value...
   local label="$1" msg="$2" out rc; shift 2
   OUT="$SANDBOX/bad"
   out="$(render "$OUT" "$@")"; rc=$?
-  check "$label: render refuses" "$([[ $rc -ne 0 ]] && echo refused || echo "accepted (rc=0)")" "refused"
+  check "$label: render refuses (exit 1)" "$rc" "1"
   contains "$label: says why" "$out" "$msg"
   check "$label: writes no crontab" "$([[ -e $OUT/crontab ]] && echo written || echo none)" "none"
   check "$label: writes no runner.conf" "$([[ -e $OUT/runner.conf ]] && echo written || echo none)" "none"
@@ -136,6 +136,22 @@ bad "retention zero" "DEVLEAD_AUDIT_RETENTION_DAYS='0' must be a whole number fr
 bad "claude binary other than the wrapper (F1 follow-up b)" \
   "DEVLEAD_CLAUDE_BIN='/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe' is not the claude wrapper" \
   DEVLEAD_CLAUDE_BIN=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+# A value spanning lines would add lines of its own to the crontab (or to
+# runner.conf): a newline, a carriage return or any other control character
+# is refused in every value, and the value is not echoed back.
+CTRL="contains a newline, a carriage return or another control character"
+bad "newline in a schedule (crontab injection)" "DEVLEAD_CRON_LOOP $CTRL" $'DEVLEAD_CRON_LOOP=0 22 * * *\n* * * * * touch /tmp/pwned'
+lacks "newline in a schedule: the injected line is not echoed" "$out" "touch /tmp/pwned"
+bad "carriage return in a schedule" "DEVLEAD_CRON_FLEET $CTRL" $'DEVLEAD_CRON_FLEET=30 22 * * *\r'
+bad "trailing newline in a schedule" "DEVLEAD_CRON_MORNING $CTRL" $'DEVLEAD_CRON_MORNING=30 6 * * 1-5\n'
+bad "newline in TZ" "TZ $CTRL" $'TZ=UTC\n'
+bad "tab in the daily cap" "DEVLEAD_MAX_SESSIONS_PER_DAY $CTRL" $'DEVLEAD_MAX_SESSIONS_PER_DAY=8\t'
+bad "carriage return in the timeout" "DEVLEAD_SESSION_TIMEOUT $CTRL" $'DEVLEAD_SESSION_TIMEOUT=60m\r'
+bad "newline in the retention" "DEVLEAD_AUDIT_RETENTION_DAYS $CTRL" $'DEVLEAD_AUDIT_RETENTION_DAYS=30\n'
+bad "newline in DEVLEAD_CLAUDE_BIN" "DEVLEAD_CLAUDE_BIN $CTRL" $'DEVLEAD_CLAUDE_BIN=claude\nx'
+check "check-cron: a newline makes it invalid" "$(cron_ok $'0 22 * * *\n* * * * * id')" "invalid"
+check "check-cron: a carriage return makes it invalid" "$(cron_ok $'0 22 * * *\r')" "invalid"
+
 OUT="$SANDBOX/many"
 out="$(render "$OUT" 'DEVLEAD_CRON_LOOP=61 22 * * *' TZ=Nowhere/City)"
 contains "several errors: all of them are named (loop)" "$out" "DEVLEAD_CRON_LOOP"
