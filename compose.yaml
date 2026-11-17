@@ -69,6 +69,12 @@ services:
       # its repo has on the host, so the state the host's /devlead keys by
       # repo path is the same key here. Only the container sees this volume:
       # your own working copies are never mounted.
+      # L18: the claude wrapper's session ledger and locks, root's. A volume
+      # of their own, so the day's session count survives a recreated
+      # container; no session can reach it, and it is not on the host.
+      - type: volume
+        source: runner-state
+        target: /var/lib/devlead
       - type: volume
         source: workspace
         target: ${DEVLEAD_WORKSPACE:?set DEVLEAD_WORKSPACE in .env to the host directory that holds your repos}
@@ -93,3 +99,4 @@ services:
 
 volumes:
   workspace:
+  runner-state:

@@ -25,6 +25,12 @@
 #   DEVLEAD_SESSION_TIMEOUT        time limit of one claude session, with its
 #                                  unit: s, m or h, at most 24h (default 60m)
 #   DEVLEAD_AUDIT_RETENTION_DAYS   days a run's transcripts are kept (default 30)
+#   DEVLEAD_JOB_TIMEOUT            time limit of one job, the repo sync and
+#                                  every step included, with its unit, from
+#                                  DEVLEAD_SESSION_TIMEOUT to 24h (default 4h):
+#                                  a hung step never holds the job lock for good
+#   DEVLEAD_JOB_LOCK_WAIT          how long a job waits for the one running
+#                                  before it gives up, 1s to 24h (default 4h)
 #   DEVLEAD_CLAUDE_BIN             if set, must name the claude wrapper: the
 #                                  launchers never run another binary here
 #   DEVLEAD_WORKSPACE              the host directory that holds every enrolled
@@ -64,11 +70,16 @@ RUN_JOB="$_DIR/run-job.sh"
 ZONEINFO=/usr/share/zoneinfo
 WRAPPER=/usr/local/bin/claude
 SESSION_KILL_AFTER=30s
+JOB_KILL_AFTER=30s
 PRUNE_SCHEDULE="17 4 * * *"
 
 DEFAULT_MAX_SESSIONS=8
 DEFAULT_TIMEOUT=60m
 DEFAULT_RETENTION=30
+# The night's window (22:00 to the 06:30 morning) holds the loop and the fleet
+# at their limit; a plan that needs more sessions in one run raises it.
+DEFAULT_JOB_TIMEOUT=4h
+DEFAULT_JOB_LOCK_WAIT=4h
 # Directories of the image the workspace may not be, hold or sit inside.
 IMAGE_PATHS=(/bin /boot /dev /etc /home/devlead /lib /lib32 /lib64 /libx32 /opt /proc /root /run /sbin /sys /tmp /usr /var)
 
@@ -258,6 +269,7 @@ _render() {
   done <<<"$table"
 
   for var in TZ DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT DEVLEAD_AUDIT_RETENTION_DAYS DEVLEAD_CLAUDE_BIN \
+             DEVLEAD_JOB_TIMEOUT DEVLEAD_JOB_LOCK_WAIT \
              DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_STATE_DIR DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL; do
     _has_control "${!var:-}" && errors+=("$var $_CONTROL")
   done
@@ -283,6 +295,22 @@ _render() {
   if _whole "$retention" 1 3650; then retention=$((10#$retention)); elif ! _has_control "${DEVLEAD_AUDIT_RETENTION_DAYS:-}"; then
     errors+=("DEVLEAD_AUDIT_RETENTION_DAYS='$retention' must be a whole number from 1 to 3650")
   fi
+
+  # The job's own limits (L18): never a value echoed back.
+  local job_timeout lock_wait job_secs session_secs
+  job_timeout="$(_trim "${DEVLEAD_JOB_TIMEOUT:-}")"
+  [[ -n "$job_timeout" ]] || job_timeout="$DEFAULT_JOB_TIMEOUT"
+  if ! _has_control "${DEVLEAD_JOB_TIMEOUT:-}"; then
+    if ! job_secs="$(_timeout_secs "$job_timeout")"; then
+      errors+=("DEVLEAD_JOB_TIMEOUT needs a unit and a value up to 24h: e.g. 90m, 4h")
+    elif session_secs="$(_timeout_secs "$timeout" 2>/dev/null)" && (( job_secs < session_secs )); then
+      errors+=("DEVLEAD_JOB_TIMEOUT is shorter than DEVLEAD_SESSION_TIMEOUT: a job would stop its own session before the session's limit")
+    fi
+  fi
+  lock_wait="$(_trim "${DEVLEAD_JOB_LOCK_WAIT:-}")"
+  [[ -n "$lock_wait" ]] || lock_wait="$DEFAULT_JOB_LOCK_WAIT"
+  _has_control "${DEVLEAD_JOB_LOCK_WAIT:-}" || _timeout_secs "$lock_wait" >/dev/null \
+    || errors+=("DEVLEAD_JOB_LOCK_WAIT needs a unit and a value from 1s to 24h: e.g. 30m, 4h")
 
   bin="${DEVLEAD_CLAUDE_BIN:-}"
   if [[ -n "$bin" && "$bin" != "claude" && "$bin" != "$WRAPPER" ]] && ! _has_control "$bin"; then
@@ -374,6 +402,9 @@ _render() {
     echo "SESSION_TIMEOUT=$timeout"
     echo "SESSION_KILL_AFTER=$SESSION_KILL_AFTER"
     echo "AUDIT_RETENTION_DAYS=$retention"
+    echo "JOB_TIMEOUT=$job_timeout"
+    echo "JOB_KILL_AFTER=$JOB_KILL_AFTER"
+    echo "JOB_LOCK_WAIT=$lock_wait"
     echo "WORKSPACE=$ws"
   } > "$tmp_conf"
   {

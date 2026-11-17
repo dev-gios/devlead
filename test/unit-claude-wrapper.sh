@@ -300,7 +300,15 @@ reset; rm -f "$LOCK"
 w -p hi
 check "no lock file: exits 75" "$RC" "75"
 check "no lock file: nothing started" "$(calls)" "0"
+# A lock that cannot be opened is not another session running: the refusal
+# says so, and run-job.sh tells the operator the lock is broken, not busy.
+check "no lock file: refused as nolock, not busy" "$(awk -F'\t' '{print $3 "/" $7}' "$LEDGER")" "refused/nolock"
+contains "no lock file: says the lock cannot be opened" "$OUT" "cannot open the session lock"
 : > "$LOCK"
+reset; ln -s /dev/null "$SANDBOX/lock-link"; mv "$LOCK" "$LOCK.real"; ln -s "$SANDBOX/lock-link" "$LOCK"
+w -p hi
+check "a lock that is a link: refused as nolock" "$RC $(awk -F'\t' '{print $7}' "$LEDGER")" "75 nolock"
+rm -f "$LOCK"; mv "$LOCK.real" "$LOCK"
 
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed ==="

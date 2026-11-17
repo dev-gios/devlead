@@ -276,6 +276,9 @@ p locks_meta "$(stat -c '%U %a' /var/lib/devlead/session.lock /var/lib/devlead/j
 p ledger_remove "$(yn rm -f /var/lib/devlead/sessions.tsv)"
 p ledger_replace "$(yn mv /var/lib/devlead/sessions.tsv /var/lib/devlead/old.tsv)"
 p state_new_file "$(yn touch /var/lib/devlead/x)"
+p ledger_header "$(head -n 1 /var/lib/devlead/sessions.tsv | cut -c1-24)"
+p ledger_volume "$(awk '$5 == "/var/lib/devlead" {print "mounted"}' /proc/self/mountinfo)"
+p job_limits "$(grep -E '^JOB_' /etc/devlead/runner.conf | paste -sd, -)"
 p pause_create "$(yn touch "$HOME/.devlead/PAUSE")"
 p tz_offset "$(date +%z)"
 p doctor_report "$(bash "$HOME/.devlead/scripts/doctor.sh" 2>&1 | grep -E '^(STATUS|MATCHES|NOTE)' | paste -sd'|' -)"
@@ -556,6 +559,9 @@ check "the lock files are root's" "$(v locks_meta)" "root 644,root 644"
 check "the user cannot remove the ledger" "$(v ledger_remove)" "no"
 check "the user cannot replace the ledger" "$(v ledger_replace)" "no"
 check "the user cannot add files to /var/lib/devlead" "$(v state_new_file)" "no"
+check "the ledger starts with root's header" "$(v ledger_header)" "# DevLead session ledger"
+check "/var/lib/devlead is a volume of its own (L18)" "$(v ledger_volume)" "mounted"
+check "the job limits have their defaults" "$(v job_limits)" "JOB_TIMEOUT=4h,JOB_KILL_AFTER=30s,JOB_LOCK_WAIT=4h"
 check "the user cannot create the pause file" "$(v pause_create)" "no"
 check "TZ from the env file is a real zone (tzdata)" "$(v tz_offset)" "-0500"
 check "doctor recognizes the image: ok, its revision, no NOTE" "$(v doctor_report)" "STATUS: ok|MATCHES: image @ ${SOURCE_REV:0:12}"
@@ -721,6 +727,20 @@ if compose up -d --wait --wait-timeout 180 >"$SCRATCH/up.log" 2>&1; then
   a="$(audit 'last')"
   check "cap: the job's session refused, audited" "$(jq -c '[.outcome, .cap_refused, .refusals, .notify_codes]' <<<"$a")" '["refused",true,["cap"],["job-refused"]]'
   check "cap: need job-refused in the inbox" "$(dx bash /home/devlead/.devlead/scripts/notify.sh list | grep -c 'job-refused')" "1"
+
+  # 4b. The day's count survives a recreated container (L18): the ledger is
+  #     a volume, not the container's own layer.
+  compose down >/dev/null 2>&1
+  if compose up -d --wait --wait-timeout 180 >>"$SCRATCH/up.log" 2>&1; then
+    check "recreated: a new container" "$([[ "$(compose ps -q devlead)" != "$cid" ]] && echo new || echo same)" "new"
+    check "recreated: the ledger kept the day's sessions" "$(starts)" "4"
+    out="$(session 2>&1)"; rc=$?
+    check "recreated: the cap still holds (75)" "$rc" "75"
+    contains "recreated: says the daily limit is reached" "$out" "the daily limit of 4 claude sessions is reached"
+  else
+    tail -n 20 "$SCRATCH/up.log"
+    check "the service comes back up after a recreate" "no" "yes"
+  fi
 
   # 5. The pause file: the operator's; it stops jobs and sessions.
   rx touch /home/devlead/.devlead/PAUSE

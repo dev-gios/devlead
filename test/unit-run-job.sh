@@ -53,8 +53,12 @@ PAUSE="$SANDBOX/PAUSE"
 RUNJOB="$SANDBOX/run-job.sh"
 export LEDGER TMPROOT
 mkdir -p "$SCRIPTS" "$SANDBOX/state" "$TMPROOT" "$HOME/.devlead/run" "$CLAUDE_CONFIG_DIR/projects/-home-x"
-: > "$LEDGER"; : > "$SANDBOX/state/job.lock"; : > "$SANDBOX/state/session.lock"
-printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30\n' > "$CONF"
+printf '%s\n' "# DevLead session ledger (root writes this line at container start)" > "$LEDGER"
+: > "$SANDBOX/state/job.lock"; : > "$SANDBOX/state/session.lock"
+HEADER="# DevLead session ledger (root writes this line at container start)"
+printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30\nJOB_TIMEOUT=60m\nJOB_KILL_AFTER=30s\nJOB_LOCK_WAIT=60m\n' > "$CONF"
+# setconf <KEY> <value> — one limit of runner.conf, as root would render it.
+setconf() { sed -i "s|^$1=.*|$1=$2|" "$CONF"; }
 chmod 0644 "$CONF"
 
 cp "$SRC" "$RUNJOB"
@@ -127,7 +131,7 @@ run() {
   LAST="$(tail -n 1 "$(MONTH_FILE)" 2>/dev/null)"
 }
 field() { jq -c "$1" <<<"$LAST" 2>/dev/null; }
-fresh() { rm -f "$SANDBOX/behaviour" "$SANDBOX/warn" "$SANDBOX_SYNC_FAIL" "$PAUSE" "$INBOX" "$(MONTH_FILE)" "$HOME/.devlead/run/token-warned"; : > "$LEDGER"; }
+fresh() { rm -f "$SANDBOX/behaviour" "$SANDBOX/warn" "$SANDBOX_SYNC_FAIL" "$PAUSE" "$INBOX" "$(MONTH_FILE)" "$HOME/.devlead/run/token-warned"; printf '%s\n' "$HEADER" > "$LEDGER"; }
 joblog() { grep -v '^SYNC' "$SANDBOX_LOG"; }
 synclog() { grep '^SYNC' "$SANDBOX_LOG"; }
 need_codes() { if [[ -f "$INBOX" ]]; then awk -F'\t' '$2 == "need" {print $3}' "$INBOX" | paste -sd, -; fi; }
@@ -280,6 +284,7 @@ run fleet
 check "timeout: outcome timeout, flagged, notified" "$(field '[.outcome, .timed_out, .notify_codes]')" '["timeout",true,["job-timeout"]]'
 check "timeout: run-job exits 1 even though the job exited 0" "$RC" "1"
 check "timeout: the session is marked" "$(field '.sessions[0].timed_out')" "true"
+check "timeout: a session's limit, not the job's (as in F2)" "$(field '[.job_timed_out, .lock_timed_out]')" "[false,false]"
 contains "timeout: the message names the limit" "$(cut -f6 "$INBOX")" "fleet: a claude session ran past the 60m limit and was stopped"
 
 fresh
@@ -306,6 +311,82 @@ behaviour <<<'kill -9 $$'
 run fleet
 check "a crash (killed by a signal) is a failure" "$(field '[.outcome, .exit_code]')" '["failed",137]'
 check "a crash sends job-failed" "$(need_codes)" "job-failed"
+
+fresh
+behaviour <<<'refused nolock'
+run fleet
+contains "nolock refusal: the message says the lock could not be opened" "$(cut -f6 "$INBOX")" "the session lock could not be opened"
+check "nolock refusal: recorded as such, job-refused" "$(field '[.refusals, .notify_codes]')" '[["nolock"],["job-refused"]]'
+
+# ===========================================================================
+# A job holds the job lock for JOB_TIMEOUT at most; a job waits for the lock
+# for JOB_LOCK_WAIT at most (L18)
+# ===========================================================================
+fresh
+setconf JOB_TIMEOUT 2s; setconf JOB_KILL_AFTER 1s
+behaviour <<<'( exec -a "sleep-$TAG-hung" sleep 30 ) & wait'
+t0="$(date +%s)"
+run fleet
+elapsed=$(( $(date +%s) - t0 ))
+check "a hung job is stopped at the job limit" "$([[ $elapsed -lt 10 ]] && echo stopped || echo "ran ${elapsed}s")" "stopped"
+check "a hung job: run-job exits with timeout's 124" "$RC" "124"
+check "a hung job: audited as a job timeout" "$(field '[.outcome, .job_timed_out, .timed_out, .notify_codes]')" '["timeout",true,false,["job-timeout"]]'
+check "a hung job: need job-timeout names the limit" "$(cut -f6 "$INBOX")" "fleet: ran past the 2s job limit and was stopped (run $(jq -r .run_id <<<"$LAST"))"
+check "a hung job: nothing of it survives" "$(pgrep -fc "sleep-$TAG-hung" || true)" "0"
+fresh
+behaviour <<<'trap "" TERM; ( exec -a "sleep-$TAG-stubborn" sleep 30 ) & while :; do sleep 0.2; done'
+t0="$(date +%s)"
+run fleet
+elapsed=$(( $(date +%s) - t0 ))
+check "a job that ignores TERM is killed after JOB_KILL_AFTER" "$([[ $elapsed -lt 10 ]] && echo killed || echo "ran ${elapsed}s")" "killed"
+check "a job that ignores TERM: a job timeout" "$(field '[.outcome, .job_timed_out]')" '["timeout",true]'
+fresh
+printf '#!/bin/sh\nexec sleep 30\n' > "$SANDBOX/sync-hang.sh"; chmod +x "$SANDBOX/sync-hang.sh"
+cp "$SANDBOX/sync-repos.sh" "$SANDBOX/sync-repos.keep"; cp "$SANDBOX/sync-hang.sh" "$SANDBOX/sync-repos.sh"
+t0="$(date +%s)"
+run fleet
+elapsed=$(( $(date +%s) - t0 ))
+cp "$SANDBOX/sync-repos.keep" "$SANDBOX/sync-repos.sh"
+check "a hung sync is stopped at the job limit" "$([[ $elapsed -lt 10 ]] && echo stopped || echo "ran ${elapsed}s")" "stopped"
+check "a hung sync: the job does not run" "$(joblog | wc -l | tr -d ' ')" "0"
+check "a hung sync: a job timeout, with the reason" "$(field '[.outcome, .job_timed_out, .sync_error, .notify_codes]')" \
+  '["timeout",true,"the sync ran past the job'"'"'s time limit",["job-timeout"]]'
+setconf JOB_TIMEOUT 60m; setconf JOB_KILL_AFTER 30s
+
+fresh
+setconf JOB_LOCK_WAIT 1s
+flock -o "$SANDBOX/state/job.lock" sleep 5 & holder=$!
+sleep 0.3
+t0="$(date +%s)"
+run fleet
+elapsed=$(( $(date +%s) - t0 ))
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+check "a job lock held past JOB_LOCK_WAIT: run-job gives up" "$([[ $elapsed -lt 4 ]] && echo "gave up" || echo "waited ${elapsed}s")" "gave up"
+check "a job lock held past JOB_LOCK_WAIT: exit 1" "$RC" "1"
+check "a job lock held past JOB_LOCK_WAIT: nothing ran, nothing synced" "$(wc -l < "$SANDBOX_LOG" | tr -d ' ')" "0"
+check "a job lock held past JOB_LOCK_WAIT: audited" "$(field '[.outcome, .lock_timed_out, .job_timed_out, .notify_codes]')" '["timeout",true,false,["job-timeout"]]'
+check "a job lock held past JOB_LOCK_WAIT: need job-timeout says why" "$(cut -f6 "$INBOX")" \
+  "fleet: not run — another job held the job lock for more than 1s (run $(jq -r .run_id <<<"$LAST"))"
+setconf JOB_LOCK_WAIT 60m
+
+# ===========================================================================
+# A ledger emptied before the run: today's count is unknown, nothing runs
+# (R3-empty-ledger-tamper)
+# ===========================================================================
+fresh
+: > "$LEDGER"
+run fleet
+check "an emptied ledger: run-job exits 1" "$RC" "1"
+check "an emptied ledger: nothing ran, nothing synced" "$(wc -l < "$SANDBOX_LOG" | tr -d ' ')" "0"
+check "an emptied ledger: audited as tampered" "$(field '[.outcome, .audit_intact, .notify_codes]')" '["failed",false,["audit-tampered"]]'
+contains "an emptied ledger: need audit-tampered says why" "$(cut -f6 "$INBOX")" "the session ledger was emptied since the container started"
+fresh
+printf '%s\t2026-01-01T00:00:00Z\tstart\tx\t-\t-\t-\n' "$(date +%F)" > "$LEDGER"
+run fleet
+check "a ledger without root's header: refused the same way" "$(field '[.outcome, .audit_intact]')" '["failed",false]'
+fresh
+run fleet
+check "a ledger with its header: runs as before" "$(field '[.outcome, .audit_intact]')" '["ok",true]'
 
 # ===========================================================================
 # Never as root: `unshare -r` makes the caller UID 0 in a user namespace.

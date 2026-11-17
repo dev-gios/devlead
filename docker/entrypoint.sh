@@ -27,7 +27,10 @@
 #      a repo (Inv 3);
 #   7. prepare /var/lib/devlead, where the claude wrapper keeps its session
 #      ledger and locks: root's directory, so the user can neither remove nor
-#      replace them. Ledger lines older than two days are dropped;
+#      replace them, and a volume of its own, so the day's session count
+#      survives a recreated container (L18). Ledger lines older than two days
+#      are dropped, and its first line is root's header: a ledger found
+#      empty at the start of a run was emptied by someone (run-job.sh);
 #   8. switch to the devlead user for good — same UID/GID as the host user,
 #      every capability gone, no way back through setuid binaries —, prune the
 #      run transcripts past their retention, and run the command (S9): by
@@ -178,7 +181,9 @@ fi
 # The claude wrapper's ledger and locks (see docker/claude-wrapper.sh).
 _state=/var/lib/devlead
 _ledger="$_state/sessions.tsv"
+_header="# DevLead session ledger: the claude wrapper appends one line per session start, end or refusal; root writes this line at container start"
 install -d -m 0755 -o root -g root "$_state"
+chown root:root "$_state" && chmod 0755 "$_state" || die "cannot take $_state for root"
 for _lock in "$_state/session.lock" "$_state/job.lock"; do
   if [[ -L "$_lock" || ! -f "$_lock" ]]; then rm -f "$_lock"; install -m 0644 -o root -g root /dev/null "$_lock"; fi
   chown root:root "$_lock"; chmod 0644 "$_lock"
@@ -186,12 +191,12 @@ done
 if [[ -L "$_ledger" || ! -f "$_ledger" ]]; then
   rm -f "$_ledger"
   install -m 0600 -o "$_uid" -g "$_gid" /dev/null "$_ledger"
-else
-  _cutoff="$(date -d '-2 days' +%F)"
-  _tmp="$(mktemp)"
-  awk -F'\t' -v c="$_cutoff" '$1 >= c' "$_ledger" > "$_tmp" && cat "$_tmp" > "$_ledger"
-  rm -f "$_tmp"
 fi
+_cutoff="$(date -d '-2 days' +%F)"
+_tmp="$(mktemp)"
+{ printf '%s\n' "$_header"; awk -F'\t' -v c="$_cutoff" '!/^#/ && $1 >= c' "$_ledger"; } > "$_tmp" \
+  && cat "$_tmp" > "$_ledger" || die "cannot prepare the session ledger $_ledger"
+rm -f "$_tmp"
 chown "$_uid:$_gid" "$_ledger"
 chmod 0600 "$_ledger"
 

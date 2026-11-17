@@ -36,7 +36,7 @@ lacks() {
 SETTINGS=(TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER
           DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT DEVLEAD_AUDIT_RETENTION_DAYS
           DEVLEAD_CLAUDE_BIN DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_STATE_DIR
-          DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL)
+          DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL DEVLEAD_JOB_TIMEOUT DEVLEAD_JOB_LOCK_WAIT)
 UNSET=()
 for _v in "${SETTINGS[@]}"; do UNSET+=(-u "$_v"); done
 
@@ -72,7 +72,7 @@ contains "default discover: Monday 05:00" "$crontab" "0 5 * * 1 $RUN_JOB discove
 contains "transcripts are pruned daily" "$crontab" "$RUN_JOB --prune"
 check "the crontab has exactly five schedule lines" "$(grep -cv '^#' <<<"$crontab")" "5"
 check "default limits" "$(grep -v '^#' <<<"$conf")" \
-  "$(printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30\nWORKSPACE=')"
+  "$(printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30\nJOB_TIMEOUT=4h\nJOB_KILL_AFTER=30s\nJOB_LOCK_WAIT=4h\nWORKSPACE=')"
 check "default: no repo enrolled" "$(grep -cv '^#' "$OUT/repos")" "0"
 check "default: no git identity" "$(git config --file "$OUT/git-identity" --list | wc -l | tr -d ' ')" "0"
 check "the four files are 0644" "$(stat -c %a "$OUT/crontab" "$OUT/runner.conf" "$OUT/repos" "$OUT/git-identity" | paste -sd' ' -)" "644 644 644 644"
@@ -96,6 +96,10 @@ contains "TZ is recorded" "$conf" "TZ=America/Bogota"
 contains "the daily cap is recorded" "$conf" "MAX_SESSIONS_PER_DAY=3"
 contains "the timeout is recorded" "$conf" "SESSION_TIMEOUT=90s"
 contains "the retention is recorded" "$conf" "AUDIT_RETENTION_DAYS=7"
+OUT="$SANDBOX/job-limits"
+render "$OUT" DEVLEAD_SESSION_TIMEOUT=20m DEVLEAD_JOB_TIMEOUT=20m DEVLEAD_JOB_LOCK_WAIT=45s >/dev/null; rc=$?
+check "job limits: render exits 0" "$rc" "0"
+check "job limits: recorded" "$(grep -E '^JOB_(TIMEOUT|LOCK_WAIT)=' "$OUT/runner.conf" | paste -sd, -)" "JOB_TIMEOUT=20m,JOB_LOCK_WAIT=45s"
 OUT="$SANDBOX/empty"
 render "$OUT" DEVLEAD_CRON_LOOP= TZ= >/dev/null
 contains "an empty value means the default" "$(cat "$OUT/crontab")" "0 22 * * * $RUN_JOB loop"
@@ -138,6 +142,14 @@ bad "timeout without a unit" "DEVLEAD_SESSION_TIMEOUT='60' needs a unit" DEVLEAD
 bad "timeout zero" "DEVLEAD_SESSION_TIMEOUT='0m' needs a unit" DEVLEAD_SESSION_TIMEOUT=0m
 bad "timeout over a day" "DEVLEAD_SESSION_TIMEOUT='25h' needs a unit" DEVLEAD_SESSION_TIMEOUT=25h
 bad "retention zero" "DEVLEAD_AUDIT_RETENTION_DAYS='0' must be a whole number from 1 to 3650" DEVLEAD_AUDIT_RETENTION_DAYS=0
+bad "job timeout without a unit" "DEVLEAD_JOB_TIMEOUT needs a unit and a value up to 24h" DEVLEAD_JOB_TIMEOUT=240
+nothing_echoed() { lacks "$1: the value is not echoed" "$out" "$2"; }
+bad "job timeout over a day" "DEVLEAD_JOB_TIMEOUT needs a unit" DEVLEAD_JOB_TIMEOUT=25h
+bad "job timeout below the session's" "DEVLEAD_JOB_TIMEOUT is shorter than DEVLEAD_SESSION_TIMEOUT" DEVLEAD_JOB_TIMEOUT=30m
+bad "job timeout below a custom session timeout" "DEVLEAD_JOB_TIMEOUT is shorter than DEVLEAD_SESSION_TIMEOUT" DEVLEAD_SESSION_TIMEOUT=2h DEVLEAD_JOB_TIMEOUT=90m
+bad "lock wait zero" "DEVLEAD_JOB_LOCK_WAIT needs a unit and a value from 1s to 24h" DEVLEAD_JOB_LOCK_WAIT=0s
+bad "lock wait not a duration" "DEVLEAD_JOB_LOCK_WAIT needs a unit" DEVLEAD_JOB_LOCK_WAIT=forever
+nothing_echoed "lock wait not a duration" "forever"
 bad "claude binary other than the wrapper (F1 follow-up b)" \
   "DEVLEAD_CLAUDE_BIN='/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe' is not the claude wrapper" \
   DEVLEAD_CLAUDE_BIN=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
@@ -154,6 +166,8 @@ bad "tab in the daily cap" "DEVLEAD_MAX_SESSIONS_PER_DAY $CTRL" $'DEVLEAD_MAX_SE
 bad "carriage return in the timeout" "DEVLEAD_SESSION_TIMEOUT $CTRL" $'DEVLEAD_SESSION_TIMEOUT=60m\r'
 bad "newline in the retention" "DEVLEAD_AUDIT_RETENTION_DAYS $CTRL" $'DEVLEAD_AUDIT_RETENTION_DAYS=30\n'
 bad "newline in DEVLEAD_CLAUDE_BIN" "DEVLEAD_CLAUDE_BIN $CTRL" $'DEVLEAD_CLAUDE_BIN=claude\nx'
+bad "newline in the job timeout" "DEVLEAD_JOB_TIMEOUT $CTRL" $'DEVLEAD_JOB_TIMEOUT=4h\n'
+bad "newline in the lock wait" "DEVLEAD_JOB_LOCK_WAIT $CTRL" $'DEVLEAD_JOB_LOCK_WAIT=4h\r'
 check "check-cron: a newline makes it invalid" "$(cron_ok $'0 22 * * *\n* * * * * id')" "invalid"
 check "check-cron: a carriage return makes it invalid" "$(cron_ok $'0 22 * * *\r')" "invalid"
 

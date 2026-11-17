@@ -34,10 +34,14 @@
 # Every start, end and refusal is one line of /var/lib/devlead/sessions.tsv,
 # the ledger that run-job.sh reads to audit a run:
 #   day TAB utc time TAB start|end|refused TAB session id TAB run id TAB exit
-#   code TAB detail (timeout on an end line; root, paused, busy, cap,
-#   noconf or noledger on a refusal)
-# Root owns /var/lib/devlead, so the ledger cannot be removed or replaced; see
-# run-job.sh for what the user can still do to it.
+#   code TAB detail (timeout on an end line; root, paused, busy, nolock, cap,
+#   noconf or noledger on a refusal). busy is another session holding the
+#   lock; nolock, a lock file that cannot be opened.
+# Its first line is a header root writes at container start (a ledger that is
+# empty at the start of a run was emptied). Root owns /var/lib/devlead — a
+# volume, so the day's count survives a recreated container — and the ledger
+# cannot be removed or replaced; see run-job.sh for what the user can still do
+# to it.
 #
 # Each session gets its own --session-id, so its transcript can be found and
 # kept (S18). A caller may not pick one, nor resume, continue or fork an
@@ -141,7 +145,7 @@ _secs "$_kill_after" >/dev/null || _refuse noconf "$_noconf"
   && _refuse paused "DevLead is paused ($PAUSE_FILE exists): no claude session starts until the operator removes it"
 
 [[ -f "$SESSION_LOCK" && ! -L "$SESSION_LOCK" ]] && { exec 9<"$SESSION_LOCK"; } 2>/dev/null \
-  || _refuse busy "cannot open the session lock $SESSION_LOCK — no session can start"
+  || _refuse nolock "cannot open the session lock $SESSION_LOCK — no session can start"
 flock -n 9 \
   || _refuse busy "another claude session is running in this container; sessions run one at a time — try again when it ends"
 
