@@ -157,6 +157,7 @@ contains "and reported" "$OUT" "$(origin_sha app trunk)"
 git -C "$GH/acme/app.git" symbolic-ref HEAD refs/heads/feat/other
 run "$WS/app"
 check "when origin's default branch changes, the clone follows it" "$(app rev-parse --abbrev-ref HEAD)" "feat/other"
+check "and origin/HEAD names it too" "$(app symbolic-ref refs/remotes/origin/HEAD)" "refs/remotes/origin/feat/other"
 git -C "$GH/acme/app.git" symbolic-ref HEAD refs/heads/trunk
 run "$WS/app"
 
@@ -189,6 +190,61 @@ check "planted object: sync exit 0" "$RC" "0"
 contains "planted object: says it cloned again" "$ERR" "the files checked out are not origin's — cloning it again"
 check "planted object: CLAUDE.md is origin's" "$(head -n 1 "$WS/app/CLAUDE.md")" "the repository's own instructions"
 check "planted object: the store is sound again" "$(git -C "$WS/app" fsck --no-dangling 2>&1 | grep -c 'hash mismatch')" "0"
+
+# ===========================================================================
+# What a later git command reads under .git is origin's or gone (A4)
+# ===========================================================================
+# origin/HEAD: guard.sh reads it to block pushes to the default branch, and
+# envelope.sh falls back to it.
+app symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/feat/other
+run "$WS/app"
+check "a tampered origin/HEAD: set back to origin's default branch" "$(app symbolic-ref refs/remotes/origin/HEAD)" "refs/remotes/origin/trunk"
+app symbolic-ref --delete refs/remotes/origin/HEAD
+run "$WS/app"
+check "a deleted origin/HEAD: set again" "$(app symbolic-ref --short refs/remotes/origin/HEAD)" "origin/trunk"
+# Tags are origin's: one only the clone has goes, one moved locally comes back.
+up app tag v1.0; up app push -q origin v1.0
+run "$WS/app"
+app tag planted-tag HEAD~1
+app tag -f v1.0 HEAD~1 >/dev/null
+app update-ref refs/remotes/evil/main HEAD~1
+run "$WS/app"
+check "a tag only the clone had is gone" "$(app tag -l planted-tag | wc -l | tr -d ' ')" "0"
+check "a tag moved in the clone is origin's again" "$(app rev-parse v1.0)" "$(origin_sha app v1.0)"
+check "refs of another remote are gone" "$(app for-each-ref refs/remotes/ --format='%(refname)' | grep -vc '^refs/remotes/origin/')" "0"
+# Operation state a later command would pick up: a rebase whose todo list
+# runs a command, a merge or cherry-pick in progress, recorded conflict
+# resolutions (rerere turns itself on when rr-cache exists), legacy remote
+# files, commit-graph and pack indexes that tell git where objects are, and
+# a stale lock that would make every git command fail.
+g="$WS/app/.git"
+mkdir -p "$g/rebase-merge" "$g/sequencer" "$g/rr-cache/abc" "$g/branches" "$g/remotes" "$g/objects/info/commit-graphs"
+printf 'exec touch %s/rebase\n' "$MARK" > "$g/rebase-merge/git-rebase-todo"
+echo refs/heads/trunk > "$g/rebase-merge/head-name"; app rev-parse HEAD > "$g/rebase-merge/onto"
+app rev-parse HEAD > "$g/MERGE_HEAD"; app rev-parse HEAD > "$g/CHERRY_PICK_HEAD"; app rev-parse HEAD > "$g/ORIG_HEAD"
+echo "planted" > "$g/rr-cache/abc/postimage"
+printf 'URL: file://%s/evil\n' "$SANDBOX" > "$g/remotes/evil"; echo "file://$SANDBOX/evil" > "$g/branches/evil"
+: > "$g/objects/info/commit-graph"; : > "$g/objects/pack/multi-pack-index"
+: > "$g/index.lock"
+rm -f "$MARK"/*
+run "$WS/app"
+check "operation state: sync exit 0 (the stale lock does not block it)" "$RC" "0"
+check "operation state: all of it is gone" \
+  "$(for f in rebase-merge sequencer rr-cache branches remotes MERGE_HEAD CHERRY_PICK_HEAD ORIG_HEAD index.lock \
+              objects/info/commit-graph objects/info/commit-graphs objects/pack/multi-pack-index; do
+       [[ -e "$g/$f" ]] && echo "$f"; done | paste -sd, -)" ""
+check "operation state: git sees no rebase or merge in progress" "$(app status 2>&1 | grep -ciE 'rebase|merging|cherry')" "0"
+app rebase --continue >/dev/null 2>&1
+check "operation state: the planted rebase todo never runs" "$(find "$MARK" -mindepth 1 | wc -l | tr -d ' ')" "0"
+# A shallow file would make git treat the clone as cut off from its history:
+# the clone is never shallow, so one planted means a fresh clone.
+app rev-parse HEAD > "$g/shallow"
+run "$WS/app"
+check "a planted shallow file: sync exit 0" "$RC" "0"
+contains "a planted shallow file: cloned again" "$ERR" "cloning it again"
+check "a planted shallow file: gone, full history" "$([[ -e "$g/shallow" ]] && echo shallow || echo full) $(app rev-list --count HEAD)" \
+  "full $(git -C "$GH/acme/app.git" rev-list --count trunk)"
+check "a planted shallow file: origin/HEAD set on the fresh clone too" "$(app symbolic-ref refs/remotes/origin/HEAD)" "refs/remotes/origin/trunk"
 
 # ===========================================================================
 # A .git that is not a plain repository is replaced by a fresh clone

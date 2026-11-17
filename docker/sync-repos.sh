@@ -21,20 +21,26 @@
 #
 # A previous session could have left anything in a clone: it works there. So
 # before git reads anything from it, every run:
-#   - checks .git is a real directory (its objects, refs and HEAD no links);
-#     otherwise the clone is wiped and cloned again;
+#   - checks .git is a real directory (its objects, refs and HEAD no links)
+#     and not shallow (these clones never are); otherwise the clone is wiped
+#     and cloned again;
 #   - rewrites .git/config from scratch — the origin URL and refspec, nothing
 #     else: no core.fsmonitor, hooksPath, alias, include, filter or sshCommand
-#     survives — and removes .git/hooks, .git/info (attributes, grafts,
-#     sparse-checkout), worktrees, submodule repos, object alternates, the
-#     index and the replace refs. Every git command here also runs with
+#     survives — and removes what else git would read or act on later (see
+#     _reset_gitdir): hooks, info/, worktrees, submodule repos, legacy remote
+#     files, alternates, the index, commit-graph and pack indexes, operation
+#     state (rebase, merge, cherry-pick, sequencer, bisect, rerere's rr-cache)
+#     and stale locks. Every git command here also runs with
 #     core.fsmonitor=false and core.hooksPath=/dev/null, and ignores replace
 #     objects;
-#   - fetches origin, finds its default branch (origin's HEAD), and checks it
-#     out with --force over a fresh index, resetting the local branch of that
-#     name to it — never a branch someone else pushed; then `git clean -ffdx`
-#     removes every untracked or ignored file (CLAUDE.local.md, node_modules,
-#     a nested repo);
+#   - fetches origin's branches and tags with force and prune — every tag is
+#     origin's, none only the clone has — drops replace refs and the refs of
+#     any other remote, finds origin's default branch (its HEAD), points
+#     refs/remotes/origin/HEAD at it (guard.sh reads it to keep pushes off the
+#     default branch), and checks it out with --force over a fresh index,
+#     resetting the local branch of that name to it — never a branch someone
+#     else pushed; then `git clean -ffdx` removes every untracked or ignored
+#     file (CLAUDE.local.md, node_modules, a nested repo);
 #   - checks the files on disk are that commit's: the commit object hashes to
 #     its name, the index writes its tree, and every file hashes to its index
 #     entry, as it is or through the repo's own end-of-line rules. A planted
@@ -44,7 +50,8 @@
 # branch holds, nothing more: its CLAUDE.md and .claude/ are the repository's
 # own, as trusted as its code and its envelope. Claude Code reads no project
 # or local settings here anyway (the claude wrapper's --setting-sources user).
-# Local branches stay: they are the sessions' own work.
+# Local branches, their reflogs and the stash stay: they are the sessions' own
+# work, and nothing here starts from them.
 #
 # Not a sandbox: a session can still change a clone while it runs; this only
 # keeps what it changed from reaching the next run.
@@ -102,6 +109,7 @@ _structure_ok() {
   for p in objects objects/info objects/pack refs HEAD; do
     [[ -L "$REPO/.git/$p" ]] && return 1
   done
+  [[ ! -e "$REPO/.git/shallow" && ! -L "$REPO/.git/shallow" ]] || return 1
   [[ -d "$REPO/.git/objects" && -f "$REPO/.git/HEAD" ]]
 }
 
@@ -111,12 +119,27 @@ _clone() { # _clone <url>
   git "${_GIT_SAFE[@]}" clone --quiet --no-checkout --origin origin -- "$1" "$REPO" >&2
 }
 
-# _reset_gitdir <url> — nothing a session wrote under .git is read again.
+# _reset_gitdir <url> — rewrites .git/config, and removes every other file
+# under .git that git reads as configuration, as a place to find objects, or
+# as an operation to resume: config.worktree, hooks/, info/ (attributes,
+# exclude, grafts, sparse-checkout), worktrees/, modules/, commondir,
+# branches/ and remotes/ (legacy remote definitions), the index and its
+# shared parts, object alternates, commit-graph, multi-pack-index, bitmaps
+# and reverse indexes, the state of a rebase, merge, cherry-pick, revert,
+# sequencer or bisect, rerere's rr-cache (which turns rerere on by existing),
+# and stale lock files. What it keeps: objects (checked by _content_matches),
+# refs (fetched over, or the sessions' own branches), logs and FETCH_HEAD.
 _reset_gitdir() {
   local g="$REPO/.git"
   rm -rf -- "$g/config" "$g/config.worktree" "$g/hooks" "$g/info" "$g/worktrees" "$g/modules" \
-            "$g/commondir" "$g/index" "$g"/sharedindex.* \
-            "$g/objects/info/alternates" "$g/objects/info/http-alternates" || return 1
+            "$g/commondir" "$g/branches" "$g/remotes" "$g/index" "$g"/sharedindex.* \
+            "$g/objects/info/alternates" "$g/objects/info/http-alternates" \
+            "$g/objects/info/commit-graph" "$g/objects/info/commit-graphs" \
+            "$g/objects/pack/multi-pack-index"* "$g"/objects/pack/*.bitmap "$g"/objects/pack/*.rev \
+            "$g/rebase-merge" "$g/rebase-apply" "$g/sequencer" "$g/rr-cache" "$g"/BISECT_* \
+            "$g/MERGE_HEAD" "$g/MERGE_MSG" "$g/MERGE_MODE" "$g/MERGE_RR" "$g/MERGE_AUTOSTASH" "$g/AUTO_MERGE" \
+            "$g/CHERRY_PICK_HEAD" "$g/REVERT_HEAD" "$g/ORIG_HEAD" "$g"/*.lock || return 1
+  find "$g/refs" -name '*.lock' -type f -delete 2>/dev/null || return 1
   printf '[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n[remote "origin"]\n\turl = %s\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n' \
     "$1" > "$g/config"
 }
@@ -181,12 +204,15 @@ _sync() {
     branch="$(sed -n 's|^ref: refs/heads/\([^[:space:]]*\)[[:space:]]HEAD$|\1|p' <<<"$head" | head -n 1)"
     [[ -n "$branch" ]] && git check-ref-format --branch "$branch" >/dev/null 2>&1 \
       || _fail "$REPO" "origin has no default branch"
-    _git fetch --quiet --prune --no-recurse-submodules origin >&2 || _fail "$REPO" "fetch failed"
+    _git fetch --quiet --prune --no-tags --no-recurse-submodules origin \
+      '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*' >&2 || _fail "$REPO" "fetch failed"
     sha="$(_git rev-parse --verify --quiet "refs/remotes/origin/$branch^{commit}")" \
       || _fail "$REPO" "the default branch was not fetched"
     while IFS= read -r ref; do
-      _git update-ref -d "$ref" || _fail "$REPO" "cannot remove a replace ref"
-    done < <(_git for-each-ref --format='%(refname)' refs/replace/)
+      _git update-ref -d "$ref" || _fail "$REPO" "cannot remove a replace ref or another remote's ref"
+    done < <(_git for-each-ref --format='%(refname)' refs/replace/ refs/remotes/ | grep -v '^refs/remotes/origin/')
+    _git symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$branch" \
+      || _fail "$REPO" "cannot point origin/HEAD at the default branch"
     _git checkout --quiet --force -B "$branch" "refs/remotes/origin/$branch" >&2 \
       || _fail "$REPO" "checkout failed"
     _git clean -ffdxq >&2 || _fail "$REPO" "clean failed"
