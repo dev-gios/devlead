@@ -48,6 +48,15 @@
 #             ok) or stale-vs-branch classification (STATUS: drifted) — only
 #             when cheaply determinable
 #   GAP:      <reason>                      — only on STATUS: unknown
+#   WARN:     the Claude token is 11 months old or more, or its issue date
+#             cannot be read — only when DEVLEAD_CLAUDE_TOKEN_ISSUED is set
+#             (the server's .env, S12). Always the last line; it changes
+#             neither STATUS nor the exit code.
+#
+# Environment:
+#   DEVLEAD_CLAUDE_TOKEN_ISSUED  YYYY-MM-DD, the day `claude setup-token`
+#                                issued CLAUDE_CODE_OAUTH_TOKEN
+#   DEVLEAD_DOCTOR_DATE          today's date, YYYY-MM-DD (tests)
 #
 # Exit codes:
 #   0  STATUS: ok — regardless of whether a provenance NOTE is present; an
@@ -71,6 +80,56 @@ _unknown() {
   echo "GAP:    $1"
   exit 1
 }
+
+# ---------------------------------------------------------------------------
+# 0. Claude token age (S12). The token from `claude setup-token` lasts one
+#    year; the warning starts at month 11 so there is time to renew it before
+#    the unattended runs start failing. It is printed on exit, after whichever
+#    report the integrity checks below produce, so every exit path carries it
+#    and none of them changes because of it.
+# ---------------------------------------------------------------------------
+_TOKEN_WARN_MONTHS=11
+_TOKEN_LIFE_MONTHS=12
+
+# _valid_date <YYYY-MM-DD> — a real calendar day (leap years included).
+_valid_date() {
+  local re='^([0-9]{4})-([0-9]{2})-([0-9]{2})$' y m d last
+  [[ "$1" =~ $re ]] || return 1
+  y=$((10#${BASH_REMATCH[1]})); m=$((10#${BASH_REMATCH[2]})); d=$((10#${BASH_REMATCH[3]}))
+  (( m >= 1 && m <= 12 && d >= 1 )) || return 1
+  case "$m" in
+    2) last=28
+       if (( (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 )); then last=29; fi ;;
+    4|6|9|11) last=30 ;;
+    *) last=31 ;;
+  esac
+  (( d <= last ))
+}
+
+# _token_age_warning — the WARN line, or nothing. The variable's value is
+# printed only once it is known to be a date: a token pasted into the wrong
+# variable must never reach a log.
+_token_age_warning() {
+  local issued="${DEVLEAD_CLAUDE_TOKEN_ISSUED:-}" today iy im id ty tm td months
+  [[ -n "$issued" ]] || return 0
+  today="${DEVLEAD_DOCTOR_DATE:-$(date +%F)}"
+  _valid_date "$today" || return 0
+  if _valid_date "$issued" && [[ ! "$issued" > "$today" ]]; then
+    IFS=- read -r iy im id <<<"$issued"
+    IFS=- read -r ty tm td <<<"$today"
+    months=$(( (10#$ty * 12 + 10#$tm) - (10#$iy * 12 + 10#$im) ))
+    (( 10#$td < 10#$id )) && months=$((months - 1))
+    (( months >= _TOKEN_WARN_MONTHS )) || return 0
+    if (( months >= _TOKEN_LIFE_MONTHS )); then
+      echo "WARN:   the Claude token (DEVLEAD_CLAUDE_TOKEN_ISSUED=$issued) is $months months old and has expired — run 'claude setup-token', put the new token in .env and update DEVLEAD_CLAUDE_TOKEN_ISSUED"
+    else
+      echo "WARN:   the Claude token (DEVLEAD_CLAUDE_TOKEN_ISSUED=$issued) is $months months old and expires one year after it was issued — renew it now: run 'claude setup-token', put the new token in .env and update DEVLEAD_CLAUDE_TOKEN_ISSUED"
+    fi
+    return 0
+  fi
+  echo "WARN:   DEVLEAD_CLAUDE_TOKEN_ISSUED is not a valid issue date (YYYY-MM-DD, not in the future), so the Claude token's age cannot be checked"
+}
+trap _token_age_warning EXIT
 
 command -v git &>/dev/null || _unknown "git not found — cannot compare against the trunk"
 

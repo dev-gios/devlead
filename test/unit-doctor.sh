@@ -59,9 +59,20 @@ exit 1
 EOF
 chmod +x "$FAKEBIN/gh"
 
+# The token-age variables are unset so a machine that exports them (a server
+# shell) cannot change what the integrity scenarios below see.
 doctor() {
   local home="$1"
-  ( HOME="$home" PATH="$FAKEBIN:$PATH" bash "$DOCTOR" 2>&1 )
+  ( HOME="$home" PATH="$FAKEBIN:$PATH" \
+      env -u DEVLEAD_CLAUDE_TOKEN_ISSUED -u DEVLEAD_DOCTOR_DATE bash "$DOCTOR" 2>&1 )
+}
+
+# token_doctor <home> <issued> — doctor with the Claude token's issue date set
+# and "today" pinned to 2026-11-16.
+token_doctor() {
+  local home="$1" issued="$2"
+  ( HOME="$home" PATH="$FAKEBIN:$PATH" DEVLEAD_DOCTOR_DATE=2026-11-16 \
+      DEVLEAD_CLAUDE_TOKEN_ISSUED="$issued" bash "$DOCTOR" 2>&1 )
 }
 
 # ---------------------------------------------------------------------------
@@ -297,6 +308,68 @@ out="$(doctor "$HOME_8")"
 contains "branch-like install: STATUS: drifted" "$out" "STATUS: drifted"
 contains "branch-like install: classified as not simply stale" "$out" "does not look like simple staleness"
 contains "branch-like install: DRIFT line scopes its claim to the search bound" "$out" "matched no commit within the last"
+
+# ===========================================================================
+# Claude token age (S12). The server's .env records the day the token from
+# `claude setup-token` was issued (DEVLEAD_CLAUDE_TOKEN_ISSUED=YYYY-MM-DD).
+# The token lasts one year; doctor warns from month 11 with a WARN: line.
+# The warning never changes STATUS, the other lines or the exit code.
+# Scenario 1's sandbox is reused: an install that is STATUS: ok.
+# ===========================================================================
+TOKEN_RENEW="run 'claude setup-token', put the new token in .env and update DEVLEAD_CLAUDE_TOKEN_ISSUED"
+
+# Previous behaviour: not set -> exactly the output doctor gave before.
+out_unset="$(doctor "$HOME_1")"
+rc_unset="$(doctor "$HOME_1" >/dev/null 2>&1; echo $?)"
+not_contains "token not set: no WARN line" "$out_unset" "WARN:"
+contains "token not set: STATUS still ok" "$out_unset" "STATUS: ok"
+check "token not set: exits 0" "$rc_unset" "0"
+check "token not set: output is the integrity report only" \
+  "$(printf '%s\n' "$out_unset" | cut -d: -f1 | tr '\n' ' ')" "STATUS MATCHES TRUNK SOURCE DRIFT "
+
+# Fresh: five months old -> nothing added.
+out="$(token_doctor "$HOME_1" 2026-06-01)"
+check "fresh token: output identical to the unset case" "$out" "$out_unset"
+check "fresh token: exits 0" "$(token_doctor "$HOME_1" 2026-06-01 >/dev/null 2>&1; echo $?)" "0"
+
+# One day short of 11 months -> still nothing.
+out="$(token_doctor "$HOME_1" 2025-12-17)"
+check "10 months and 30 days: output identical to the unset case" "$out" "$out_unset"
+
+# Exactly 11 months -> one WARN line; the integrity report is unchanged.
+out="$(token_doctor "$HOME_1" 2025-12-16)"
+check "11 months: exactly one WARN line" "$(printf '%s\n' "$out" | grep -c '^WARN:')" "1"
+check "11 months: the WARN line" "$(printf '%s\n' "$out" | grep '^WARN:')" \
+  "WARN:   the Claude token (DEVLEAD_CLAUDE_TOKEN_ISSUED=2025-12-16) is 11 months old and expires one year after it was issued — renew it now: $TOKEN_RENEW"
+check "11 months: every other line is the unset output" "$(printf '%s\n' "$out" | grep -v '^WARN:')" "$out_unset"
+check "11 months: exits 0" "$(token_doctor "$HOME_1" 2025-12-16 >/dev/null 2>&1; echo $?)" "0"
+
+# A year or more -> the warning says it has expired.
+out="$(token_doctor "$HOME_1" 2025-11-01)"
+check "12 months: the WARN line says it has expired" "$(printf '%s\n' "$out" | grep '^WARN:')" \
+  "WARN:   the Claude token (DEVLEAD_CLAUDE_TOKEN_ISSUED=2025-11-01) is 12 months old and has expired — $TOKEN_RENEW"
+check "12 months: exits 0" "$(token_doctor "$HOME_1" 2025-11-01 >/dev/null 2>&1; echo $?)" "0"
+
+# Malformed or impossible dates -> a WARN that the age cannot be checked. The
+# value itself is never printed: a token pasted into the wrong variable must
+# not reach a log.
+TOKEN_BAD="WARN:   DEVLEAD_CLAUDE_TOKEN_ISSUED is not a valid issue date (YYYY-MM-DD, not in the future), so the Claude token's age cannot be checked"
+for bad in 16/11/2025 2025-13-01 2025-02-29 2026-11-17 soon sk-ant-oat01-SENTINEL; do
+  out="$(token_doctor "$HOME_1" "$bad")"
+  check "malformed '$bad': one WARN line saying the age cannot be checked" "$(printf '%s\n' "$out" | grep '^WARN:')" "$TOKEN_BAD"
+  not_contains "malformed '$bad': the value is not printed" "$out" "$bad"
+  check "malformed '$bad': every other line is the unset output" "$(printf '%s\n' "$out" | grep -v '^WARN:')" "$out_unset"
+  check "malformed '$bad': exits 0" "$(token_doctor "$HOME_1" "$bad" >/dev/null 2>&1; echo $?)" "0"
+done
+out="$(token_doctor "$HOME_1" 2024-02-29)"
+contains "a real leap day is a valid date" "$out" "DEVLEAD_CLAUDE_TOKEN_ISSUED=2024-02-29) is 32 months old"
+
+# The warning also reaches an install doctor cannot verify (no SOURCE_REPO,
+# the server image's case), and STATUS: unknown keeps exit 1.
+out="$(token_doctor "$HOME_4" 2025-12-16)"
+contains "unknown install + old token: STATUS still unknown" "$out" "STATUS: unknown"
+contains "unknown install + old token: WARN still printed" "$out" "WARN:   the Claude token (DEVLEAD_CLAUDE_TOKEN_ISSUED=2025-12-16) is 11 months old"
+check "unknown install + old token: exits 1" "$(token_doctor "$HOME_4" 2025-12-16 >/dev/null 2>&1; echo $?)" "1"
 
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
