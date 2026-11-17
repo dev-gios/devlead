@@ -882,6 +882,20 @@ behaviour <<<"session $RSID"
 run fleet
 check "S23: a reports directory that is a link: not written through" "$(ls -A "$SANDBOX/elsewhere" | wc -l | tr -d ' ')" "0"
 rm -f "$REPORTS"; mv "$REPORTS.real" "$REPORTS"
+# A5: only the run's own date. A report under another date is not written,
+# even when the session's last Write; an earlier one of today's still is.
+fresh; rm -f "$REPORTS"/*
+report_session "$RSID" "$HOME/.devlead/reports/1999-01-01-execute.md" "a report from another day"
+behaviour <<<"session $RSID"
+run fleet
+check "A5: a report dated another day: nothing written" "$(ls -A "$REPORTS" | wc -l | tr -d ' ') $(field .report_kept)" "0 null"
+contains "A5: the job says why" "$OUT" "the report a session wrote is dated 1999-01-01, not this run's day — not written to ~/.devlead/reports"
+fresh; rm -f "$REPORTS"/*
+report_session "$RSID" "$HOME/.devlead/reports/$TODAY-execute.md" "today's report" \
+  "$HOME/.devlead/reports/1999-01-01-execute.md" "then another day's"
+behaviour <<<"session $RSID"
+run fleet
+check "A5: today's report is kept, the other day's is not" "$(ls "$REPORTS") $(cat "$REPORTS/$TODAY-execute.md")" "$TODAY-execute.md today's report"
 # Previous behaviour: no report Write, no file, the PARK notice as before.
 fresh; rm -f "$REPORTS"/* "$CLAUDE_CONFIG_DIR/projects/-home-x/$RSID.jsonl" "$CLAUDE_CONFIG_DIR/projects/-home-x/$RSID2.jsonl"
 behaviour <<<"session $RSID"

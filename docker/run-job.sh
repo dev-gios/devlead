@@ -55,8 +55,9 @@
 #      ~/.devlead/reports/<date>-execute.md (guard.sh: self-config), so the
 #      report the park and end-of-day notices point to would be missing. The
 #      job writes it instead, after the sessions: the content of the last
-#      Write call to exactly that path in the main transcript of the last
-#      session that made one. That content is the session's text, so it is
+#      Write call to exactly that path, dated the run's own day (the day it
+#      started, or today), in the main transcript of the last session that
+#      made one. That content is the session's text, so it is
 #      only ever data: written as a file, never run or sourced; at most
 #      REPORT_MAX bytes, plain text (no control character but tab, newline
 #      and carriage return), under a name of that exact shape; refused when
@@ -464,20 +465,32 @@ _REPORT_WRITES='
     | select(($p | type) == "string" and ($c | type) == "string")
     | ($p | if startswith($dir) then .[($dir | length):] elif startswith("~/.devlead/reports/") then .[19:] else "" end) as $n
     | select($n | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}-execute\\.md$"))
-    | { name: $n, content: $c }'
+    | { name: $n, content: $c } ]'
 _keep_report() {
-  local sid t found="" name dir="$STATE_DIR/reports" tmp
+  local sid t found="" name dir="$STATE_DIR/reports" tmp d1 d2 other=""
   REPORT_SID=""; REPORT_FOUND=""
+  # The run's own day (A5): the day it started, or today's.
+  d1="$(date -d "@$START_EPOCH" +%F)"; d2="$(date +%F)"
   while IFS= read -r sid; do
     [[ "$sid" =~ ^[0-9a-f-]{36}$ ]] || continue
     t="$RUN_DIR/$sid.jsonl"
     [[ -f "$t" && ! -L "$t" ]] || continue
-    found="$(jq -R -n -c --arg dir "$HOME/.devlead/reports/" "$_REPORT_WRITES"'
-      | { name: .name, size: (.content | utf8bytelength),
-          plain: (.content | test("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]") | not) } ]
-      | last // empty' < "$t" 2>/dev/null)" && [[ -n "$found" ]] && REPORT_SID="$sid" && REPORT_FOUND="$found"
+    found="$(jq -R -n -c --arg dir "$HOME/.devlead/reports/" --arg d1 "$d1" --arg d2 "$d2" "$_REPORT_WRITES"'
+      | (map(select(.name[0:10] == $d1 or .name[0:10] == $d2)) | last) as $m
+      | if $m then { name: $m.name, size: ($m.content | utf8bytelength),
+                     plain: ($m.content | test("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]") | not) }
+        elif length > 0 then { other: (last.name[0:10]) } else empty end' < "$t" 2>/dev/null)" || continue
+    [[ -n "$found" ]] || continue
+    if [[ "$(jq -r '.other // empty' <<<"$found")" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+      other="$(jq -r .other <<<"$found")"
+      continue
+    fi
+    REPORT_SID="$sid"; REPORT_FOUND="$found"
   done < <(jq -r '.sessions[].id' <<<"$SESSIONS_JSON")
-  [[ -n "${REPORT_FOUND:-}" ]] || return 0
+  if [[ -z "${REPORT_FOUND:-}" ]]; then
+    [[ -n "$other" ]] && echo "run-job: the report a session wrote is dated $other, not this run's day — not written to ~/.devlead/reports"
+    return 0
+  fi
   name="$(jq -r .name <<<"$REPORT_FOUND")"
   [[ "$name" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-execute\.md$ ]] || return 0
   if [[ "$(jq -r .plain <<<"$REPORT_FOUND")" != "true" ]]; then
@@ -495,7 +508,7 @@ _keep_report() {
   tmp="$(mktemp "$dir/.$name.XXXXXX" 2>/dev/null)" || { echo "run-job: cannot write in ~/.devlead/reports — the report stays in the run's transcript"; return 0; }
   # The same last Write, again by jq: its content goes to the file, as data.
   if jq -R -n -j --arg dir "$HOME/.devlead/reports/" --arg want "$name" "$_REPORT_WRITES"'
-      | select(.name == $want) | .content ] | last // ""' < "$RUN_DIR/$REPORT_SID.jsonl" > "$tmp" 2>/dev/null \
+      | map(select(.name == $want)) | last | .content // ""' < "$RUN_DIR/$REPORT_SID.jsonl" > "$tmp" 2>/dev/null \
      && chmod 0644 "$tmp" && mv -f -T -- "$tmp" "$dir/$name"; then
     REPORT_KEPT="$name"
     echo "run-job: wrote ~/.devlead/reports/$name from the report the run's session could not write"
