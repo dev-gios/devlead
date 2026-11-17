@@ -35,7 +35,7 @@ lacks() {
 # shell gets no vote.
 SETTINGS=(TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER DEVLEAD_CRON_POLL DEVLEAD_CRON_ENDOFDAY
           DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT DEVLEAD_AUDIT_RETENTION_DAYS
-          DEVLEAD_CLAUDE_BIN DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_STATE_DIR
+          DEVLEAD_CLAUDE_BIN DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_LOOP_PLAN DEVLEAD_STATE_DIR
           DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL DEVLEAD_JOB_TIMEOUT DEVLEAD_JOB_LOCK_WAIT)
 UNSET=()
 for _v in "${SETTINGS[@]}"; do UNSET+=(-u "$_v"); done
@@ -256,6 +256,17 @@ bad "a name with angle brackets" "DEVLEAD_GIT_NAME must be a name of at most 100
 bad "a name too long" "DEVLEAD_GIT_NAME must be a name of at most 100" "DEVLEAD_GIT_NAME=$(printf 'a%.0s' {1..101})" DEVLEAD_GIT_EMAIL=a@example.com
 bad "newline in the name (a config line of its own)" "DEVLEAD_GIT_NAME $CTRL" $'DEVLEAD_GIT_NAME=Ana\n[core]\n\tfsmonitor = touch /tmp/x' DEVLEAD_GIT_EMAIL=a@example.com
 nothing_echoed "newline in the name" "fsmonitor"
+# The loop's plan on the host (L21 A2): a plain absolute path, never echoed.
+out="$(render "$SANDBOX/plan-ok" DEVLEAD_LOOP_PLAN=/home/me/.devlead/plan.local.yml)"; rc=$?
+check "a plan path: render exits 0" "$rc" "0"
+lacks "a plan path is not written to the runner configuration" "$(cat "$SANDBOX/plan-ok/runner.conf")" "plan.local.yml"
+bad "a relative plan path" "DEVLEAD_LOOP_PLAN must be the absolute path of your plan file on the host" DEVLEAD_LOOP_PLAN=plan.local.yml
+out="$(render "$SANDBOX/plan-bad" DEVLEAD_LOOP_PLAN=my-plan.local.yml)"
+lacks "a relative plan path is not echoed" "$out" "my-plan.local.yml"
+bad "a plan path that is a directory" "DEVLEAD_LOOP_PLAN must be the absolute path of your plan file" DEVLEAD_LOOP_PLAN=/home/me/.devlead/
+bad "a plan path with .." "DEVLEAD_LOOP_PLAN must be the absolute path of your plan file" DEVLEAD_LOOP_PLAN=/home/me/../../etc/shadow
+bad "a plan path with a space" "DEVLEAD_LOOP_PLAN must be the absolute path of your plan file" 'DEVLEAD_LOOP_PLAN=/home/me/my plan.yml'
+bad "newline in DEVLEAD_LOOP_PLAN" "DEVLEAD_LOOP_PLAN $CTRL" $'DEVLEAD_LOOP_PLAN=/home/me/plan.yml\n'
 bad "a relative state dir" "DEVLEAD_STATE_DIR must be the absolute path of your ~/.devlead" DEVLEAD_STATE_DIR=.devlead
 bad "a state dir with .." "DEVLEAD_STATE_DIR must be the absolute path" DEVLEAD_STATE_DIR=/home/me/../../etc
 bad "newline in the state dir" "DEVLEAD_STATE_DIR $CTRL" $'DEVLEAD_STATE_DIR=/home/me/.devlead\n'

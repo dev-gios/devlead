@@ -44,6 +44,12 @@
 #                                  DEVLEAD_WORKSPACE, none inside another
 #   DEVLEAD_LOOP_REPO              empty, or one of the paths in DEVLEAD_REPOS:
 #                                  the loop job works only in a clone
+#   DEVLEAD_LOOP_PLAN              empty, or the absolute path of the loop's
+#                                  plan file on the host (L21 A2): compose
+#                                  binds it read-only to a staging path, and
+#                                  the entrypoint, as root, validates it and
+#                                  installs a root-owned copy where the loop
+#                                  reads it (~/.devlead/plan.local.yml)
 #   DEVLEAD_STATE_DIR              the host's ~/.devlead, absolute: compose
 #                                  mounts its state subdirectories (S14)
 #   DEVLEAD_GIT_NAME               the default author of the commits made in
@@ -275,7 +281,7 @@ _render() {
 
   for var in TZ DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT DEVLEAD_AUDIT_RETENTION_DAYS DEVLEAD_CLAUDE_BIN \
              DEVLEAD_JOB_TIMEOUT DEVLEAD_JOB_LOCK_WAIT \
-             DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_STATE_DIR DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL; do
+             DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_LOOP_PLAN DEVLEAD_STATE_DIR DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL; do
     _has_control "${!var:-}" && errors+=("$var $_CONTROL")
   done
 
@@ -348,6 +354,16 @@ _render() {
       local found=false
       for i in "${!REPO_PATHS[@]}"; do [[ "${REPO_PATHS[$i]}" == "$DEVLEAD_LOOP_REPO" ]] && found=true; done
       $found || errors+=("DEVLEAD_LOOP_REPO must be one of the paths in DEVLEAD_REPOS: the loop works only in the server's own clones")
+    fi
+  fi
+
+  # The loop's plan on the host (L21 A2): compose binds it, the entrypoint
+  # validates it; the value itself must be a plain absolute path of a file.
+  local loop_plan
+  if ! _has_control "${DEVLEAD_LOOP_PLAN:-}"; then
+    loop_plan="$(_trim "${DEVLEAD_LOOP_PLAN:-}")"
+    if [[ -n "$loop_plan" ]] && { ! _valid_path "$loop_plan" || [[ "$loop_plan" == */ ]]; }; then
+      errors+=("DEVLEAD_LOOP_PLAN must be the absolute path of your plan file on the host, of plain characters (letters, digits, . _ @ + -)")
     fi
   fi
 

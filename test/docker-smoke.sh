@@ -121,8 +121,9 @@ _tpl="$(cat "$REPO_ROOT/$TEMPLATE" 2>/dev/null)"
 for var in DEVLEAD_UID DEVLEAD_GID CLAUDE_CODE_OAUTH_TOKEN DEVLEAD_CLAUDE_TOKEN_ISSUED GH_TOKEN \
            DEVLEAD_NTFY_URL DEVLEAD_NTFY_TOKEN DEVLEAD_NOTIFY_DETAIL DEVLEAD_LOOP_CLAUDE_ARGS \
            DEVLEAD_DISCOVER_CLAUDE_ARGS DEVLEAD_EGRESS_ALLOW TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP \
-           DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT \
-           DEVLEAD_AUDIT_RETENTION_DAYS DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO \
+           DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER DEVLEAD_CRON_POLL DEVLEAD_CRON_ENDOFDAY \
+           DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT \
+           DEVLEAD_AUDIT_RETENTION_DAYS DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_LOOP_PLAN \
            DEVLEAD_STATE_DIR DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL; do
   check "the template lists $var" "$(grep -cE "^#?${var}=" <<<"$_tpl")" "1"
 done
@@ -840,6 +841,25 @@ contains "the variable is named" "$out" "DEVLEAD_GIT_EMAIL must be an email addr
 check "the value is not echoed" "$(grep -c 'not an address' <<<"$out")" "0"
 out="$(compose run --rm -T -e 'DEVLEAD_GIT_NAME=' -e 'DEVLEAD_GIT_EMAIL=' devlead id -u 2>&1)"; rc=$?
 check "repos without a git identity stop the start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
+# L21 A2: the loop's plan, bound read-only from the host and installed by
+# root; an invalid one stops the start; DEVLEAD_LOOP_REPO without one warns.
+PLAN="$SCRATCH/plan.local.yml"
+printf 'tasks:\n  - id: t1\n    title: one\n    type: feat\n  - id: t2\n    title: two\n    type: fix\n' > "$PLAN"
+out="$(DEVLEAD_LOOP_PLAN="$PLAN" compose run --rm -T -e "DEVLEAD_LOOP_PLAN=$PLAN" -e "DEVLEAD_LOOP_REPO=$CLONE" devlead \
+  sh -c 'stat -c "%U %a" ~/.devlead/plan.local.yml; sha256sum < ~/.devlead/plan.local.yml; (echo x >> ~/.devlead/plan.local.yml) 2>/dev/null && echo writable || echo read-only' 2>&1)"; rc=$?
+check "a plan: the container starts" "$rc" "0"
+contains "a plan: installed root-owned 0644" "$out" "root 644"
+contains "a plan: the same bytes as the host's" "$out" "$(sha256sum < "$PLAN")"
+contains "a plan: the session cannot change it" "$out" "read-only"
+contains "a plan: the start log counts its tasks" "$out" "the loop's plan from DEVLEAD_LOOP_PLAN is installed (2 task(s))"
+printf 'tasks:\n  - title: no id\n' > "$PLAN"
+out="$(DEVLEAD_LOOP_PLAN="$PLAN" compose run --rm -T -e "DEVLEAD_LOOP_PLAN=$PLAN" devlead id -u 2>&1)"; rc=$?
+check "an invalid plan stops the start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
+contains "it names DEVLEAD_LOOP_PLAN" "$out" "DEVLEAD_LOOP_PLAN does not name a plan the loop can read"
+out="$(compose run --rm -T -e "DEVLEAD_LOOP_REPO=$CLONE" devlead sh -c 'test -e ~/.devlead/plan.local.yml && echo plan || echo no-plan' 2>&1)"; rc=$?
+check "no plan, a loop repo: the container starts" "$rc" "0"
+contains "no plan, a loop repo: there is no plan" "$out" "no-plan"
+contains "no plan, a loop repo: the start warns" "$out" "WARNING: DEVLEAD_LOOP_REPO is set but there is no plan"
 mv "$HOST_STATE/run-state" "$HOST_STATE/run-state.away"
 out="$(compose run --rm -T devlead id -u 2>&1)"; rc=$?
 check "a state subdirectory missing on the host stops the start (compose does not create it)" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
