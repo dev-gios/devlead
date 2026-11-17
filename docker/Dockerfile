@@ -70,7 +70,7 @@ COPY .devlead/scripts/ /opt/devlead/scripts/
 COPY .devlead/bin/devlead /opt/devlead/bin/devlead
 COPY .claude/hooks/ /opt/devlead/hooks/
 COPY .claude/commands/ /opt/devlead/commands/
-COPY docker/entrypoint.sh docker/init-firewall.sh /opt/devlead/docker/
+COPY docker/entrypoint.sh docker/init-firewall.sh docker/claude-wrapper.sh /opt/devlead/docker/
 # Hooks, deny rules and the bypass lock (S9): Claude Code's highest-precedence
 # settings, readable by the session (a file it cannot read is ignored) and
 # writable by root only.
@@ -98,9 +98,15 @@ COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
 #                           workflows/, agent-memory/ and themes/ directories
 #                           are root-owned and empty, and nothing else can be
 #                           created next to them (no cached server policy, no
-#                           keybindings). Only Claude Code's runtime state is
-#                           the user's: .claude.json and the session, project
-#                           history, snapshot and backup directories.
+#                           keybindings). .claude.json is root-owned too: Claude
+#                           Code reads an env block from it, so a session could
+#                           otherwise hand the next one its variables; it runs
+#                           without saving that state. Only the session,
+#                           project history, snapshot and backup directories
+#                           are the user's.
+#   /usr/local/bin/claude   the wrapper (docker/claude-wrapper.sh): every
+#                           session loads only the user and managed settings,
+#                           never the project or local settings of the clone
 #   ~/.devlead              root:root 0755. scripts and hooks are root-owned
 #                           links to /opt/devlead, so the paths the scripts
 #                           use ($HOME/.devlead/scripts/...) keep working. The
@@ -114,6 +120,13 @@ RUN set -eux; \
     git config --file /etc/devlead/gitconfig credential.https://github.com.helper ''; \
     git config --file /etc/devlead/gitconfig --add credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'; \
     chown -R root:root /opt/devlead /etc/claude-code /etc/devlead; \
+    real_claude=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe; \
+    [ "$(readlink -f /usr/local/bin/claude)" = "$real_claude" ]; \
+    rm /usr/local/bin/claude; \
+    install -m 0755 -o root -g root /opt/devlead/docker/claude-wrapper.sh /usr/local/bin/claude; \
+    "$real_claude" --version | grep -qF "$CLAUDE_CODE_VERSION"; \
+    [ "$(command -v claude)" = /usr/local/bin/claude ] && [ "$(type -ap claude | wc -l)" -eq 1 ]; \
+    claude --version | grep -qF "$CLAUDE_CODE_VERSION"; \
     for f in /opt/devlead/commands/*.md; do \
       name="$(basename "$f" .md)"; \
       install -D -m 0644 "$f" "/etc/claude-code/.claude/skills/$name/SKILL.md"; \
@@ -149,8 +162,7 @@ RUN set -eux; \
       install -d -m 0700 -o "$DEVLEAD_UID" -g "$DEVLEAD_GID" "/home/devlead/.claude/$d"; \
     done; \
     printf '{}\n' > /home/devlead/.claude/.claude.json; \
-    chown "$DEVLEAD_UID:$DEVLEAD_GID" /home/devlead/.claude/.claude.json; \
-    chmod 0600 /home/devlead/.claude/.claude.json
+    chmod 0644 /home/devlead/.claude/.claude.json
 
 # No user-writable directory on PATH, so neither the hooks nor the scripts can
 # be handed a planted binary. DEVLEAD_GUARD=1 turns guard.sh on in every

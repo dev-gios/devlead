@@ -6,5 +6,6 @@
 !.claude/hooks/
 !.claude/commands/
 !docker/entrypoint.sh
+!docker/claude-wrapper.sh
 !docker/init-firewall.sh
 !docker/managed-settings.json

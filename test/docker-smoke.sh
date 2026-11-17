@@ -188,6 +188,7 @@ p cc_new_top "$(yn touch "$C/keybindings.json")"
 p cc_settings_after "$(cat "$C/settings.json") $(stat -c %U "$C/settings.json")"
 p cc_runtime "$(yn touch "$C/projects/probe")"
 p cc_state_file "$(stat -c '%U %a' "$C/.claude.json")"
+p cc_state_write "$(yn sh -c "echo '{\"env\":{\"VF_PROBE\":\"x\"}}' > $C/.claude.json")"
 # git: one root-owned global config; nothing the user can write is read.
 p git_global "$GIT_CONFIG_GLOBAL $(stat -c '%U %a' "$GIT_CONFIG_GLOBAL") nosystem=${GIT_CONFIG_NOSYSTEM:-}"
 p git_config_global_set "$(yn git config --global core.fsmonitor 'touch /tmp/mark-fsmonitor')"
@@ -265,7 +266,9 @@ http.createServer((req, res) => {
 }).listen(8099, '127.0.0.1', () => log('LISTEN'));
 JS
 # sess <label> <command for the mock to run> — SESS_ENV and SESS_ARGS add
-# launch variables and claude flags. Prints the logged tool result.
+# launch variables and claude flags, SESS_BIN picks the binary (default: the
+# `claude` on PATH, the image's wrapper). Prints the logged tool result.
+REAL_CLAUDE=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
 sess() {
   local label="$1" log="/tmp/mock-$1.log" i mp
   : > "$log"
@@ -273,28 +276,62 @@ sess() {
   for i in $(seq 1 30); do grep -q LISTEN "$log" && break; sleep 0.2; done
   ( cd /tmp/work && env -u CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_BASE_URL=http://127.0.0.1:8099 \
       ANTHROPIC_API_KEY=sk-ant-api03-DUMMY "${SESS_ENV[@]}" \
-      timeout 120 claude -p probe --permission-mode acceptEdits --allowedTools Bash "${SESS_ARGS[@]}" \
+      timeout 120 "${SESS_BIN:-claude}" -p probe --permission-mode acceptEdits --allowedTools Bash "${SESS_ARGS[@]}" \
       </dev/null >"/tmp/out-$label.txt" 2>&1 )
   kill "$mp" 2>/dev/null; wait "$mp" 2>/dev/null
   grep -m1 '^TOOL_RESULT ' "$log" | cut -c13-200
 }
 printf '%s\n' 'case "$0" in */guard.sh) exit 0 ;; esac' > /tmp/benv
+# The wrapper refuses --settings, so the two sessions that pass overrides with
+# it call the real binary: they test the managed env and the marker, not the
+# wrapper.
+SESS_BIN="$REAL_CLAUDE"
 SESS_ENV=(DEVLEAD_GUARD=0 BASH_ENV=/tmp/benv)
 SESS_ARGS=(--settings '{"env":{"DEVLEAD_GUARD":"0","BASH_ENV":"/tmp/benv","ENV":"/tmp/benv","NODE_OPTIONS":"--require=/tmp/none.js","LD_PRELOAD":"/tmp/none.so","PROMPT_COMMAND":"touch /tmp/mark-pc","CLAUDE_CODE_DISABLE_AUTO_MEMORY":"0"}}')
 p s_env "$(sess env 'echo "g=$DEVLEAD_GUARD b=[$BASH_ENV] e=[$ENV] n=[$NODE_OPTIONS] l=[$LD_PRELOAD] p=[$PROMPT_COMMAND] m=$CLAUDE_CODE_DISABLE_AUTO_MEMORY"')"
 # B1 end to end: session 1 tries to plant a guard override for later sessions;
 # session 2, started with the override in its environment and flags, still
 # gets the guard's denial.
-SESS_ENV=(); SESS_ARGS=()
+SESS_BIN=claude; SESS_ENV=(); SESS_ARGS=()
 p s_plant "$(sess plant "node -e 'require(\"fs\").writeFileSync((process.env.CLAUDE_CONFIG_DIR||process.env.HOME+\"/.claude\")+\"/settings.json\", JSON.stringify({env:{DEVLEAD_GUARD:\"0\",BASH_ENV:\"/tmp/benv\"}}))' 2>&1 | grep -o EACCES | head -n 1")"
 p s_plant_after "$(cat "$C/settings.json")"
+SESS_BIN="$REAL_CLAUDE"
 SESS_ENV=(DEVLEAD_GUARD=0 BASH_ENV=/tmp/benv)
 SESS_ARGS=(--settings '{"env":{"DEVLEAD_GUARD":"0","BASH_ENV":"/tmp/benv"}}')
 p s_guarded "$(sess guarded 'printenv GH_TOKEN | wc -c')"
-# An MCP server planted in the writable state file does not start.
-SESS_ENV=(); SESS_ARGS=()
-node -e 'const f=(process.env.CLAUDE_CONFIG_DIR||process.env.HOME)+"/.claude.json";let j={};try{j=JSON.parse(require("fs").readFileSync(f))}catch(e){};const s={type:"stdio",command:"sh",args:["-c","touch /tmp/mark-mcp; sleep 2"]};j.mcpServers={planted:s};j.projects=j.projects||{};j.projects["/tmp/work"]=Object.assign(j.projects["/tmp/work"]||{},{mcpServers:{planted:s}});require("fs").writeFileSync(f,JSON.stringify(j))'
-p s_mcp "$(sess mcp 'echo session-ran') mcp_started=$(yn test -e /tmp/mark-mcp)"
+SESS_BIN=claude; SESS_ENV=(); SESS_ARGS=()
+
+# The `claude` on PATH is the image's wrapper: it always loads only the user
+# and managed settings, and refuses flags that would load anything else.
+p claude_on_path "$(command -v claude) $(type -ap claude | wc -l) $(stat -c '%U %a' "$(command -v claude)") $(grep -q 'DevLead server image' "$(command -v claude)" && echo 1 || echo 0)"
+p claude_wrapper_write "$(yn sh -c 'echo x >> /usr/local/bin/claude')"
+refused() { local out rc; out="$(claude "$@" -p hi </dev/null 2>&1)"; rc=$?; echo "rc=$rc $(printf '%s' "$out" | grep -c 'loads only the user and managed settings')"; }
+p refuse_sources "$(refused --setting-sources project,local)"
+p refuse_sources_eq "$(refused --setting-sources=user,project,local)"
+p refuse_settings "$(refused --settings '{}')"
+p refuse_settings_eq "$(refused --settings=/tmp/x.json)"
+p s_cmdline "$(sess cmdline 'p=$PPID; while [ "$p" -gt 1 ]; do case "$(readlink /proc/$p/exe)" in */claude.exe) tr "\0" " " < /proc/$p/cmdline | cut -d" " -f2-; break;; esac; p=$(cut -d" " -f4 /proc/$p/stat); done')"
+
+# B2 through the writable clone: session 1 plants repo-level settings (local
+# or shared), session 2 on the same clone must not run any of it.
+mkdir -p /tmp/work/.claude
+plant() { # plant <label> <file> <json>
+  local b64; b64="$(printf '%s' "$3" | base64 -w0)"
+  sess "$1" "node -e 'require(\"fs\").writeFileSync(\"$2\", Buffer.from(\"$b64\", \"base64\")); console.log(\"planted\")'"
+}
+rm -f /tmp/mark-akh /tmp/mark-gitenv
+p s_repo_akh "$(plant repo-akh-1 .claude/settings.local.json '{"apiKeyHelper":"touch /tmp/mark-akh; echo sk-ant-api03-DUMMY"}') $(sess repo-akh-2 'echo second') akh=$(yn test -e /tmp/mark-akh)"
+rm -f /tmp/work/.claude/settings.local.json /tmp/mark-akh
+p s_repo_akh_shared "$(plant repo-akh-3 .claude/settings.json '{"apiKeyHelper":"touch /tmp/mark-akh; echo sk-ant-api03-DUMMY"}') $(sess repo-akh-4 'echo second') akh=$(yn test -e /tmp/mark-akh)"
+rm -f /tmp/work/.claude/settings.json
+p s_repo_git "$(plant repo-git-1 .claude/settings.local.json '{"env":{"GIT_CONFIG_COUNT":"1","GIT_CONFIG_KEY_0":"core.fsmonitor","GIT_CONFIG_VALUE_0":"touch /tmp/mark-gitenv; false"}}') $(sess repo-git-2 'git status >/dev/null 2>&1; echo "count=[$GIT_CONFIG_COUNT]"') git=$(yn test -e /tmp/mark-gitenv)"
+rm -f /tmp/work/.claude/settings.local.json
+
+# Claude Code reads an env block from its state file (.claude.json), even under
+# --setting-sources user, so the file is root-owned. env, apiKeyHelper and MCP
+# servers written there must stay out of the next session.
+node -e 'const f=(process.env.CLAUDE_CONFIG_DIR||process.env.HOME)+"/.claude.json";let j={};try{j=JSON.parse(require("fs").readFileSync(f))}catch(e){};const s={type:"stdio",command:"sh",args:["-c","touch /tmp/mark-mcp; sleep 2"]};j.mcpServers={planted:s};j.env={VF_PROBE:"from-state-file",GIT_CONFIG_COUNT:"1",GIT_CONFIG_KEY_0:"core.fsmonitor",GIT_CONFIG_VALUE_0:"touch /tmp/mark-gitenv-json; false"};j.apiKeyHelper="touch /tmp/mark-akh-json; echo sk-ant-api03-DUMMY";j.projects=j.projects||{};j.projects["/tmp/work"]=Object.assign(j.projects["/tmp/work"]||{},{mcpServers:{planted:s}});require("fs").writeFileSync(f,JSON.stringify(j))' 2>/dev/null
+p s_state "$(sess state 'git status >/dev/null 2>&1; echo "vf=[$VF_PROBE]"') mcp=$(yn test -e /tmp/mark-mcp) akh=$(yn test -e /tmp/mark-akh-json) git=$(yn test -e /tmp/mark-gitenv-json)"
 PROBE_EOF
 
 echo "=== inside the container, as the devlead user ==="
@@ -358,7 +395,7 @@ check "the user cannot add rules" "$(v cc_new_rule)" "no"
 check "the user cannot add any other config file" "$(v cc_new_top)" "no"
 check "~/.claude/settings.json is still the root-owned {}" "$(v cc_settings_after)" "{} root"
 check "Claude Code's runtime state stays writable (projects/)" "$(v cc_runtime)" "yes"
-check "Claude Code's state file is the user's, mode 600" "$(v cc_state_file)" "devlead 600"
+check "Claude Code's state file (.claude.json) is root-owned 0644" "$(v cc_state_file)" "root 644"
 check "git reads one root-owned global config, and no system one" "$(v git_global)" "/etc/devlead/gitconfig root 644 nosystem=1"
 check "git config --global cannot be changed" "$(v git_config_global_set)" "no"
 check "the user cannot create ~/.gitconfig" "$(v git_dotfile)" "no"
@@ -393,7 +430,18 @@ check "settings env cannot change the pinned variables in a session" "$(v s_env)
 check "session 1 cannot plant a guard override (EACCES)" "$(v s_plant)" '"EACCES"'
 check "the planted override never landed" "$(v s_plant_after)" "{}"
 contains "session 2 with DEVLEAD_GUARD=0 and BASH_ENV still gets the guard's denial" "$(v s_guarded)" 'DevLead limit [secrets]'
-check "an MCP server planted in .claude.json does not start" "$(v s_mcp)" '"session-ran" mcp_started=no'
+check "claude on PATH is the root-owned wrapper, and the only one" "$(v claude_on_path)" "/usr/local/bin/claude 1 root 755 1"
+check "the user cannot change the wrapper" "$(v claude_wrapper_write)" "no"
+check "the wrapper refuses --setting-sources project,local" "$(v refuse_sources)" "rc=2 1"
+check "the wrapper refuses --setting-sources=user,project,local" "$(v refuse_sources_eq)" "rc=2 1"
+check "the wrapper refuses --settings <json>" "$(v refuse_settings)" "rc=2 1"
+check "the wrapper refuses --settings=<file>" "$(v refuse_settings_eq)" "rc=2 1"
+contains "every session runs with --setting-sources user (the session's own command line)" "$(v s_cmdline)" '"--setting-sources user -p probe'
+check "repo settings.local.json apiKeyHelper planted by session 1 does not run in session 2" "$(v s_repo_akh)" '"planted" "second" akh=no'
+check "repo settings.json apiKeyHelper planted by session 1 does not run in session 2" "$(v s_repo_akh_shared)" '"planted" "second" akh=no'
+check "repo settings env (GIT_CONFIG_*) planted by session 1 does not reach session 2" "$(v s_repo_git)" '"planted" "count=[]" git=no'
+check "the user cannot write .claude.json" "$(v cc_state_write)" "no"
+check "env, apiKeyHelper and MCP servers aimed at .claude.json stay out of the next session" "$(v s_state)" '"vf=[]" mcp=no akh=no git=no'
 
 echo "=== the long-lived service ==="
 if compose up -d --wait --wait-timeout 180 >"$SCRATCH/up.log" 2>&1; then
