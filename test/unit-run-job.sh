@@ -82,7 +82,7 @@ rc=0
 printf 'END=%s\n' "$(date +%s.%N)" >> "$SANDBOX_LOG"
 exit "$rc"
 EOF
-for s in sweep.sh sweep-loop.sh discover-fleet.sh; do cp "$SCRIPTS/stub-job.sh" "$SCRIPTS/$s"; done
+for s in sweep.sh sweep-loop.sh discover-fleet.sh poll-issues.sh; do cp "$SCRIPTS/stub-job.sh" "$SCRIPTS/$s"; done
 chmod +x "$SCRIPTS"/*.sh
 cp "$REPO_ROOT/.devlead/scripts/notify.sh" "$SCRIPTS/notify.sh"
 cat > "$SCRIPTS/doctor.sh" <<'EOF'
@@ -403,7 +403,7 @@ contains "as root: says why" "$OUT" "never runs a job as root"
 check "as root: nothing ran" "$(wc -l < "$SANDBOX_LOG" | tr -d ' ')" "0"
 check "as root: no audit line, no file written" "$([[ -e "$(MONTH_FILE)" ]] && echo written || echo none)" "none"
 check "as root: no notice" "$(need_codes)" ""
-check "as root: --list still prints the table" "$(unshare -r bash "$RUNJOB" --list 2>/dev/null | wc -l | tr -d ' ')" "4"
+check "as root: --list still prints the table" "$(unshare -r bash "$RUNJOB" --list 2>/dev/null | wc -l | tr -d ' ')" "$(bash "$RUNJOB" --list | wc -l | tr -d ' ')"
 
 # ===========================================================================
 # The pause file and DEVLEAD_CLAUDE_BIN stop the job before it starts
@@ -565,6 +565,20 @@ OUT="$(bash "$RUNJOB" --prune 2>&1)"; RC=$?
 check "prune without a configuration: refused" "$RC" "1"
 check "prune without a configuration: deletes nothing" "$([[ -d "$RUNS/$old" ]] && echo kept || echo removed)" "kept"
 mv "$CONF.away" "$CONF"
+
+# ===========================================================================
+# The poll job (S4): every enrolled repo synced, then poll-issues.sh; a poll
+# with nothing new starts no session and sends nothing
+# ===========================================================================
+fresh
+behaviour <<EOF
+echo "poll: nothing new — no claude session started"
+EOF
+run poll
+check "poll: ok" "$(field '[.outcome, .exit_code, .trigger]')" '["ok",0,"poll"]'
+contains "poll: the table's command" "$(joblog | head -n 1)" $'poll-issues.sh\tARGS=\t'
+contains "poll: every enrolled repo synced first" "$(synclog)" $'SYNC\tARGS=--all\t'
+check "poll with nothing new: no session, nothing notified" "$(field '[.session_ids, .notify_codes]')" '[[],[]]'
 
 # ===========================================================================
 # S19: PR opened and PARK, each one `need` per run; the link leaves the

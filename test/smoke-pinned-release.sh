@@ -94,6 +94,7 @@ all_publish_targets() {
 .devlead/scripts/sweep.sh
 .devlead/scripts/run-state.sh
 .devlead/scripts/sweep-loop.sh
+.devlead/scripts/poll-issues.sh
 .devlead/scripts/doctor.sh
 .devlead/scripts/config.sh
 .devlead/scripts/untrusted.sh
@@ -139,6 +140,7 @@ all_source_paths() {
 .devlead/scripts/sweep.sh
 .devlead/scripts/run-state.sh
 .devlead/scripts/sweep-loop.sh
+.devlead/scripts/poll-issues.sh
 .devlead/scripts/doctor.sh
 .devlead/scripts/config.sh
 .devlead/scripts/untrusted.sh

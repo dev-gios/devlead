@@ -28,8 +28,8 @@
 #      writes at container start, was emptied by someone: today's session
 #      count is unknown, so the job does not run either (audit-tampered).
 #   5. The clones the job works on are brought to origin's default branch
-#      (S13, docker/sync-repos.sh): every enrolled repo for morning, fleet and
-#      discover, DEVLEAD_LOOP_REPO for loop. It holds the session lock — no
+#      (S13, docker/sync-repos.sh): every enrolled repo for morning, fleet,
+#      discover and poll, DEVLEAD_LOOP_REPO for loop. It holds the session lock — no
 #      claude session may be working in a clone it resets — and a job whose
 #      repos cannot all be synced does not run.
 #      From here the job holds the job lock for JOB_TIMEOUT at most
@@ -139,6 +139,7 @@ JOBS=(
   "loop|DEVLEAD_CRON_LOOP|0 22 * * *|plan.local.yml|loop|sweep-loop.sh --plan ~/.devlead/plan.local.yml"
   "fleet|DEVLEAD_CRON_FLEET|30 22 * * *|autonomous-repos|enrolled|sweep-loop.sh --max-iterations 1 -- --fleet"
   "discover|DEVLEAD_CRON_DISCOVER|0 5 * * 1|autonomous-repos|enrolled|discover-fleet.sh"
+  "poll|DEVLEAD_CRON_POLL|*/30 7-19 * * *|autonomous-repos|enrolled|poll-issues.sh"
 )
 
 _usage() { echo "usage: run-job.sh <job> | --list | --prune" >&2; }

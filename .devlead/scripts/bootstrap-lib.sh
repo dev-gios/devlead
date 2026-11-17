@@ -238,6 +238,7 @@ bootstrap_symlinks() {
     "$repo_dir/.devlead/scripts/sweep.sh|$devlead_dir/scripts/sweep.sh|x"
     "$repo_dir/.devlead/scripts/run-state.sh|$devlead_dir/scripts/run-state.sh|x"
     "$repo_dir/.devlead/scripts/sweep-loop.sh|$devlead_dir/scripts/sweep-loop.sh|x"
+    "$repo_dir/.devlead/scripts/poll-issues.sh|$devlead_dir/scripts/poll-issues.sh|x"
     "$repo_dir/.devlead/scripts/doctor.sh|$devlead_dir/scripts/doctor.sh|x"
     "$repo_dir/.devlead/scripts/config.sh|$devlead_dir/scripts/config.sh|x"
     "$repo_dir/.devlead/scripts/untrusted.sh|$devlead_dir/scripts/untrusted.sh|x"
