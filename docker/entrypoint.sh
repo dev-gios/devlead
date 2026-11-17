@@ -2,11 +2,11 @@
 # entrypoint.sh — the DevLead container's start (runs under tini, as root).
 #
 # Root is held only long enough to:
-#   1. turn the schedule and the session limits of the env file into
-#      /etc/devlead/crontab and /etc/devlead/runner.conf, root's (S11, S16,
-#      S17; docker/runner-config.sh). An invalid value — a cron expression, a
-#      time zone, a limit, a DEVLEAD_CLAUDE_BIN that is not the wrapper — stops
-#      the start, named;
+#   1. turn the schedule, the session limits and the Claude accounts of the
+#      env file into /etc/devlead/crontab and /etc/devlead/runner.conf, root's
+#      (S11, S16, S17, S21; docker/runner-config.sh). An invalid value — a cron
+#      expression, a time zone, a limit, a DEVLEAD_CLAUDE_BIN that is not the
+#      wrapper, an account of the pool — stops the start, named;
 #   2. apply the egress firewall (S8). If it fails, the container does not
 #      start: the command below never runs on an open network;
 #   3. hand the ntfy settings to notify.sh, in the file it reads
@@ -33,11 +33,13 @@
 #      DEVLEAD_REPOS, root's and read-only to the user: no session can enroll
 #      a repo (Inv 3);
 #   7. prepare /var/lib/devlead, where the claude wrapper keeps its session
-#      ledger and locks: root's directory, so the user can neither remove nor
-#      replace them, and a volume of its own, so the day's session count
-#      survives a recreated container (L18). Ledger lines older than two days
-#      are dropped, and its first line is root's header: a ledger found
-#      empty at the start of a run was emptied by someone (run-job.sh);
+#      ledger, its locks and the Claude account marks (S22): root's
+#      directory, so the user can neither remove nor replace them, and a
+#      volume of its own, so the day's session count and an account resting
+#      until its reset survive a recreated container (L18). Ledger lines older
+#      than two days are dropped, and its first line is root's header: a
+#      ledger found empty at the start of a run was emptied by someone
+#      (run-job.sh). Expired marks and refused-token marks are dropped;
 #   8. switch to the devlead user for good — same UID/GID as the host user,
 #      every capability gone, no way back through setuid binaries —, prune the
 #      run transcripts past their retention, and run the command (S9): by
@@ -77,6 +79,21 @@ _uid="$(id -u "$DEVLEAD_USER")"
 _gid="$(id -g "$DEVLEAD_USER")"
 [[ "$_uid" -ne 0 && "$_gid" -ne 0 ]] || die "the $DEVLEAD_USER user must not be root"
 
+# The Claude account pool's tokens (S21, A1): runner-config.sh wrote them to
+# /etc/devlead/claude-tokens. Root's, readable by the user's group, so the
+# claude wrapper can take one per session; then out of the environment, so
+# the scheduler, the jobs and the launchers — every process a session could
+# read the environment of, at the same uid — never carry them. The names and
+# issue dates stay: doctor.sh reads them.
+if [[ -f /etc/devlead/claude-tokens ]]; then
+  chown "root:$_gid" /etc/devlead/claude-tokens && chmod 0640 /etc/devlead/claude-tokens \
+    || die "cannot prepare the Claude account tokens"
+fi
+for _v in $(compgen -e); do
+  [[ "$_v" == DEVLEAD_CLAUDE_ACCOUNT_*TOKEN* ]] && unset "$_v"
+done
+unset _v
+
 # notify.sh reads its push settings from a 600 file owned by the user who runs
 # it, never from the environment. Written on every start, so a value removed
 # from .env does not linger from an earlier one.
@@ -95,10 +112,14 @@ if [[ -n "${DEVLEAD_NTFY_URL:-}" ]]; then
 fi
 unset DEVLEAD_NTFY_URL DEVLEAD_NTFY_TOKEN DEVLEAD_NOTIFY_DETAIL
 
-for _v in CLAUDE_CODE_OAUTH_TOKEN DEVLEAD_CLAUDE_TOKEN_ISSUED GH_TOKEN DEVLEAD_LOOP_CLAUDE_ARGS; do
+# The Claude token: the single CLAUDE_CODE_OAUTH_TOKEN, or an account pool
+# (S21), which runner-config.sh validated and wrote to runner.conf by name.
+_claude_vars=(CLAUDE_CODE_OAUTH_TOKEN DEVLEAD_CLAUDE_TOKEN_ISSUED)
+if grep -q '^CLAUDE_ACCOUNTS=.*DEVLEAD_CLAUDE_ACCOUNT_' /etc/devlead/runner.conf; then _claude_vars=(); fi
+for _v in "${_claude_vars[@]}" GH_TOKEN DEVLEAD_LOOP_CLAUDE_ARGS; do
   [[ -n "${!_v:-}" ]] || log "$_v is not set in the env file — unattended runs will not work until it is"
 done
-unset _v
+unset _v _claude_vars
 
 
 # _clone_dir <workspace> <repo path> <entry number> — root's directories down
@@ -225,6 +246,23 @@ _tmp="$(mktemp)"
 rm -f "$_tmp"
 chown "$_uid:$_gid" "$_ledger"
 chmod 0600 "$_ledger"
+# The Claude account marks (S22): the wrapper appends one line when an
+# account reaches a usage limit or its token is refused. A mark whose time
+# has passed is dropped, and so is every refused-token mark: restarting the
+# container is how the operator says the token was renewed. Limit marks with
+# a reset still ahead survive, like the ledger, a recreated container.
+_marks="$_state/accounts.tsv"
+_mheader="# DevLead Claude account marks: account, resting until (epoch seconds, or - until a restart), kind, set at, session, run, source; the claude wrapper appends them, root writes this line at container start"
+if [[ -L "$_marks" || ! -f "$_marks" ]]; then
+  rm -f "$_marks"
+  install -m 0600 -o "$_uid" -g "$_gid" /dev/null "$_marks"
+fi
+_tmp="$(mktemp)"
+{ printf '%s\n' "$_mheader"; awk -F'\t' -v now="$(date +%s)" '!/^#/ && $2 ~ /^[0-9]+$/ && $2 + 0 > now + 0' "$_marks"; } > "$_tmp" \
+  && cat "$_tmp" > "$_marks" || die "cannot prepare the account marks $_marks"
+rm -f "$_tmp"
+chown "$_uid:$_gid" "$_marks"
+chmod 0600 "$_marks"
 
 _as_devlead=(setpriv --reuid="$_uid" --regid="$_gid" --init-groups
              --inh-caps=-all --bounding-set=-all --no-new-privs --

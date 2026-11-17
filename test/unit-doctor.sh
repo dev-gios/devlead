@@ -61,10 +61,12 @@ chmod +x "$FAKEBIN/gh"
 
 # The token-age variables are unset so a machine that exports them (a server
 # shell) cannot change what the integrity scenarios below see.
+POOL_UNSET=()
+while IFS= read -r _v; do POOL_UNSET+=(-u "$_v"); done < <(compgen -e | grep '^DEVLEAD_CLAUDE_ACCOUNT_')
 doctor() {
   local home="$1"
   ( HOME="$home" PATH="$FAKEBIN:$PATH" \
-      env -u DEVLEAD_CLAUDE_TOKEN_ISSUED -u DEVLEAD_DOCTOR_DATE bash "$DOCTOR" 2>&1 )
+      env -u DEVLEAD_CLAUDE_TOKEN_ISSUED -u DEVLEAD_DOCTOR_DATE "${POOL_UNSET[@]}" bash "$DOCTOR" 2>&1 )
 }
 
 # token_doctor <home> <issued> — doctor with the Claude token's issue date set
@@ -370,6 +372,44 @@ out="$(token_doctor "$HOME_4" 2025-12-16)"
 contains "unknown install + old token: STATUS still unknown" "$out" "STATUS: unknown"
 contains "unknown install + old token: WARN still printed" "$out" "WARN:   the Claude token (DEVLEAD_CLAUDE_TOKEN_ISSUED=2025-12-16) is 11 months old"
 check "unknown install + old token: exits 1" "$(token_doctor "$HOME_4" 2025-12-16 >/dev/null 2>&1; echo $?)" "1"
+
+# ===========================================================================
+# The account pool (S21): one WARN line per account whose issue date is set,
+# naming the account; the integrity report, STATUS and exit code unchanged.
+# ===========================================================================
+# pool_doctor <home> VAR=value... — doctor with these pool variables and
+# "today" pinned to 2026-11-16; no single-token date.
+pool_doctor() {
+  local home="$1"; shift
+  ( HOME="$home" PATH="$FAKEBIN:$PATH" env -u DEVLEAD_CLAUDE_TOKEN_ISSUED DEVLEAD_DOCTOR_DATE=2026-11-16 "$@" bash "$DOCTOR" 2>&1 )
+}
+POOL_RENEW1="run 'claude setup-token' logged in to that account, put the new token in DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN in .env and update DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED"
+out="$(pool_doctor "$HOME_1" DEVLEAD_CLAUDE_ACCOUNT_1=team DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-12-16 \
+  DEVLEAD_CLAUDE_ACCOUNT_2=ultra DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-06-01)"
+check "pool: only the old account warns" "$(printf '%s\n' "$out" | grep '^WARN:')" \
+  "WARN:   the Claude token of account team (DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-12-16) is 11 months old and expires one year after it was issued — renew it now: $POOL_RENEW1"
+check "pool: every other line is the unset output" "$(printf '%s\n' "$out" | grep -v '^WARN:')" "$out_unset"
+check "pool: exits 0" "$(pool_doctor "$HOME_1" DEVLEAD_CLAUDE_ACCOUNT_1=team DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-12-16 >/dev/null 2>&1; echo $?)" "0"
+out="$(pool_doctor "$HOME_1" DEVLEAD_CLAUDE_ACCOUNT_1=team DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-11-01 \
+  DEVLEAD_CLAUDE_ACCOUNT_2=ultra DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2025-12-01)"
+check "pool: two old accounts, two WARN lines, in priority order, last" \
+  "$(printf '%s\n' "$out" | tail -n 2 | cut -d'(' -f1 | paste -sd'|' -)" \
+  "WARN:   the Claude token of account team |WARN:   the Claude token of account ultra "
+contains "pool: a year or more has expired" "$out" "account team (DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-11-01) is 12 months old and has expired — $POOL_RENEW1"
+out="$(pool_doctor "$HOME_1" DEVLEAD_CLAUDE_ACCOUNT_1=team DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-06-01 \
+  DEVLEAD_CLAUDE_ACCOUNT_2=ultra DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=sk-ant-oat01-SENTINEL)"
+check "pool: an unreadable date warns, naming the account and the variable" "$(printf '%s\n' "$out" | grep '^WARN:')" \
+  "WARN:   DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED is not a valid issue date (YYYY-MM-DD, not in the future), so the age of the Claude token of account ultra cannot be checked"
+not_contains "pool: the unreadable value is not printed" "$out" "SENTINEL"
+out="$(pool_doctor "$HOME_1" 'DEVLEAD_CLAUDE_ACCOUNT_1=sk-ant-oat01-SENTINEL' DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-12-16)"
+contains "pool: a name that is not a name is replaced by the account's number" "$out" "the Claude token of account number 1 ("
+not_contains "pool: and never printed" "$out" "SENTINEL"
+out="$(pool_doctor "$HOME_1" DEVLEAD_CLAUDE_ACCOUNT_1=team DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-06-01)"
+check "pool: fresh tokens add nothing" "$out" "$out_unset"
+out="$(pool_doctor "$HOME_4" DEVLEAD_CLAUDE_ACCOUNT_1=team DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-12-16)"
+contains "pool: an unknown install still gets the WARN line" "$out" "the Claude token of account team (DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-12-16) is 11 months old"
+check "pool: an unknown install still exits 1" \
+  "$(pool_doctor "$HOME_4" DEVLEAD_CLAUDE_ACCOUNT_1=team DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-12-16 >/dev/null 2>&1; echo $?)" "1"
 
 # ===========================================================================
 # The server image (F1 follow-up a). The image has no SOURCE_REPO: its build

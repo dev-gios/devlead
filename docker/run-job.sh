@@ -51,6 +51,18 @@
 #      output format is left alone — are copied to
 #      ~/.devlead/audit/runs/<run id>/, and one JSON line is appended to
 #      ~/.devlead/audit/YYYY-MM.jsonl and printed to the container log.
+#   8b. The run's report (S23). A guarded session cannot write
+#      ~/.devlead/reports/<date>-execute.md (guard.sh: self-config), so the
+#      report the park and end-of-day notices point to would be missing. The
+#      job writes it instead, after the sessions: the content of the last
+#      Write call to exactly that path, dated the run's own day (the day it
+#      started, or today), in the main transcript of the last session that
+#      made one. That content is the session's text, so it is
+#      only ever data: written as a file, never run or sourced; at most
+#      REPORT_MAX bytes, plain text (no control character but tab, newline
+#      and carriage return), under a name of that exact shape; refused when
+#      the reports directory or the report is a symbolic link; written to a
+#      temporary file in the same directory and renamed, under the job lock.
 #   9. A run that opened PRs sends one `need` pr-opened, its message the PR
 #      links; one whose report parked work units sends one `need` park, its
 #      message the issue numbers (S19). The push carries the message — so
@@ -60,21 +72,33 @@
 #      not be synced), job-timeout (a session or the whole job stopped at its
 #      time limit, or a job that waited past JOB_LOCK_WAIT), job-refused (a
 #      session refused by the daily cap, because another was running, or
-#      because its lock could not be opened). doctor.sh's Claude token
-#      warning becomes a `need` token-expiring, once a day; like every notice it
+#      because its lock could not be opened), claude-limited (every Claude
+#      account of the pool rests — usage limit or refused token, S22 — so no
+#      session starts until the earliest reset: one notice per such stretch,
+#      sent by the first run that sees it, with each account and the time;
+#      a session refused for it is not job-refused). doctor.sh's Claude token
+#      warnings become one `need` token-expiring a day, naming each account
+#      of the pool (S21) whose token needs renewing; like every notice it
 #      carries no environment value (not even the token's issue date).
 #
 # The audit line: run_id, trigger, repos, started_at, ended_at, exit_code,
 # timed_out, cap_refused (a session refused by the daily cap), refusals (the
 # reason of every refused session: cap, busy, nolock, paused, noconf, noledger,
-# root),
+# nomarks, limited, root),
 # paused, skipped (the reason, or null), synced [{repo, branch, commit}] (the
 # clones as the job found them), sync_error (the repo and the reason, or
 # null), sessions
-# [{id, exit_code, timed_out}], session_ids, tool_uses {tool: count},
-# files_changed, prs_opened, parked {count, issues}, transcripts_kept,
+# [{id, exit_code, timed_out, account}] (account: the name of the Claude
+# account the session used, from the ledger, or null; never a token),
+# limit_marks [{account, kind, until, session_id}] (the accounts its sessions
+# left resting: kind the usage limit, five_hour, seven_day, ..., or auth for
+# a refused token; until the reset in UTC, or null until a restart),
+# session_ids, tool_uses {tool: count},
+# files_changed, prs_opened, parked {count, issues}, report_kept (the name of
+# the report the job wrote for its sessions, or null), transcripts_kept,
 # outcome (ok, failed, timeout,
-# refused, paused, skipped), notified, notify_codes, leftovers_killed,
+# refused, paused, skipped, limited: a session refused because every Claude
+# account rests), notified, notify_codes, leftovers_killed,
 # lock_wait_seconds, lock_timed_out (gave up waiting for the job lock),
 # job_timed_out (stopped at JOB_TIMEOUT), audit_intact. Files changed are those the sessions'
 # Write, Edit, MultiEdit and NotebookEdit calls name — a file a shell command
@@ -104,10 +128,23 @@
 #     session is the job of guard.sh, the firewall and the narrow tokens.
 set -uo pipefail
 
+# The Claude account pool's tokens (S21, A1) live in root's
+# /etc/devlead/claude-tokens, for the claude wrapper only. A job started with
+# them in its environment (a `docker compose exec` carries the env file)
+# starts again without them: every process of the job runs as the session's
+# uid, and its environment is readable at /proc/<pid>/environ.
+_strip=()
+for _v in $(compgen -e); do
+  [[ "$_v" == DEVLEAD_CLAUDE_ACCOUNT_*TOKEN* ]] && _strip+=(-u "$_v")
+done
+(( ${#_strip[@]} == 0 )) || exec env "${_strip[@]}" bash "${BASH_SOURCE[0]}" "$@"
+unset _strip _v
+
 # --- Fixed paths (test/unit-run-job.sh rewrites these in a copy) ---------------
 RUNNER_CONF=/etc/devlead/runner.conf
 LEDGER=/var/lib/devlead/sessions.tsv
 LEDGER_HEADER="# DevLead session ledger"
+ACCOUNTS_FILE=/var/lib/devlead/accounts.tsv
 JOB_LOCK=/var/lib/devlead/job.lock
 SESSION_LOCK=/var/lib/devlead/session.lock
 PAUSE_FILE=/home/devlead/.devlead/PAUSE
@@ -123,6 +160,8 @@ STATE_DIR="$HOME/.devlead"
 AUDIT_DIR="$STATE_DIR/audit"
 CLAUDE_PROJECTS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
 TOKEN_STAMP="$STATE_DIR/run/token-warned"
+REPORT_MAX=262144
+LIMIT_STAMP="$STATE_DIR/run/limit-notified"
 
 # --- The jobs ------------------------------------------------------------------
 # One line per job. Adding a job is adding a line here: runner-config.sh gives
@@ -324,22 +363,159 @@ _need() {
 }
 
 _token_check() {
-  local out warn today
+  local out warn today parts=() name n
+  local pool_re='account ([a-z][a-z0-9-]{0,23}|number [1-9]) \(DEVLEAD_CLAUDE_ACCOUNT_([1-9])_ISSUED='
+  local pool_bad_re='^DEVLEAD_CLAUDE_ACCOUNT_([1-9])_ISSUED is not a valid issue date.* of account ([a-z][a-z0-9-]{0,23}|number [1-9]) cannot be checked$'
   [[ -f "$SCRIPTS_DIR/doctor.sh" ]] || return 0
   out="$(bash "$SCRIPTS_DIR/doctor.sh" </dev/null 2>/dev/null)"
-  warn="$(grep -m1 '^WARN:' <<<"$out" | sed 's/^WARN:[[:space:]]*//')"
-  [[ -n "$warn" ]] || return 0
+  grep -q '^WARN:' <<<"$out" || return 0
   today="$(date +%F)"
   [[ "$(cat "$TOKEN_STAMP" 2>/dev/null)" == "$today" ]] && return 0
-  # doctor's line names DEVLEAD_CLAUDE_TOKEN_ISSUED with its value: the notice
-  # says what it means instead.
-  if [[ "$warn" == *"not a valid issue date"* ]]; then
-    _need token-expiring "DEVLEAD_CLAUDE_TOKEN_ISSUED in the env file is not a valid date, so the Claude token's age cannot be checked — set it to the day you ran claude setup-token (YYYY-MM-DD) and restart the container"
-  else
-    _need token-expiring "the Claude token was issued 11 or more months ago and lasts one year — renew it: run claude setup-token, put the new token in .env, update DEVLEAD_CLAUDE_TOKEN_ISSUED and restart the container"
-  fi
+  # doctor's lines name the issue-date variables with their values: the
+  # notice says what they mean instead. One notice a day, every account in it.
+  while IFS= read -r warn; do
+    warn="${warn#WARN:}"; warn="${warn#"${warn%%[![:space:]]*}"}"
+    if [[ "$warn" =~ $pool_re ]]; then
+      name="${BASH_REMATCH[1]}"; n="${BASH_REMATCH[2]}"
+      parts+=("the Claude token of account $name was issued 11 or more months ago and lasts one year — renew it: run claude setup-token logged in to that account, put the new token in DEVLEAD_CLAUDE_ACCOUNT_${n}_TOKEN in .env, update DEVLEAD_CLAUDE_ACCOUNT_${n}_ISSUED and restart the container")
+    elif [[ "$warn" =~ $pool_bad_re ]]; then
+      n="${BASH_REMATCH[1]}"; name="${BASH_REMATCH[2]}"
+      parts+=("DEVLEAD_CLAUDE_ACCOUNT_${n}_ISSUED in the env file is not a valid date, so the age of the Claude token of account $name cannot be checked — set it to the day you ran claude setup-token for that account (YYYY-MM-DD) and restart the container")
+    elif [[ "$warn" == *"not a valid issue date"* ]]; then
+      parts+=("DEVLEAD_CLAUDE_TOKEN_ISSUED in the env file is not a valid date, so the Claude token's age cannot be checked — set it to the day you ran claude setup-token (YYYY-MM-DD) and restart the container")
+    else
+      parts+=("the Claude token was issued 11 or more months ago and lasts one year — renew it: run claude setup-token, put the new token in .env, update DEVLEAD_CLAUDE_TOKEN_ISSUED and restart the container")
+    fi
+  done < <(grep '^WARN:' <<<"$out")
+  _need token-expiring "$(printf '%s; ' "${parts[@]}" | sed 's/; $//')"
   mkdir -p "${TOKEN_STAMP%/*}" 2>/dev/null
   printf '%s\n' "$today" > "$TOKEN_STAMP" 2>/dev/null || true
+}
+
+# --- Claude accounts (S22) -------------------------------------------------------
+# _marks_json — the marks this run's sessions left (docker/claude-wrapper.sh).
+_marks_json() {
+  [[ -f "$ACCOUNTS_FILE" && ! -L "$ACCOUNTS_FILE" ]] || { echo '[]'; return; }
+  awk -F'\t' -v r="$RUN_ID" '!/^#/ && $6 == r' "$ACCOUNTS_FILE" 2>/dev/null | jq -R -s -c '
+    split("\n") | map(select(length > 0) | split("\t")
+      | select((.[0] | test("^[a-z][a-z0-9-]{0,23}$")) and ((.[1] // "") | test("^(-|[0-9]{1,12})$")))
+      | { account: .[0],
+          kind: ((.[2] // "") | if test("^[a-z0-9_]{1,40}$") then . else null end),
+          until: (if .[1] == "-" then null else (.[1] | tonumber | todate) end),
+          session_id: ((.[4] // "") | if test("^[0-9a-f-]{36}$") then . else null end) })' 2>/dev/null
+}
+
+# _exhaustion — when every account of the pool rests, prints
+# "<stretch key> TAB <earliest reset, epoch, or -> TAB <account list>";
+# nothing otherwise. The key is the time of the newest mark: while every
+# account rests no session runs, so no mark is added, and a new stretch
+# always starts with a newer one.
+_exhaustion() {
+  local items=() names=() item a u t now key="" earliest="" list=""
+  local -A rest=() set=()
+  read -ra items <<<"$(_conf_get CLAUDE_ACCOUNTS)"
+  for item in "${items[@]}"; do
+    [[ "${item%%=*}" =~ ^[a-z][a-z0-9-]{0,23}$ ]] && names+=("${item%%=*}")
+  done
+  [[ ${#names[@]} -gt 0 && -f "$ACCOUNTS_FILE" && ! -L "$ACCOUNTS_FILE" ]] || return 0
+  while IFS=$'\t' read -r a u _ t _; do
+    [[ "$a" =~ ^[a-z][a-z0-9-]{0,23}$ && "$u" =~ ^(-|[0-9]{1,12})$ ]] || continue
+    rest[$a]="$u"; set[$a]="$t"
+  done < "$ACCOUNTS_FILE"
+  now="$(date +%s)"
+  for a in "${names[@]}"; do
+    u="${rest[$a]:-0}"
+    [[ "$u" != "-" ]] && (( 10#$u <= now )) && return 0
+    [[ "${set[$a]}" > "$key" ]] && key="${set[$a]}"
+    if [[ "$u" == "-" ]]; then
+      list+="${list:+, }$a until its token is renewed"
+    else
+      list+="${list:+, }$a until $(date -d "@$((10#$u))" '+%Y-%m-%d %H:%M %Z')"
+      [[ -z "$earliest" ]] || (( 10#$u < earliest )) && earliest=$((10#$u))
+    fi
+  done
+  printf '%s\t%s\t%s\n' "${key:--}" "${earliest:--}" "$list"
+}
+
+# _limit_notice — one need claude-limited per stretch of every account resting.
+_limit_notice() {
+  local ex key until list when
+  ex="$(_exhaustion)"
+  [[ -n "$ex" ]] || return 0
+  IFS=$'\t' read -r key until list <<<"$ex"
+  [[ "$(cat "$LIMIT_STAMP" 2>/dev/null)" == "$key" ]] && return 0
+  when="a token is renewed and the container restarted"
+  [[ "$until" != "-" ]] && when="$(date -d "@$until" '+%Y-%m-%d %H:%M %Z')"
+  _need claude-limited "every Claude account is resting ($list) — no claude session starts until $when (run $RUN_ID)"
+  mkdir -p "${LIMIT_STAMP%/*}" 2>/dev/null
+  printf '%s\n' "$key" > "$LIMIT_STAMP" 2>/dev/null || true
+}
+
+# --- The run's report (S23) ---------------------------------------------------------
+# _keep_report — writes the report the run's sessions could not (8b above);
+# sets REPORT_KEPT to its name. Reads only the kept main transcripts, in the
+# ledger's session order.
+REPORT_KEPT=""
+# The Write calls of a transcript to ~/.devlead/reports/<date>-execute.md,
+# the home directory spelled out or as ~/: [{name, content}, ...].
+_REPORT_WRITES='
+  [ inputs | fromjson? | objects | select(.type == "assistant") | .message.content[]? | objects
+    | select(.type == "tool_use" and .name == "Write")
+    | (.input.file_path // "") as $p | (.input.content // null) as $c
+    | select(($p | type) == "string" and ($c | type) == "string")
+    | ($p | if startswith($dir) then .[($dir | length):] elif startswith("~/.devlead/reports/") then .[19:] else "" end) as $n
+    | select($n | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}-execute\\.md$"))
+    | { name: $n, content: $c } ]'
+_keep_report() {
+  local sid t found="" name dir="$STATE_DIR/reports" tmp d1 d2 other=""
+  REPORT_SID=""; REPORT_FOUND=""
+  # The run's own day (A5): the day it started, or today's.
+  d1="$(date -d "@$START_EPOCH" +%F)"; d2="$(date +%F)"
+  while IFS= read -r sid; do
+    [[ "$sid" =~ ^[0-9a-f-]{36}$ ]] || continue
+    t="$RUN_DIR/$sid.jsonl"
+    [[ -f "$t" && ! -L "$t" ]] || continue
+    found="$(jq -R -n -c --arg dir "$HOME/.devlead/reports/" --arg d1 "$d1" --arg d2 "$d2" "$_REPORT_WRITES"'
+      | (map(select(.name[0:10] == $d1 or .name[0:10] == $d2)) | last) as $m
+      | if $m then { name: $m.name, size: ($m.content | utf8bytelength),
+                     plain: ($m.content | test("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]") | not) }
+        elif length > 0 then { other: (last.name[0:10]) } else empty end' < "$t" 2>/dev/null)" || continue
+    [[ -n "$found" ]] || continue
+    if [[ "$(jq -r '.other // empty' <<<"$found")" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+      other="$(jq -r .other <<<"$found")"
+      continue
+    fi
+    REPORT_SID="$sid"; REPORT_FOUND="$found"
+  done < <(jq -r '.sessions[].id' <<<"$SESSIONS_JSON")
+  if [[ -z "${REPORT_FOUND:-}" ]]; then
+    [[ -n "$other" ]] && echo "run-job: the report a session wrote is dated $other, not this run's day — not written to ~/.devlead/reports"
+    return 0
+  fi
+  name="$(jq -r .name <<<"$REPORT_FOUND")"
+  [[ "$name" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-execute\.md$ ]] || return 0
+  if [[ "$(jq -r .plain <<<"$REPORT_FOUND")" != "true" ]]; then
+    echo "run-job: the report a session wrote ($name) holds control characters — not written to ~/.devlead/reports"
+    return 0
+  fi
+  if (( $(jq -r .size <<<"$REPORT_FOUND") > REPORT_MAX )); then
+    echo "run-job: the report a session wrote ($name) is larger than $REPORT_MAX bytes — not written to ~/.devlead/reports"
+    return 0
+  fi
+  if [[ ! -d "$dir" || -L "$dir" || -L "$dir/$name" ]]; then
+    echo "run-job: ~/.devlead/reports or $name in it is a symbolic link or missing — DevLead does not write through links in its state; the report stays in the run's transcript"
+    return 0
+  fi
+  tmp="$(mktemp "$dir/.$name.XXXXXX" 2>/dev/null)" || { echo "run-job: cannot write in ~/.devlead/reports — the report stays in the run's transcript"; return 0; }
+  # The same last Write, again by jq: its content goes to the file, as data.
+  if jq -R -n -j --arg dir "$HOME/.devlead/reports/" --arg want "$name" "$_REPORT_WRITES"'
+      | map(select(.name == $want)) | last | .content // ""' < "$RUN_DIR/$REPORT_SID.jsonl" > "$tmp" 2>/dev/null \
+     && chmod 0644 "$tmp" && mv -f -T -- "$tmp" "$dir/$name"; then
+    REPORT_KEPT="$name"
+    echo "run-job: wrote ~/.devlead/reports/$name from the report the run's session could not write"
+  else
+    rm -f -- "$tmp"
+    echo "run-job: cannot write ~/.devlead/reports/$name — the report stays in the run's transcript"
+  fi
 }
 
 # --- The audit line ----------------------------------------------------------------
@@ -361,10 +537,12 @@ _sessions_json() {
   awk -F'\t' -v r="$RUN_ID" '$5 == r' "$LEDGER" 2>/dev/null | jq -R -s -c '
     split("\n") | map(select(length > 0) | split("\t")) as $l
     | { sessions: [ $l[] | select(.[2] == "start") | .[3] as $id
+          | ((.[6] // "") | if test("^[a-z][a-z0-9-]{0,23}$") then . else null end) as $account
           | ([ $l[] | select(.[2] == "end" and .[3] == $id) ] | .[0]) as $e
           | { id: $id,
               exit_code: (if $e then ($e[5] | tonumber? // null) else null end),
-              timed_out: (($e // [])[6] == "timeout") } ],
+              timed_out: (($e // [])[6] == "timeout"),
+              account: $account } ],
         refusals: [ $l[] | select(.[2] == "refused") | .[6] ] }'
 }
 
@@ -401,19 +579,19 @@ _transcript_stats() {
 
 _audit() { # _audit <outcome> <exit code> [skipped reason]
   local outcome="$1" rc="$2" skipped="${3:-}" line month file
-  local sessions="${SESSIONS_JSON:-}" stats="${STATS_JSON:-}" synced="${SYNCED_JSON:-[]}"
+  local sessions="${SESSIONS_JSON:-}" stats="${STATS_JSON:-}" synced="${SYNCED_JSON:-[]}" marks="${MARKS_JSON:-[]}"
   [[ -n "$sessions" ]] || sessions='{"sessions":[],"refusals":[]}'
   [[ -n "$stats" ]] || stats="$_NO_STATS"
   line="$(jq -n -c \
     --arg run_id "$RUN_ID" --arg trigger "$JOB" --argjson repos "$(_repos_json "$JOB_REPOS")" \
     --arg started "$STARTED_AT" --arg ended "$(date -Is)" --argjson rc "$rc" \
-    --argjson s "$sessions" --argjson stats "$stats" --arg outcome "$outcome" \
+    --argjson s "$sessions" --argjson stats "$stats" --arg outcome "$outcome" --argjson marks "$marks" \
     --arg skipped "$skipped" --argjson paused "${PAUSED:-false}" \
     --argjson synced "$synced" --arg sync_error "${SYNC_ERROR:-}" \
     --argjson codes "$(printf '%s\n' "${NOTIFY_CODES[@]}" | jq -R . | jq -s -c 'map(select(length > 0))')" \
     --argjson killed "${LEFTOVERS_KILLED:-0}" --argjson waited "${LOCK_WAIT:-0}" \
     --argjson lock_timed_out "${LOCK_TIMED_OUT:-false}" --argjson job_timed_out "${JOB_TIMED_OUT:-false}" \
-    --argjson transcripts "${TRANSCRIPTS_KEPT:-0}" --argjson intact "${AUDIT_INTACT:-true}" '
+    --argjson transcripts "${TRANSCRIPTS_KEPT:-0}" --argjson intact "${AUDIT_INTACT:-true}" --arg report "${REPORT_KEPT:-}" '
     { run_id: $run_id, trigger: $trigger, repos: $repos, started_at: $started, ended_at: $ended,
       exit_code: $rc,
       timed_out: ([$s.sessions[] | select(.timed_out)] | length > 0),
@@ -422,9 +600,10 @@ _audit() { # _audit <outcome> <exit code> [skipped reason]
       paused: $paused,
       skipped: (if $skipped == "" then null else $skipped end),
       synced: $synced, sync_error: (if $sync_error == "" then null else $sync_error end),
-      sessions: $s.sessions, session_ids: [$s.sessions[].id],
+      sessions: $s.sessions, limit_marks: $marks, session_ids: [$s.sessions[].id],
       tool_uses: $stats.tool_uses, files_changed: $stats.files_changed, prs_opened: $stats.prs_opened,
       parked: $stats.parked,
+      report_kept: (if $report == "" then null else $report end),
       transcripts_kept: $transcripts, outcome: $outcome,
       notified: ($codes | length > 0), notify_codes: $codes,
       leftovers_killed: $killed, lock_wait_seconds: $waited, lock_timed_out: $lock_timed_out,
@@ -665,6 +844,9 @@ while IFS= read -r _sid; do
 done < <(jq -r '.sessions[].id' <<<"$SESSIONS_JSON")
 shopt -u nullglob
 STATS_JSON="$(_transcript_stats "$RUN_DIR")"
+MARKS_JSON="$(_marks_json)"
+[[ -n "$MARKS_JSON" ]] || MARKS_JSON='[]'
+_keep_report
 
 AUDIT_INTACT=true
 if ! _still_there "$LEDGER" "$_fp_ledger" || ! _still_there "$_month_file" "$_fp_audit"; then
@@ -683,13 +865,17 @@ fi
 _parked="$(jq -r '.parked.count' <<<"$STATS_JSON" 2>/dev/null)"
 if [[ "$_parked" =~ ^[1-9][0-9]*$ ]]; then
   _issues="$(jq -r '.parked.issues | map("#\(.)") | join(" ")' <<<"$STATS_JSON" 2>/dev/null)"
-  _need park "$JOB: $_parked work unit(s) parked${_issues:+ ($_issues)} — the reasons are in ~/.devlead/reports/$(date +%F)-execute.md (run $RUN_ID)"
+  _need park "$JOB: $_parked work unit(s) parked${_issues:+ ($_issues)} — the reasons are in ~/.devlead/reports/${REPORT_KEPT:-$(date +%F)-execute.md} (run $RUN_ID)"
 fi
+
+# Every Claude account resting (S22): one notice per stretch.
+_limit_notice
 
 # Outcome.
 _timed_out="$(jq '[.sessions[] | select(.timed_out)] | length > 0' <<<"$SESSIONS_JSON")"
-_refusal="$(jq -r '[.refusals[] | select(. != "paused")] | .[0] // ""' <<<"$SESSIONS_JSON")"
+_refusal="$(jq -r '[.refusals[] | select(. != "paused" and . != "limited")] | .[0] // ""' <<<"$SESSIONS_JSON")"
 _paused_refusal="$(jq '[.refusals[] | select(. == "paused")] | length > 0' <<<"$SESSIONS_JSON")"
+_limited_refusal="$(jq '[.refusals[] | select(. == "limited")] | length > 0' <<<"$SESSIONS_JSON")"
 OUTCOME=ok
 if [[ "$JOB_TIMED_OUT" == "true" ]]; then
   OUTCOME=timeout
@@ -706,12 +892,15 @@ elif [[ -n "$_refusal" ]]; then
     cap)  _why="the daily limit of $CONF_MAX claude sessions is reached" ;;
     busy) _why="another claude session was running" ;;
     nolock) _why="the session lock could not be opened" ;;
+    nomarks) _why="the Claude account marks could not be read" ;;
     *)    _why="the session limits could not be read" ;;
   esac
   _need job-refused "$JOB: a claude session was refused — $_why (run $RUN_ID)"
 elif [[ "$RC" -ne 0 ]]; then
   OUTCOME=failed
   _need job-failed "$JOB: exited $RC (run $RUN_ID)"
+elif [[ "$_limited_refusal" == "true" ]]; then
+  OUTCOME=limited
 elif [[ "$_paused_refusal" == "true" ]]; then
   OUTCOME=paused
   PAUSED=true
@@ -719,6 +908,6 @@ fi
 
 _audit "$OUTCOME" "$RC"
 case "$OUTCOME" in
-  ok|paused) exit 0 ;;
+  ok|paused|limited) exit 0 ;;
   *) [[ "$RC" -ne 0 ]] && exit "$RC"; exit 1 ;;
 esac

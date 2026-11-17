@@ -44,6 +44,19 @@ claude setup-token
 
 Aprueba el acceso y guarda el token que imprime. Anota la fecha de hoy. El token dura un año y `doctor` avisa desde el mes 11.
 
+**Varias suscripciones.** Si tienes más de una cuenta de Claude (por ejemplo la del equipo de tu empresa y la tuya personal), el servidor puede usarlas todas como un *pool* de cuentas. Corre `claude setup-token` una vez por cuenta, con la sesión iniciada en esa cuenta, y guarda cada token con su fecha. En el paso 5 cada cuenta lleva un número, que es su prioridad, y un nombre corto:
+
+```bash
+DEVLEAD_CLAUDE_ACCOUNT_1=team                  # la cuenta Team: la que se usa primero
+DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant-oat01-...
+DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-17
+DEVLEAD_CLAUDE_ACCOUNT_2=ultra                 # la cuenta personal: el respaldo
+DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=sk-ant-oat01-...
+DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-11-17
+```
+
+El orden es tuyo: el número 1 es la cuenta que se usa primero. Cada sesión usa la cuenta de mayor prioridad que esté disponible y recibe solo el token de esa cuenta, sin ninguna otra variable del pool. Al arrancar, el contenedor pasa los tokens a `/etc/devlead/claude-tokens` (de root, legible solo por tu grupo) y los saca del entorno, así que ni el planificador ni los trabajos los llevan; solo el wrapper de `claude` los lee. El registro de sesiones y la auditoría nombran la cuenta, nunca el token. Con un pool, deja vacíos `CLAUDE_CODE_OAUTH_TOKEN` y `DEVLEAD_CLAUDE_TOKEN_ISSUED`: las dos formas no se mezclan, y si una cuenta está incompleta o mal escrita el contenedor no arranca y el log nombra la variable.
+
 ### 2. Token de GitHub
 
 Crea un token *fine-grained* en GitHub → Settings → Developer settings → Fine-grained tokens:
@@ -85,7 +98,7 @@ chmod 600 .env
 | `DEVLEAD_WORKSPACE` | La carpeta absoluta que contiene los repos a enrolar |
 | `DEVLEAD_REPOS` | `<ruta local>=<owner>/<repo>`, separados por comas |
 | `DEVLEAD_GIT_NAME`, `DEVLEAD_GIT_EMAIL` | El autor de los commits del servidor |
-| `CLAUDE_CODE_OAUTH_TOKEN`, `DEVLEAD_CLAUDE_TOKEN_ISSUED` | El token del paso 1 y su fecha (`AAAA-MM-DD`) |
+| `CLAUDE_CODE_OAUTH_TOKEN`, `DEVLEAD_CLAUDE_TOKEN_ISSUED` | El token del paso 1 y su fecha (`AAAA-MM-DD`); o, con varias cuentas, `DEVLEAD_CLAUDE_ACCOUNT_<N>`, `_TOKEN` e `_ISSUED` por cuenta |
 | `GH_TOKEN` | El token del paso 2 |
 | `TZ` | Tu zona horaria, por ejemplo `America/Bogota` |
 
@@ -145,21 +158,28 @@ Los comandos que actúan como el agente llevan `-u devlead`. `docker compose exe
   El conteo diario sobrevive a recrear el contenedor.
 - **Avisos:**
   - **nivel `agenda`:** la agenda de la mañana y el resumen del día;
-  - **nivel `need`:** PR abierto, trabajo parado (PARK), corrida fallida o excedida, sesión rechazada por un tope, auditoría alterada, token por vencer y una issue con instrucciones dirigidas al agente (`untrusted-content`), que queda fuera del plan.
+  - **nivel `need`:** PR abierto, trabajo parado (PARK), corrida fallida o excedida, sesión rechazada por un tope, auditoría alterada, token por vencer (con un pool, nombra la cuenta), todas las cuentas de Claude descansando (`claude-limited`) y una issue con instrucciones dirigidas al agente (`untrusted-content`), que queda fuera del plan.
 - **Cambiar el plan del loop:** edita el archivo y reinicia el contenedor con `docker compose restart devlead`.
+- **Límites de uso de Claude:** cuando una sesión termina porque la cuenta llegó a su límite de uso (el de 5 horas o el semanal), esa cuenta descansa hasta la hora de reinicio que informa Claude, o 5 horas si Claude no la informa. Las sesiones siguientes usan la próxima cuenta del pool y, cuando pasa esa hora, vuelven solas a la cuenta de mayor prioridad. La iteración que terminó en el límite no cuenta: se repite enseguida con la cuenta siguiente, también en la pasada nocturna de una sola iteración (`fleet`), la corrida de `poll` y cada repo de `discover`. Una vez por cuenta seguida, así que nunca gira en vacío. Con Team primero y Ultra de respaldo: Team trabaja hasta su límite de 5 horas, Ultra toma las sesiones durante esa ventana y después todo vuelve a Team. Si Claude rechaza un token (inválido, vencido o revocado), su cuenta descansa hasta que lo renueves y reinicies el contenedor. Si todas las cuentas descansan, ninguna sesión arranca hasta el reinicio más próximo, los trabajos dejan de reintentar y llega un solo aviso `need` (`claude-limited`) con la hora. Esa espera no gasta el tope diario. La línea de auditoría dice qué cuenta usó cada sesión (`sessions[].account`) y qué cuentas quedaron descansando (`limit_marks`). Las marcas viven en el volumen `/var/lib/devlead/accounts.tsv`; para que una cuenta vuelva antes de tiempo, borra su línea como root:
+  ```bash
+  docker compose exec -u root devlead sed -i '/^team\t/d' /var/lib/devlead/accounts.tsv
+  ```
 
 ## Mantenimiento
 
 - **Actualizar DevLead:** `git pull` en este repo y luego el mismo comando del paso 7. La versión de Claude Code está fijada en la imagen y solo cambia al reconstruir.
-- **Renovar el token de Claude** antes del año: `claude setup-token`, actualiza `CLAUDE_CODE_OAUTH_TOKEN` y `DEVLEAD_CLAUDE_TOKEN_ISSUED` en `.env`, y corre `docker compose up -d`.
+- **Renovar el token de Claude** antes del año: `claude setup-token`, actualiza `CLAUDE_CODE_OAUTH_TOKEN` y `DEVLEAD_CLAUDE_TOKEN_ISSUED` en `.env`, y corre `docker compose up -d`. Con un pool, renueva la cuenta que nombra el aviso: su `DEVLEAD_CLAUDE_ACCOUNT_<N>_TOKEN` y su `DEVLEAD_CLAUDE_ACCOUNT_<N>_ISSUED`.
 - **Detener:** `docker compose down`. Los clones y el conteo diario quedan en sus volúmenes. `docker compose down -v` también borra los volúmenes.
 
 ## Límites conocidos
 
 - El horario no recupera las corridas que se perdieron mientras la máquina estaba apagada.
 - El límite `irreversible` de `guard.sh` compara texto. No es un sandbox, y el token de GitHub sigue pudiendo cerrar issues. La protección de rama del paso 3 es la red de respaldo.
+- La sesión que descubre el límite de una cuenta sí cuenta para el tope diario, y también su repetición con la cuenta siguiente.
+- Una sesión corre como el mismo usuario que escribe las marcas de las cuentas, así que podría alterarlas. Lo peor que logra es dejar descansando una cuenta, o devolver antes una que Claude va a rechazar otra vez.
+- Con el mismo usuario no hay aislamiento real: una sesión podría leer el archivo de tokens o el entorno de otro proceso del usuario. `guard.sh` lo bloquea por texto (rutas `/proc/.../environ`, `ps e`, búsquedas recursivas sobre `/`, `/etc` o `/proc`, el archivo de tokens), pero es la red, no un sandbox. Un `docker compose exec` lleva el `.env` completo en su entorno; el wrapper y `run-job.sh` arrancan de nuevo sin los tokens del pool antes de hacer nada.
 - Cada consulta de issues sincroniza todos los repos enrolados. Si uno falla, el aviso `job-failed` se repite en cada consulta hasta que se arregle.
-- Las corridas guiadas no pueden escribir el reporte `~/.devlead/reports/*-execute.md`, así que el aviso de PARK puede apuntar a un reporte que no existe. Los motivos quedan en la transcripción de la corrida.
+- Las sesiones guiadas no pueden escribir en `~/.devlead/reports/`. En el servidor, el trabajo escribe por ellas el reporte `AAAA-MM-DD-execute.md` que la sesión intentó escribir, como texto y hasta 256 KiB, y el aviso de PARK apunta a ese archivo. Si el reporte es más grande, trae caracteres de control o la ruta es un enlace simbólico, no se escribe y los motivos quedan en la transcripción de la corrida. Fuera del servidor, en las corridas de los timers del host, ese reporte sigue sin escribirse.
 
 ## Prueba de tres días
 

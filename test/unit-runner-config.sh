@@ -36,9 +36,10 @@ lacks() {
 SETTINGS=(TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER DEVLEAD_CRON_POLL DEVLEAD_CRON_ENDOFDAY
           DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT DEVLEAD_AUDIT_RETENTION_DAYS
           DEVLEAD_CLAUDE_BIN DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_LOOP_PLAN DEVLEAD_STATE_DIR
-          DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL DEVLEAD_JOB_TIMEOUT DEVLEAD_JOB_LOCK_WAIT)
+          DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL DEVLEAD_JOB_TIMEOUT DEVLEAD_JOB_LOCK_WAIT
+          CLAUDE_CODE_OAUTH_TOKEN DEVLEAD_CLAUDE_TOKEN_ISSUED)
 UNSET=()
-for _v in "${SETTINGS[@]}"; do UNSET+=(-u "$_v"); done
+for _v in "${SETTINGS[@]}" $(compgen -e | grep '^DEVLEAD_CLAUDE_ACCOUNT_'); do UNSET+=(-u "$_v"); done
 
 # render <outdir> [VAR=value...] — prints combined output; $? is the exit code.
 render() {
@@ -133,6 +134,7 @@ bad() { # bad <label> <expected message> VAR=value...
   check "$label: writes no runner.conf" "$([[ -e $OUT/runner.conf ]] && echo written || echo none)" "none"
   check "$label: writes no repos" "$([[ -e $OUT/repos ]] && echo written || echo none)" "none"
   check "$label: writes no git identity" "$([[ -e $OUT/git-identity ]] && echo written || echo none)" "none"
+  check "$label: writes no claude-tokens" "$([[ -e $OUT/claude-tokens ]] && echo written || echo none)" "none"
 }
 bad "bad loop schedule" "DEVLEAD_CRON_LOOP='61 22 * * *' is not a valid schedule" 'DEVLEAD_CRON_LOOP=61 22 * * *'
 bad "bad fleet schedule" "DEVLEAD_CRON_FLEET='@daily' is not a valid schedule" 'DEVLEAD_CRON_FLEET=@daily'
@@ -291,6 +293,88 @@ OUT="$SANDBOX/replace"
 render "$OUT" >/dev/null
 env "${UNSET[@]}" DEVLEAD_CRON_FLEET=off bash "$CFG" render "$OUT" >/dev/null 2>&1
 lacks "a second render replaces the crontab" "$(cat "$OUT/crontab")" "$RUN_JOB fleet"
+
+# ===========================================================================
+# The Claude account pool (S21): names, tokens and issue dates, in priority
+# order. runner.conf gets the names and the variables, never a token.
+# ===========================================================================
+T1=sk-ant-oat01-TEAM-dummy-value-1
+T2=sk-ant-oat01-ULTRA-dummy-value-2
+POOL=(DEVLEAD_CLAUDE_ACCOUNT_1=team "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=$T1" DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-01
+      DEVLEAD_CLAUDE_ACCOUNT_2=ultra "DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=$T2" DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-10-15)
+OUT="$SANDBOX/pool"
+out="$(render "$OUT" "${POOL[@]}")"; rc=$?
+check "pool: render exits 0" "$rc" "0"
+check "pool: runner.conf names the accounts and their token variables, in the env file's order" \
+  "$(grep '^CLAUDE_ACCOUNTS=' "$OUT/runner.conf")" \
+  "CLAUDE_ACCOUNTS=team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN ultra=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN"
+contains "pool: the start log names them in priority order" "$out" "2 Claude account(s), in priority order: team ultra"
+lacks "pool: no token in runner.conf or the other public files" "$(cat "$OUT/runner.conf" "$OUT/crontab" "$OUT/repos" "$OUT/git-identity")" "dummy-value"
+lacks "pool: no token in the output" "$out" "dummy-value"
+check "pool (A1): the tokens go to claude-tokens, by variable, in priority order" "$(cat "$OUT/claude-tokens" 2>/dev/null)" \
+  "$(printf 'DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=%s\nDEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=%s' "$T1" "$T2")"
+check "pool (A1): claude-tokens is written 0600 (the entrypoint opens it to the user's group)" "$(stat -c %a "$OUT/claude-tokens" 2>/dev/null)" "600"
+OUT="$SANDBOX/pool-order"
+render "$OUT" DEVLEAD_CLAUDE_ACCOUNT_1=ultra "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=$T2" DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-10-15 \
+  DEVLEAD_CLAUDE_ACCOUNT_2=team "DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=$T1" DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-11-01 >/dev/null
+check "pool: the priority is the numbering, not a fixed order" "$(grep '^CLAUDE_ACCOUNTS=' "$OUT/runner.conf")" \
+  "CLAUDE_ACCOUNTS=ultra=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN team=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN"
+
+# Previous behaviour: the single token is a pool of one, "default"; without
+# a token runner.conf has no account line at all.
+OUT="$SANDBOX/single"
+out="$(render "$OUT" "CLAUDE_CODE_OAUTH_TOKEN=$T1" DEVLEAD_CLAUDE_TOKEN_ISSUED=2026-11-01)"; rc=$?
+check "single token: render exits 0" "$rc" "0"
+check "single token: one account, default, its token in CLAUDE_CODE_OAUTH_TOKEN" \
+  "$(grep '^CLAUDE_ACCOUNTS=' "$OUT/runner.conf")" "CLAUDE_ACCOUNTS=default=CLAUDE_CODE_OAUTH_TOKEN"
+check "single token: the start log is what it was" "$(grep -c 'Claude account' <<<"$out")" "0"
+check "single token: no claude-tokens file (the token stays where it was)" "$([[ -e "$OUT/claude-tokens" ]] && echo written || echo none)" "none"
+lacks "single token: no token in runner.conf" "$(cat "$OUT"/*)" "dummy-value"
+OUT="$SANDBOX/single-empty-pool"
+render "$OUT" "CLAUDE_CODE_OAUTH_TOKEN=$T1" DEVLEAD_CLAUDE_ACCOUNT_1= DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN= DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED= >/dev/null; rc=$?
+check "single token with the pool's variables left empty (the template): accepted" \
+  "$rc $(grep '^CLAUDE_ACCOUNTS=' "$OUT/runner.conf")" "0 CLAUDE_ACCOUNTS=default=CLAUDE_CODE_OAUTH_TOKEN"
+OUT="$SANDBOX/no-token"
+render "$OUT" >/dev/null
+check "no token: no account line" "$(grep -c '^CLAUDE_ACCOUNTS=' "$OUT/runner.conf")" "0"
+# A pool removed from the env file leaves no tokens behind.
+OUT="$SANDBOX/pool-then-none"
+render "$OUT" "${POOL[@]}" >/dev/null
+env "${UNSET[@]}" bash "$CFG" render "$OUT" >/dev/null 2>&1
+check "a render without the pool removes an earlier claude-tokens" "$([[ -e "$OUT/claude-tokens" ]] && echo left || echo removed)" "removed"
+
+# Invalid pools stop the start, named, never echoed.
+pool_bad() { # pool_bad <label> <expected message> <value that must not appear> VAR=value...
+  local label="$1" msg="$2" hidden="$3" out; shift 3
+  bad "$label" "$msg" "$@"
+  out="$(render "$SANDBOX/bad" "$@")"
+  lacks "$label: the value is not echoed" "$out" "$hidden"
+}
+P1=(DEVLEAD_CLAUDE_ACCOUNT_1=team "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=$T1" DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-01)
+pool_bad "a gap in the numbering" "DEVLEAD_CLAUDE_ACCOUNT_2 is not set, but a later account is" "dummy-value" \
+  "${P1[@]}" DEVLEAD_CLAUDE_ACCOUNT_3=ultra "DEVLEAD_CLAUDE_ACCOUNT_3_TOKEN=$T2" DEVLEAD_CLAUDE_ACCOUNT_3_ISSUED=2026-10-15
+pool_bad "an account without a token" "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN is not set" "2026-11-01" \
+  DEVLEAD_CLAUDE_ACCOUNT_1=team DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-01
+pool_bad "a token with a space" "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN is not a token as claude setup-token prints it" "dummy" \
+  DEVLEAD_CLAUDE_ACCOUNT_1=team "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant dummy" DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-01
+pool_bad "a token on two lines" "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN is not a token" "dummy-value" \
+  DEVLEAD_CLAUDE_ACCOUNT_1=team $'DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant-oat01-dummy-value\nX' DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-01
+pool_bad "an account without an issue date" "DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED must be the day you ran claude setup-token" "dummy-value" \
+  DEVLEAD_CLAUDE_ACCOUNT_1=team "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=$T1"
+pool_bad "an issue date that is no day" "DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED must be the day" "2026-02-30" \
+  DEVLEAD_CLAUDE_ACCOUNT_1=team "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=$T1" DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-02-30
+pool_bad "a name that is not a short name" "DEVLEAD_CLAUDE_ACCOUNT_1 must be the account's short name" "Team!" \
+  'DEVLEAD_CLAUDE_ACCOUNT_1=Team!' "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=$T1" DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-01
+pool_bad "two accounts with one name" "DEVLEAD_CLAUDE_ACCOUNT_1 and DEVLEAD_CLAUDE_ACCOUNT_2 have the same name" "dummy-value" \
+  "${P1[@]}" DEVLEAD_CLAUDE_ACCOUNT_2=team "DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=$T2" DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-10-15
+pool_bad "a tenth account" "DEVLEAD_CLAUDE_ACCOUNT_10 is not a setting of the Claude account pool" "dummy-value" \
+  "${P1[@]}" "DEVLEAD_CLAUDE_ACCOUNT_10=x"
+pool_bad "a misspelt variable" "DEVLEAD_CLAUDE_ACCOUNT_1_TOKN is not a setting of the Claude account pool" "dummy-value" \
+  "${P1[@]}" "DEVLEAD_CLAUDE_ACCOUNT_1_TOKN=$T2"
+pool_bad "a pool and the single token" "CLAUDE_CODE_OAUTH_TOKEN belongs to the single-token setup" "ULTRA-dummy" \
+  "${P1[@]}" "CLAUDE_CODE_OAUTH_TOKEN=$T2"
+pool_bad "a pool and the single token's date" "DEVLEAD_CLAUDE_TOKEN_ISSUED belongs to the single-token setup" "dummy-value" \
+  "${P1[@]}" DEVLEAD_CLAUDE_TOKEN_ISSUED=2026-11-01
 
 out="$(env "${UNSET[@]}" bash "$CFG" 2>&1)"; rc=$?
 check "no subcommand: usage, exit 2" "$rc" "2"

@@ -119,6 +119,7 @@ check ".env (the secrets) is git-ignored" \
   "$(git -C "$REPO_ROOT" check-ignore -q .env && echo ignored || echo tracked)" "ignored"
 _tpl="$(cat "$REPO_ROOT/$TEMPLATE" 2>/dev/null)"
 for var in DEVLEAD_UID DEVLEAD_GID CLAUDE_CODE_OAUTH_TOKEN DEVLEAD_CLAUDE_TOKEN_ISSUED GH_TOKEN \
+           DEVLEAD_CLAUDE_ACCOUNT_1 DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED \
            DEVLEAD_NTFY_URL DEVLEAD_NTFY_TOKEN DEVLEAD_NOTIFY_DETAIL DEVLEAD_LOOP_CLAUDE_ARGS \
            DEVLEAD_DISCOVER_CLAUDE_ARGS DEVLEAD_EGRESS_ALLOW TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP \
            DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER DEVLEAD_CRON_POLL DEVLEAD_CRON_ENDOFDAY \
@@ -270,6 +271,11 @@ p egress_ip "$(yn curl -fsS --max-time 10 -o /dev/null https://1.1.1.1/)"
 p egress_github "$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' https://api.github.com/ 2>/dev/null)"
 p gh_reaches "$(gh api /zen 2>&1 | grep -c 'HTTP 401')"
 p claude_reaches "$(cd /tmp/work && timeout 90 claude -p hi </dev/null 2>&1 | grep -c '401')"
+# The real API refused the dummy token, so the wrapper rested the single
+# token's account until a restart (S22). The probe's later sessions use the
+# mock: clear the mark, as a restart after renewing the token would.
+p reach_mark "$(grep -v '^#' /var/lib/devlead/accounts.tsv | cut -f1-3,7 | tr '\t' '|')"
+head -n 1 /var/lib/devlead/accounts.tsv > /tmp/marks-header && cat /tmp/marks-header > /var/lib/devlead/accounts.tsv
 
 # --- F2: the runner's files and limits (S11, S16-S18) -------------------------
 p supercronic "$(supercronic -version 2>&1 | head -n 1)"
@@ -331,8 +337,11 @@ http.createServer((req, res) => {
     const last = (j.messages || []).slice(-1)[0] || {};
     const results = Array.isArray(last.content) ? last.content.filter(c => c.type === 'tool_result') : [];
     if (results.length) { results.forEach(r => log('TOOL_RESULT ' + JSON.stringify(r.content))); return reply(res, j.stream, [{ type: 'text', text: 'done' }], 'end_turn'); }
-    if ((j.tools || []).some(t => t.name === 'Bash'))
-      return reply(res, j.stream, [{ type: 'tool_use', id: 'toolu_mock', name: 'Bash', input: { command: process.env.MOCK_CMD, description: 'probe' } }], 'tool_use');
+    if ((j.tools || []).some(t => t.name === 'Bash')) {
+      const calls = [{ type: 'tool_use', id: 'toolu_mock', name: 'Bash', input: { command: process.env.MOCK_CMD, description: 'probe' } }];
+      if (process.env.MOCK_WRITE) calls.push({ type: 'tool_use', id: 'toolu_write', name: 'Write', input: { file_path: process.env.MOCK_WRITE, content: process.env.MOCK_WRITE_CONTENT || '' } });
+      return reply(res, j.stream, calls, 'tool_use');
+    }
     reply(res, j.stream, [{ type: 'text', text: 'ok' }], 'end_turn');
   });
 }).listen(8099, '127.0.0.1', () => log('LISTEN'));
@@ -537,6 +546,7 @@ check "egress to an address outside the allowlist fails" "$(v egress_ip)" "no"
 check "egress to api.github.com works" "$(v egress_github)" "200"
 check "gh reaches GitHub (dummy token: HTTP 401)" "$(v gh_reaches)" "1"
 check "claude reaches the Anthropic API (dummy token: 401)" "$(v claude_reaches)" "1"
+check "the API's refusal of the dummy token rests the account until a restart (S22, the real API's answer)" "$(v reach_mark)" "default|-|auth|auth"
 check "settings env cannot change the pinned variables in a session" "$(v s_env)" \
   '"g=1 b=[] e=[] n=[] l=[] p=[] m=1"'
 check "session 1 cannot plant a guard override (EACCES)" "$(v s_plant)" '"EACCES"'
@@ -610,6 +620,92 @@ check "the user cannot change the git identity" "$(v ident_write)" "no"
 check "the user cannot override it in the global config" "$(v ident_override)" "no"
 check "a commit in a clone carries that author" "$(v commit_author)" "Smoke Bot <smoke-bot@example.com>|Smoke Bot <smoke-bot@example.com>"
 
+echo "=== the Claude account pool: one token per session, usage limits (S21, S22) ==="
+# The real Claude Code 2.1.326 of the image, through the wrapper, against a
+# mock of the API that answers the team account's token with the 5-hour
+# usage limit (429 and the rate-limit headers the API sends) and any other
+# with a reply. Dummy tokens; no real limit is reached.
+read -r -d '' POOL_PROBE <<'POOL_EOF'
+p() { printf '%s=%s\n' "$1" "$2"; }
+M=/home/devlead/.cache/smoke
+mkdir -p "$M" /tmp/work && cd /tmp/work && git init -q -b feat/work 2>/dev/null
+# The ledger volume keeps the probe's sessions: count from here.
+L0="$(wc -l < /var/lib/devlead/sessions.tsv)"
+cat > "$M/pool-mock.js" <<'JS'
+const http = require('http'), fs = require('fs');
+const log = s => fs.appendFileSync('/home/devlead/.cache/smoke/pool-mock.log', s + '\n');
+const reset = Math.floor(Date.now() / 1000) + 3 * 3600;
+fs.writeFileSync('/home/devlead/.cache/smoke/pool-reset', String(reset));
+http.createServer((req, res) => {
+  let b = ''; req.on('data', c => b += c);
+  req.on('end', () => {
+    if (!/\/v1\/messages(\?|$)/.test(req.url)) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{}'); }
+    const a = req.headers.authorization || '';
+    const who = a.endsWith('-team') ? 'team' : a.endsWith('-ultra') ? 'ultra' : 'other';
+    log('REQ ' + who);
+    if (who === 'team') {
+      res.writeHead(429, { 'content-type': 'application/json', 'request-id': 'req_mock',
+        'anthropic-ratelimit-unified-status': 'rejected', 'anthropic-ratelimit-unified-representative-claim': 'five_hour',
+        'anthropic-ratelimit-unified-reset': String(reset), 'anthropic-ratelimit-unified-5h-status': 'rejected',
+        'anthropic-ratelimit-unified-5h-reset': String(reset), 'anthropic-ratelimit-unified-overage-status': 'rejected',
+        'anthropic-ratelimit-unified-overage-disabled-reason': 'org_level_disabled' });
+      return res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'This request would exceed your account\'s rate limit. Please try again later.' } }));
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: 'msg_mock', type: 'message', role: 'assistant', model: 'mock', content: [{ type: 'text', text: 'ok' }],
+      stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }));
+  });
+}).listen(8099, '127.0.0.1', () => log('LISTEN'));
+JS
+node "$M/pool-mock.js" & mp=$!
+for _ in $(seq 1 30); do grep -q LISTEN "$M/pool-mock.log" 2>/dev/null && break; sleep 0.2; done
+s() { ANTHROPIC_BASE_URL=http://127.0.0.1:8099 timeout 120 claude -p hi </dev/null >"$M/out$1" 2>"$M/err$1"; echo $?; }
+p conf "$(grep '^CLAUDE_ACCOUNTS=' /etc/devlead/runner.conf)"
+# A1: the tokens live in root's file, readable by the user's group only; no
+# process the user can read the environment of carries one.
+p tokens_meta "$(stat -c '%U %a' /etc/devlead/claude-tokens) $([[ "$(stat -c %g /etc/devlead/claude-tokens)" == "$(id -g)" ]] && echo group || echo other)"
+p tokens_write "$( (echo x >> /etc/devlead/claude-tokens) 2>/dev/null && echo yes || echo no)"
+p tokens_env "$(grep -laE 'DEVLEAD_CLAUDE_ACCOUNT_[0-9]+_TOKEN=' /proc/[0-9]*/environ 2>/dev/null | wc -l)"
+p names_env "$(compgen -e | grep -c '^DEVLEAD_CLAUDE_ACCOUNT_[0-9]$')"
+p rc1 "$(s 1)"
+p rc2 "$(s 2)"
+p mock "$(grep '^REQ' "$M/pool-mock.log" | cut -d' ' -f2 | awk '!seen[$0]++' | paste -sd, -)"
+p starts "$(tail -n +"$((L0 + 1))" /var/lib/devlead/sessions.tsv | awk -F'\t' '$3 == "start" {print $7}' | paste -sd, -)"
+p mark "$(grep -v '^#' /var/lib/devlead/accounts.tsv | cut -f1,2,3,7 | tr '\t' '|')"
+p reset "$(cat "$M/pool-reset")"
+p err1 "$(grep -c 'the Claude account team rests until .* — its 5-hour limit; the next session uses ultra' "$M/err1")"
+p tokens "$(cat /var/lib/devlead/sessions.tsv /var/lib/devlead/accounts.tsv "$M"/err* | grep -c DUMMY)"
+p doctor "$(bash /home/devlead/.devlead/scripts/doctor.sh 2>/dev/null | grep -c '^WARN:   the Claude token of account team (DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-11-01) is 12 months old and has expired')"
+printf 'ultra\t%s\tseven_day\tt\ts\tr\treported\n' "$(( $(date +%s) + 86400 ))" >> /var/lib/devlead/accounts.tsv
+p rc3 "$(s 3)"
+p out3 "$(cat "$M/out3")"
+p refused "$(tail -n 1 /var/lib/devlead/sessions.tsv | cut -f3,7 | tr '\t' '|')"
+kill "$mp" 2>/dev/null
+POOL_EOF
+POOL_OUT="$(compose run --rm -T -e CLAUDE_CODE_OAUTH_TOKEN= -e DEVLEAD_CLAUDE_TOKEN_ISSUED= \
+  -e DEVLEAD_CLAUDE_ACCOUNT_1=team -e DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant-oat01-DUMMY-team -e DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-11-01 \
+  -e DEVLEAD_CLAUDE_ACCOUNT_2=ultra -e DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=sk-ant-oat01-DUMMY-ultra -e DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-11-01 \
+  devlead bash -c "$POOL_PROBE" 2>"$SCRATCH/pool.err")"
+pv() { sed -n "s/^$1=//p" <<<"$POOL_OUT" | head -n 1; }
+check "pool: runner.conf lists the accounts in priority order" "$(pv conf)" \
+  "CLAUDE_ACCOUNTS=team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN ultra=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN"
+check "pool (A1): the tokens are in root's file, 0640, the user's group" "$(pv tokens_meta)" "root 640 group"
+check "pool (A1): the user cannot change the token file" "$(pv tokens_write)" "no"
+check "pool (A1): no process the user can read holds a pool token in its environment" "$(pv tokens_env)" "0"
+check "pool (A1): the names stay for doctor" "$(pv names_env)" "2"
+check "pool: the first session, on team, ends on the 5-hour limit (exit 1)" "$(pv rc1)" "1"
+check "pool: the second session runs on ultra (exit 0)" "$(pv rc2)" "0"
+check "pool: the API saw team's token first, then ultra's" "$(pv mock)" "team,ultra"
+check "pool: the ledger names the accounts" "$(pv starts)" "team,ultra"
+check "pool: team rests until the reset the API sent, as Claude Code 2.1.326 reported it" "$(pv mark)" "team|$(pv reset)|five_hour|reported"
+check "pool: the wrapper says so and names the next account" "$(pv err1)" "1"
+check "pool: no token in the ledger, the marks or the messages" "$(pv tokens)" "0"
+check "pool: doctor warns about team's token by name" "$(pv doctor)" "1"
+check "pool: every account resting: refused (75)" "$(pv rc3)" "75"
+check "pool: every account resting: stdout says claude-limited" "$(pv out3)" "STATUS: claude-limited"
+check "pool: every account resting: the ledger says limited" "$(pv refused)" "refused|limited"
+[[ -n "$POOL_OUT" ]] || { echo "pool probe stderr:"; tail -n 20 "$SCRATCH/pool.err"; }
+
 echo "=== the long-lived service: scheduler and runner (F2) ==="
 # Its own env file: no push channel (the failures below send `need`), a
 # morning job every minute (to watch supercronic run one), discovery off, a
@@ -635,10 +731,13 @@ MOCK_ENV=(-e ANTHROPIC_BASE_URL=http://127.0.0.1:8099 -e ANTHROPIC_API_KEY=sk-an
 # live in ~/.cache, out of the /tmp the jobs clean up after themselves. Claude
 # Code refuses `sleep N; ...` in a Bash call, so the commands that must take a
 # while run `tail -f /dev/null` under `timeout`.
+# A third and fourth argument add a Write call of that content to that path
+# in the same turn (S23).
 mock() {
   dx sh -c "pkill -f '^node /home/devlead/.cache/smoke/mock.js' ; : > /home/devlead/.cache/smoke/mock-$1.log" >/dev/null 2>&1
   for _ in $(seq 1 25); do dx pgrep -f '^node /home/devlead/.cache/smoke/mock.js' >/dev/null 2>&1 || break; sleep 0.2; done
-  compose exec -d -u devlead -e "MOCK_LOG=/home/devlead/.cache/smoke/mock-$1.log" -e "MOCK_CMD=$2" devlead \
+  compose exec -d -u devlead -e "MOCK_LOG=/home/devlead/.cache/smoke/mock-$1.log" -e "MOCK_CMD=$2" \
+    -e "MOCK_WRITE=${3:-}" -e "MOCK_WRITE_CONTENT=${4:-}" devlead \
     node /home/devlead/.cache/smoke/mock.js
   for _ in $(seq 1 50); do dx grep -q LISTEN "/home/devlead/.cache/smoke/mock-$1.log" 2>/dev/null && return 0; sleep 0.2; done
   echo "mock $1 did not start" >&2
@@ -673,6 +772,8 @@ if compose up -d --wait --wait-timeout 180 >"$SCRATCH/up.log" 2>&1; then
   check "the crontab: discover off, as the env file says" "$(grep -c 'run-job.sh discover' <<<"$crontab")" "0"
   check "the limits are the env file's" "$(dx grep -E '^(TZ|MAX_SESSIONS_PER_DAY|SESSION_TIMEOUT)=' /etc/devlead/runner.conf | paste -sd, -)" \
     "TZ=America/Bogota,MAX_SESSIONS_PER_DAY=4,SESSION_TIMEOUT=20s"
+  check "the single token is a pool of one account, default (S21)" "$(dx grep '^CLAUDE_ACCOUNTS=' /etc/devlead/runner.conf)" \
+    "CLAUDE_ACCOUNTS=default=CLAUDE_CODE_OAUTH_TOKEN"
 
   # Setup, as the operator: an (empty) fleet list, so the fleet job runs.
   rx sh -c 'touch /home/devlead/.devlead/autonomous-repos && chmod 0644 /home/devlead/.devlead/autonomous-repos'
@@ -680,8 +781,12 @@ if compose up -d --wait --wait-timeout 180 >"$SCRATCH/up.log" 2>&1; then
   printf '%s\n' "$MOCK_JS" | dx sh -c 'cat > /home/devlead/.cache/smoke/mock.js'
 
   # 1. A forced job: one session, its audit line and transcript, and nothing
-  #    it left behind survives it.
-  mock leftovers 'bash -c "exec -a leftover-a tail -f /dev/null" >/dev/null 2>&1 & setsid bash -c "exec -a leftover-b tail -f /dev/null" >/dev/null 2>&1 & setsid env -i bash -c "exec -a leftover-c tail -f /dev/null >/dev/null 2>&1 &"; echo spawned'
+  #    it left behind survives it. The session also writes the run's report,
+  #    which guard.sh refuses (S23): the job writes it.
+  REPORT_NAME="$(TZ=America/Bogota date +%F)-execute.md"
+  REPORT_TEXT="# DevLead Execute — smoke | #1 | pr-created |"
+  mock leftovers 'bash -c "exec -a leftover-a tail -f /dev/null" >/dev/null 2>&1 & setsid bash -c "exec -a leftover-b tail -f /dev/null" >/dev/null 2>&1 & setsid env -i bash -c "exec -a leftover-c tail -f /dev/null >/dev/null 2>&1 &"; echo spawned' \
+    "/home/devlead/.devlead/reports/$REPORT_NAME" "$REPORT_TEXT"
   out="$(job fleet 2>&1)"; rc=$?
   check "a forced fleet job exits 0" "$rc" "0"
   contains "the job's audit line reaches the container log" "$out" 'devlead-audit {"run_id":'
@@ -697,6 +802,11 @@ if compose up -d --wait --wait-timeout 180 >"$SCRATCH/up.log" 2>&1; then
   check "no process the job left behind survives it (in its session, setsid, setsid env -i)" "$(dx pgrep -fc '^leftover-')" "0"
   check "audit: the leftovers were stopped" "$(jq -c '.leftovers_killed >= 3' <<<"$a")" "true"
   check "the job's private TMPDIR is gone" "$(dx sh -c 'ls -d /tmp/devlead-job.* 2>/dev/null | wc -l')" "0"
+  check "S23: guard.sh refused the session's report Write" \
+    "$(dx sh -c "grep -q 'DevLead limit \\[self-config\\]' /home/devlead/.devlead/audit/runs/$run_id/$sid.jsonl && echo refused" 2>/dev/null)" "refused"
+  check "S23: the job wrote that report, on the host, as the user" \
+    "$(cat "$HOST_STATE/reports/$REPORT_NAME" 2>/dev/null)|$(stat -c %u "$HOST_STATE/reports/$REPORT_NAME" 2>/dev/null)" "$REPORT_TEXT|$HOST_UID"
+  check "S23: the audit names it" "$(jq -r '.report_kept' <<<"$a")" "$REPORT_NAME"
 
   # 2. One session at a time: a session started while a job's session runs is
   #    refused; a job started meanwhile waits for the first job.

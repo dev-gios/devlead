@@ -51,7 +51,8 @@ LEDGER="$SANDBOX/state/sessions.tsv"
 TMPROOT="$SANDBOX/tmp"
 PAUSE="$SANDBOX/PAUSE"
 RUNJOB="$SANDBOX/run-job.sh"
-export LEDGER TMPROOT
+MARKS="$SANDBOX/state/accounts.tsv"
+export LEDGER TMPROOT MARKS
 mkdir -p "$SCRIPTS" "$SANDBOX/state" "$TMPROOT" "$HOME/.devlead/run" "$CLAUDE_CONFIG_DIR/projects/-home-x"
 printf '%s\n' "# DevLead session ledger (root writes this line at container start)" > "$LEDGER"
 : > "$SANDBOX/state/job.lock"; : > "$SANDBOX/state/session.lock"
@@ -62,7 +63,7 @@ setconf() { sed -i "s|^$1=.*|$1=$2|" "$CONF"; }
 chmod 0644 "$CONF"
 
 cp "$SRC" "$RUNJOB"
-for kv in "RUNNER_CONF=$CONF" "LEDGER=$LEDGER" "JOB_LOCK=$SANDBOX/state/job.lock" "SESSION_LOCK=$SANDBOX/state/session.lock" "PAUSE_FILE=$PAUSE" \
+for kv in "RUNNER_CONF=$CONF" "LEDGER=$LEDGER" "ACCOUNTS_FILE=$MARKS" "JOB_LOCK=$SANDBOX/state/job.lock" "SESSION_LOCK=$SANDBOX/state/session.lock" "PAUSE_FILE=$PAUSE" \
           "SCRIPTS_DIR=$SCRIPTS" "SYNC_REPOS=$SANDBOX/sync-repos.sh" "TMP_ROOT=$TMPROOT" "ORPHAN_PARENT=-1" "CONF_OWNER_UID=$(id -u)"; do
   key="${kv%%=*}"
   check "run-job.sh has the fixed path $key" "$(grep -c "^$key=" "$RUNJOB")" "1"
@@ -109,15 +110,18 @@ EOF
 chmod +x "$SANDBOX/sync-repos.sh"
 export SANDBOX_SYNC_FAIL="$SANDBOX/sync-fail" SESSION_LOCK="$SANDBOX/state/session.lock"
 
-# session <sid> [end detail] [rc] — what the wrapper writes for one session of
-# this run; used inside behaviours.
+# session <sid> [end detail] [rc] [account] — what the wrapper writes for one
+# session of this run; used inside behaviours.
 cat > "$SANDBOX/lib.sh" <<'EOF'
 session() {
   local d; d="$(TZ=UTC date +%F)"
-  printf '%s\t%s\tstart\t%s\t%s\t-\t-\n' "$d" "$(date -u +%FT%TZ)" "$1" "$DEVLEAD_RUN_ID" >> "$LEDGER"
+  printf '%s\t%s\tstart\t%s\t%s\t-\t%s\n' "$d" "$(date -u +%FT%TZ)" "$1" "$DEVLEAD_RUN_ID" "${4:--}" >> "$LEDGER"
   printf '%s\t%s\tend\t%s\t%s\t%s\t%s\n' "$d" "$(date -u +%FT%TZ)" "$1" "$DEVLEAD_RUN_ID" "${3:-0}" "${2:--}" >> "$LEDGER"
 }
 refused() { printf '%s\t%s\trefused\t-\t%s\t-\t%s\n' "$(TZ=UTC date +%F)" "$(date -u +%FT%TZ)" "$DEVLEAD_RUN_ID" "$1" >> "$LEDGER"; }
+# mark <account> <until: epoch or -> <kind> [session id] — a mark the wrapper
+# appends when a session of this run ends on a usage limit or a refused token.
+mark() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(date -u +%FT%T.%NZ)" "${4:-55555555-5555-4555-8555-555555555555}" "$DEVLEAD_RUN_ID" reported >> "$MARKS"; }
 EOF
 behaviour() { { echo "source '$SANDBOX/lib.sh'"; cat; } > "$SANDBOX/behaviour"; }
 
@@ -131,7 +135,10 @@ run() {
   LAST="$(tail -n 1 "$(MONTH_FILE)" 2>/dev/null)"
 }
 field() { jq -c "$1" <<<"$LAST" 2>/dev/null; }
-fresh() { rm -f "$SANDBOX/behaviour" "$SANDBOX/warn" "$SANDBOX_SYNC_FAIL" "$PAUSE" "$INBOX" "$(MONTH_FILE)" "$HOME/.devlead/run/token-warned"; printf '%s\n' "$HEADER" > "$LEDGER"; }
+fresh() { rm -f "$SANDBOX/behaviour" "$SANDBOX/warn" "$SANDBOX_SYNC_FAIL" "$PAUSE" "$INBOX" "$(MONTH_FILE)" "$HOME/.devlead/run/token-warned" "$HOME/.devlead/run/limit-notified"; printf '%s\n' "$HEADER" > "$LEDGER"; : > "$MARKS"; sed -i '/^CLAUDE_ACCOUNTS=/d' "$CONF"; }
+# accounts <runner.conf CLAUDE_ACCOUNTS value> — the pool root rendered.
+accounts() { sed -i '/^CLAUDE_ACCOUNTS=/d' "$CONF"; printf 'CLAUDE_ACCOUNTS=%s\n' "$1" >> "$CONF"; }
+POOL="team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN ultra=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN"
 joblog() { grep -v '^SYNC' "$SANDBOX_LOG"; }
 synclog() { grep '^SYNC' "$SANDBOX_LOG"; }
 need_codes() { if [[ -f "$INBOX" ]]; then awk -F'\t' '$2 == "need" {print $3}' "$INBOX" | paste -sd, -; fi; }
@@ -172,7 +179,7 @@ check "exit code" "$(field .exit_code)" "0"
 check "flags: no timeout, no cap refusal, not paused, not skipped" "$(field '[.timed_out, .cap_refused, .paused, .skipped]')" '[false,false,false,null]'
 check "no session was refused" "$(field .refusals)" "[]"
 check "the session id" "$(field .session_ids)" "[\"$SID\"]"
-check "sessions with their exit codes" "$(field .sessions)" "[{\"id\":\"$SID\",\"exit_code\":0,\"timed_out\":false}]"
+check "sessions with their exit codes (no account line: account null)" "$(field .sessions)" "[{\"id\":\"$SID\",\"exit_code\":0,\"timed_out\":false,\"account\":null}]"
 check "tool uses, subagents included" "$(field '.tool_uses')" '{"Bash":2,"Edit":1,"Read":1,"Write":1}'
 check "files changed through file tools" "$(field .files_changed)" '["/work/repo-a/a.sh","/work/repo-a/b.md"]'
 check "PRs opened by open-pr.sh or gh pr create only" "$(field .prs_opened)" '["https://github.com/acme/widgets/pull/42"]'
@@ -504,7 +511,8 @@ echo "WARN:   the Claude token (DEVLEAD_CLAUDE_TOKEN_ISSUED=2025-12-01) is 11 mo
 run morning
 check "token warning: need token-expiring" "$(need_codes)" "token-expiring"
 msg="$(cut -f6 "$INBOX")"
-contains "token warning: says the token is 11 or more months old" "$msg" "the Claude token was issued 11 or more months ago"
+check "token warning: the single token's notice is what it was" "$msg" \
+  "the Claude token was issued 11 or more months ago and lasts one year — renew it: run claude setup-token, put the new token in .env, update DEVLEAD_CLAUDE_TOKEN_ISSUED and restart the container"
 contains "token warning: says how to renew it" "$msg" "claude setup-token"
 lacks "token warning: the issue date (an environment value) is not in the notice" "$msg" "2025-12-01"
 lacks "token warning: no environment assignment in the notice" "$msg" "DEVLEAD_CLAUDE_TOKEN_ISSUED="
@@ -521,7 +529,140 @@ msg="$(cut -f6 "$INBOX")"
 check "unreadable issue date: need token-expiring" "$(need_codes)" "token-expiring"
 contains "unreadable issue date: says the age cannot be checked" "$msg" "is not a valid date, so the Claude token's age cannot be checked"
 contains "unreadable issue date: says how to fix it" "$msg" "claude setup-token"
+# The account pool (S21): one notice a day, naming every account concerned.
+fresh
+cat > "$SANDBOX_WARN" <<'EOF'
+WARN:   the Claude token of account team (DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-12-01) is 11 months old and expires one year after it was issued — renew it now: run 'claude setup-token' logged in to that account, put the new token in DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN in .env and update DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED
+WARN:   DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED is not a valid issue date (YYYY-MM-DD, not in the future), so the age of the Claude token of account ultra cannot be checked
+EOF
+run morning
+check "pool token warnings: one need token-expiring" "$(need_codes)" "token-expiring"
+msg="$(cut -f6 "$INBOX")"
+contains "pool token warnings: names the old account and how to renew it" "$msg" \
+  "the Claude token of account team was issued 11 or more months ago and lasts one year — renew it: run claude setup-token logged in to that account, put the new token in DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN in .env, update DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED and restart the container"
+contains "pool token warnings: names the account whose date is unreadable" "$msg" \
+  "DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED in the env file is not a valid date, so the age of the Claude token of account ultra cannot be checked"
+lacks "pool token warnings: no issue date in the notice" "$msg" "2025-12-01"
+lacks "pool token warnings: no environment assignment in the notice" "$msg" "_ISSUED="
+run morning
+check "pool token warnings: not again the same day" "$(need_codes)" "token-expiring"
 rm -f "$SANDBOX_WARN"
+
+# ===========================================================================
+# The account each session used (S21): named in the audit, never a token
+# ===========================================================================
+fresh
+behaviour <<'EOF'
+session 44444444-4444-4444-8444-444444444441 - 1 team
+session 44444444-4444-4444-8444-444444444442 - 0 ultra
+EOF
+run fleet DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant-oat01-DUMMY-team-probe
+check "audit: each session names its account" "$(field '[.sessions[] | .account]')" '["team","ultra"]'
+lacks "audit: no token in the audit line" "$LAST" "DUMMY-team-probe"
+fresh
+behaviour <<'EOF'
+session 44444444-4444-4444-8444-444444444443 - 0 'Team!x'
+EOF
+run fleet
+check "audit: a ledger account that is not a name is recorded as null" "$(field '[.sessions[] | .account]')" '[null]'
+
+# ===========================================================================
+# A1: the job never keeps a pool token in its environment (a `docker
+# compose exec` carries the env file's); the names and dates stay for doctor
+# ===========================================================================
+fresh
+behaviour <<'EOF'
+compgen -e | grep '^DEVLEAD_CLAUDE_ACCOUNT_' | sort | paste -sd, - > "${SANDBOX_LOG%/*}/job-env"
+n=0; p=$$
+for _ in 1 2 3 4 5 6; do
+  grep -qa 'DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=' "/proc/$p/environ" 2>/dev/null && n=$((n + 1))
+  p="$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null)"; [[ -n "$p" && "$p" -gt 1 ]] || break
+done
+echo "$n" > "${SANDBOX_LOG%/*}/job-env-ancestors"
+EOF
+run fleet DEVLEAD_CLAUDE_ACCOUNT_1=team DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant-oat01-DUMMY-job DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-01
+check "A1: the job's processes get the names and dates, not the token" "$(cat "$SANDBOX/job-env")" "DEVLEAD_CLAUDE_ACCOUNT_1,DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED"
+check "A1: no process from the job up holds the token in its environment" "$(cat "$SANDBOX/job-env-ancestors")" "0"
+check "A1: the run itself is unchanged" "$(field '[.outcome, .exit_code]')" '["ok",0]'
+
+# ===========================================================================
+# Usage limits (S22): the marks a run's sessions left, and one notice when
+# every account rests
+# ===========================================================================
+fresh
+accounts "$POOL"
+behaviour <<'EOF'
+session 66666666-6666-4666-8666-666666666661 - 1 team
+mark team "$(( $(date +%s) + 3 * 3600 ))" five_hour 66666666-6666-4666-8666-666666666661
+session 66666666-6666-4666-8666-666666666662 - 0 ultra
+EOF
+run fleet DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant-oat01-DUMMY-team-probe
+check "a mark: the run is ok (the next session ran on the next account)" "$(field '[.outcome, .exit_code]')" '["ok",0]'
+check "a mark: the audit names it, with its kind and session" "$(field '[.limit_marks[] | [.account, .kind, .session_id]]')" \
+  '[["team","five_hour","66666666-6666-4666-8666-666666666661"]]'
+check "a mark: its reset in UTC" "$(field '.limit_marks[0].until | test("^[0-9-]{10}T[0-9:]{8}Z$")')" "true"
+check "a mark with another account available: no notice" "$(need_codes)" ""
+lacks "a mark: no token in the audit line" "$LAST" "DUMMY"
+
+fresh
+accounts "$POOL"
+printf 'team\t%s\tfive_hour\t2026-11-17T10:00:00Z\tx\tother-run\treported\n' "$(( $(date +%s) + 3600 ))" > "$MARKS"
+behaviour <<'EOF'
+session 66666666-6666-4666-8666-666666666663 - 1 ultra
+mark ultra "$(( $(date +%s) + 2 * 86400 ))" seven_day 66666666-6666-4666-8666-666666666663
+echo "STATUS: claude-limited"
+refused limited
+EOF
+run fleet
+check "every account resting: the run is limited, exit 0" "$(field '[.outcome, .exit_code, .refusals]')" '["limited",0,["limited"]]'
+check "every account resting: one need claude-limited, no job-refused" "$(need_codes)" "claude-limited"
+msg="$(awk -F'\t' '$3 == "claude-limited" {print $6}' "$INBOX")"
+early="$(TZ=UTC date -d "@$(cut -f2 "$MARKS" | head -n 1)" '+%Y-%m-%d %H:%M %Z')"
+contains "the notice names each account and until when" "$msg" "every Claude account is resting (team until $early, ultra until "
+contains "the notice gives the earliest reset" "$msg" "— no claude session starts until $early (run "
+check "the marks of other runs are not this run's" "$(field '[.limit_marks[].account]')" '["ultra"]'
+behaviour <<'EOF'
+echo "STATUS: claude-limited"
+refused limited
+EOF
+run fleet
+check "the same stretch: no second notice" "$(need_codes)" "claude-limited"
+check "the same stretch: still limited, still exit 0" "$(field '[.outcome, .exit_code]')" '["limited",0]'
+run morning
+check "a job with no session in the same stretch: no notice either" "$(need_codes)" "claude-limited"
+# A new stretch: team's reset passed, a new mark rests it again.
+printf 'team\t%s\tfive_hour\t2026-11-17T23:59:59Z\tx\tother-run\treported\n' "$(( $(date +%s) + 7200 ))" >> "$MARKS"
+run fleet
+check "a new stretch: a new notice" "$(need_codes)" "claude-limited,claude-limited"
+
+fresh
+accounts "$POOL"
+printf 'team\t-\tauth\t2026-11-17T10:00:00Z\tx\tr\tauth\n' > "$MARKS"
+behaviour <<'EOF'
+session 66666666-6666-4666-8666-666666666664 - 1 ultra
+mark ultra - auth 66666666-6666-4666-8666-666666666664
+EOF
+run fleet
+check "the last account resting during the run: the notice goes now" "$(need_codes)" "claude-limited"
+contains "only refused tokens: no session until one is renewed" "$(awk -F'\t' '$3 == "claude-limited" {print $6}' "$INBOX")" \
+  "every Claude account is resting (team until its token is renewed, ultra until its token is renewed) — no claude session starts until a token is renewed and the container restarted"
+check "a refused token: until null in the audit" "$(field '.limit_marks')" '[{"account":"ultra","kind":"auth","until":null,"session_id":"66666666-6666-4666-8666-666666666664"}]'
+
+fresh
+accounts "$POOL"
+behaviour <<<'refused nomarks'
+run fleet
+contains "a marks file that cannot be read: job-refused, says so" "$(awk -F'\t' '$3 == "job-refused" {print $6}' "$INBOX")" \
+  "the Claude account marks could not be read"
+
+# Previous behaviour: no account line, no marks, no notice.
+fresh
+printf 'team\t-\tauth\tt\ts\tr\tauth\n' > "$MARKS"
+behaviour <<<'session 66666666-6666-4666-8666-666666666665'
+run fleet
+check "no account line: no limit notice and no marks of this run" "$(need_codes)|$(field .limit_marks)" "|[]"
+check "no account line: the outcome is what it was" "$(field '[.outcome, .exit_code]')" '["ok",0]'
+fresh
 
 # ===========================================================================
 # A run that rewrites the audit or the ledger is reported (S18)
@@ -646,11 +787,127 @@ run fleet
 check "S19: a run that opened and parked nothing sends neither" "$(field '[.notify_codes, .parked]')" '[[],{"count":0,"issues":[]}]'
 
 # ===========================================================================
+# S23: the report a guarded session could not write is written by the job,
+# from the session's own Write call, as data
+# ===========================================================================
+REPORTS="$HOME/.devlead/reports"
+mkdir -p "$REPORTS"
+# The run's own date (A5): the report name the run may write. TZ is UTC here.
+TODAY="$(TZ=UTC date +%F)"
+# report_session <sid> <file_path> <content>... — a transcript whose session
+# called Write on each path with its content, in order (pairs).
+report_session() {
+  local sid="$1" i=0; shift
+  : > "$CLAUDE_CONFIG_DIR/projects/-home-x/$sid.jsonl"
+  while [[ $# -ge 2 ]]; do
+    i=$((i + 1))
+    jq -nc --arg p "$1" --arg c "$2" --arg id "w$i" \
+      '{type: "assistant", message: {content: [{type: "tool_use", id: $id, name: "Write", input: {file_path: $p, content: $c}}]}}' \
+      >> "$CLAUDE_CONFIG_DIR/projects/-home-x/$sid.jsonl"
+    jq -nc --arg id "w$i" '{type: "user", message: {content: [{type: "tool_result", tool_use_id: $id, is_error: true,
+      content: "PreToolUse:Write hook error: DevLead limit [self-config]"}]}}' >> "$CLAUDE_CONFIG_DIR/projects/-home-x/$sid.jsonl"
+    shift 2
+  done
+}
+RSID=77777777-7777-4777-8777-777777777771
+RSID2=77777777-7777-4777-8777-777777777772
+REPORT_TEXT=$'# DevLead Execute — today\n| Issue | Resultado |\n|---|---|\n| #15 | parked-gate-check: run $(touch '"$SANDBOX"$'/pwned) `touch '"$SANDBOX"$'/pwned2` |\n| #7 | escalated-secrets |\n\ntab\there — ñ\r\n'
+fresh; rm -f "$REPORTS"/* "$SANDBOX/pwned" "$SANDBOX/pwned2"
+report_session "$RSID" "$HOME/.devlead/reports/$TODAY-execute.md" "an earlier draft" \
+  "$HOME/.devlead/reports/$TODAY-execute.md" "$REPORT_TEXT"
+behaviour <<<"session $RSID"
+run fleet
+RUN_ID="$(jq -r .run_id <<<"$LAST")"
+check "S23: the report the session could not write exists, byte for byte" \
+  "$(cmp -s <(printf '%s' "$REPORT_TEXT") "$REPORTS/$TODAY-execute.md" && echo same || echo differs)" "same"
+check "S23: only the last report Write is kept" "$(ls "$REPORTS")" "$TODAY-execute.md"
+check "S23: its text is never run" "$([[ -e "$SANDBOX/pwned" || -e "$SANDBOX/pwned2" ]] && echo ran || echo data)" "data"
+check "S23: the audit names it" "$(field .report_kept)" "\"$TODAY-execute.md\""
+check "S23: the PARK notice points to it" "$(awk -F'\t' '$3 == "park" {print $6}' "$INBOX")" \
+  "fleet: 2 work unit(s) parked (#7 #15) — the reasons are in ~/.devlead/reports/$TODAY-execute.md (run $RUN_ID)"
+check "S23: written 0644, no temporary file left" "$(stat -c %a "$REPORTS/$TODAY-execute.md") $(find "$REPORTS" -name '.*' | wc -l | tr -d ' ')" "644 0"
+contains "S23: the job says it wrote it" "$OUT" "wrote ~/.devlead/reports/$TODAY-execute.md from the report the run's session could not write"
+
+fresh; rm -f "$REPORTS"/*
+report_session "$RSID" "$HOME/.devlead/reports/$TODAY-execute.md" "first session"
+# shellcheck disable=SC2088 # the literal ~/ a session may write, not an expansion
+report_session "$RSID2" "~/.devlead/reports/$TODAY-execute.md" "second session, path with ~"
+behaviour <<EOF
+session $RSID
+session $RSID2
+EOF
+run fleet
+check "S23: the last session that wrote one wins, ~/ spelled out or not" "$(cat "$REPORTS/$TODAY-execute.md")" "second session, path with ~"
+
+refused_report() { # refused_report <label> <expected line in the output>
+  check "$1: nothing written" "$(find "$REPORTS" -mindepth 1 -not -name keep | wc -l | tr -d ' ')" "0"
+  check "$1: the audit says none" "$(field .report_kept)" "null"
+  [[ -n "${2:-}" ]] && contains "$1: the job says why" "$OUT" "$2"
+}
+fresh; rm -f "$REPORTS"/*
+report_session "$RSID" "/work/repo-a/reports/$TODAY-execute.md" "a repo file of that name" \
+  "$HOME/.devlead/reports/$TODAY.md" "the morning digest's name" \
+  "$HOME/.devlead/reports/../reports/$TODAY-execute.md" "a path with .." \
+  "$HOME/.devlead/reports/sub/$TODAY-execute.md" "a subdirectory"
+behaviour <<<"session $RSID"
+run fleet
+refused_report "S23: Writes to any other path"
+fresh; rm -f "$REPORTS"/*
+# Built from a file: one argument that long is past the kernel's limit.
+head -c 300000 /dev/zero | tr '\0' 'x' > "$SANDBOX/big-report"
+jq -nc --arg p "$HOME/.devlead/reports/$TODAY-execute.md" --rawfile c "$SANDBOX/big-report" \
+  '{type: "assistant", message: {content: [{type: "tool_use", id: "w1", name: "Write", input: {file_path: $p, content: $c}}]}}' \
+  > "$CLAUDE_CONFIG_DIR/projects/-home-x/$RSID.jsonl"
+behaviour <<<"session $RSID"
+run fleet
+refused_report "S23: a report over the size bound" "is larger than 262144 bytes — not written"
+fresh; rm -f "$REPORTS"/*
+report_session "$RSID" "$HOME/.devlead/reports/$TODAY-execute.md" $'escape \e[2J and a bell \a'
+behaviour <<<"session $RSID"
+run fleet
+refused_report "S23: a report with control characters" "holds control characters — not written"
+fresh; rm -f "$REPORTS"/*
+echo "outside" > "$SANDBOX/link-target"
+ln -s "$SANDBOX/link-target" "$REPORTS/$TODAY-execute.md"
+report_session "$RSID" "$HOME/.devlead/reports/$TODAY-execute.md" "through a link"
+behaviour <<<"session $RSID"
+run fleet
+check "S23: a report that is a planted link: not written through" "$(cat "$SANDBOX/link-target") $([[ -L "$REPORTS/$TODAY-execute.md" ]] && echo link-kept)" "outside link-kept"
+contains "S23: a planted link: the job says why" "$OUT" "is a symbolic link or missing — DevLead does not write through links"
+rm -f "$REPORTS/$TODAY-execute.md"
+mv "$REPORTS" "$REPORTS.real"; mkdir -p "$SANDBOX/elsewhere"; ln -s "$SANDBOX/elsewhere" "$REPORTS"
+fresh
+report_session "$RSID" "$HOME/.devlead/reports/$TODAY-execute.md" "through a linked directory"
+behaviour <<<"session $RSID"
+run fleet
+check "S23: a reports directory that is a link: not written through" "$(ls -A "$SANDBOX/elsewhere" | wc -l | tr -d ' ')" "0"
+rm -f "$REPORTS"; mv "$REPORTS.real" "$REPORTS"
+# A5: only the run's own date. A report under another date is not written,
+# even when the session's last Write; an earlier one of today's still is.
+fresh; rm -f "$REPORTS"/*
+report_session "$RSID" "$HOME/.devlead/reports/1999-01-01-execute.md" "a report from another day"
+behaviour <<<"session $RSID"
+run fleet
+check "A5: a report dated another day: nothing written" "$(ls -A "$REPORTS" | wc -l | tr -d ' ') $(field .report_kept)" "0 null"
+contains "A5: the job says why" "$OUT" "the report a session wrote is dated 1999-01-01, not this run's day — not written to ~/.devlead/reports"
+fresh; rm -f "$REPORTS"/*
+report_session "$RSID" "$HOME/.devlead/reports/$TODAY-execute.md" "today's report" \
+  "$HOME/.devlead/reports/1999-01-01-execute.md" "then another day's"
+behaviour <<<"session $RSID"
+run fleet
+check "A5: today's report is kept, the other day's is not" "$(ls "$REPORTS") $(cat "$REPORTS/$TODAY-execute.md")" "$TODAY-execute.md today's report"
+# Previous behaviour: no report Write, no file, the PARK notice as before.
+fresh; rm -f "$REPORTS"/* "$CLAUDE_CONFIG_DIR/projects/-home-x/$RSID.jsonl" "$CLAUDE_CONFIG_DIR/projects/-home-x/$RSID2.jsonl"
+behaviour <<<"session $RSID"
+run fleet
+check "S23: a run whose sessions wrote no report writes none" "$(ls -A "$REPORTS" | wc -l | tr -d ' ') $(field .report_kept)" "0 null"
+
+# ===========================================================================
 # Every `need` code run-job.sh sends is in GOVERNANCE.md's closed list
 # ===========================================================================
 gov="$(sed -n '/^## §escalation-channel/,/^## §learned-preferences/p' "$REPO_ROOT/.claude/GOVERNANCE.md")"
 codes="$(grep -oE '_need [a-z-]+' "$SRC" | awk '{print $2}' | sort -u)"
-check "run-job.sh sends the seven server codes" "$(paste -sd, - <<<"$codes")" "audit-tampered,job-failed,job-refused,job-timeout,park,pr-opened,token-expiring"
+check "run-job.sh sends the eight server codes" "$(paste -sd, - <<<"$codes")" "audit-tampered,claude-limited,job-failed,job-refused,job-timeout,park,pr-opened,token-expiring"
 while IFS= read -r c; do
   contains "GOVERNANCE §escalation-channel lists need code $c" "$gov" "(\`$c\`)"
 done <<<"$codes"

@@ -62,6 +62,25 @@
 #                                  in the clone's .git/config, with git -c or
 #                                  GIT_AUTHOR_*/GIT_COMMITTER_* — until the
 #                                  next sync rewrites the clone's config
+#   DEVLEAD_CLAUDE_ACCOUNT_<N>         the Claude account pool (S21), N from 1
+#   DEVLEAD_CLAUDE_ACCOUNT_<N>_TOKEN   to 9 in priority order, without gaps:
+#   DEVLEAD_CLAUDE_ACCOUNT_<N>_ISSUED  the account's short name (a lowercase
+#                                  letter, then up to 23 lowercase letters,
+#                                  digits or -, each name its own), its token
+#                                  from `claude setup-token` and the day it
+#                                  was issued (YYYY-MM-DD). All three for each
+#                                  account. Without them, the single
+#                                  CLAUDE_CODE_OAUTH_TOKEN (and
+#                                  DEVLEAD_CLAUDE_TOKEN_ISSUED) is a pool of
+#                                  one account named "default"; the two setups
+#                                  do not mix. runner.conf gets the names and
+#                                  the variables that hold their tokens
+#                                  (CLAUDE_ACCOUNTS), never a token. The
+#                                  tokens go to <dir>/claude-tokens, mode 0600
+#                                  (VAR=token lines); the entrypoint opens it
+#                                  to the user's group and takes the tokens out
+#                                  of the environment, so only the claude
+#                                  wrapper reads them, one per session
 #
 # The paths of DEVLEAD_REPOS are the repos' paths on the host: each clone sits
 # at that same path in the container, so the state the host's /devlead keys
@@ -204,6 +223,75 @@ _valid_path() {
 }
 # _within <path> <dir> — <path> is <dir> or inside it.
 _within() { [[ "$1" == "$2" || "$1" == "$2"/* ]]; }
+
+# _valid_date <YYYY-MM-DD> — a real calendar day.
+_valid_date() {
+  [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && [[ "$(date -u -d "$1" +%F 2>/dev/null)" == "$1" ]]
+}
+
+# _accounts — validates the Claude account pool (S21); sets ACCOUNTS (the
+# runner.conf value: name=token variable, space-separated, in priority
+# order) and ACCOUNT_NAMES, adds to errors. A variable of the scheme set to
+# an empty value counts as not set: the env file lists them empty. Errors
+# name the variable, never its value — a token pasted into the wrong
+# variable must not reach the log.
+ACCOUNT_RE='^[a-z][a-z0-9-]{0,23}$'
+TOKEN_RE='^[A-Za-z0-9._~+/=-]{1,1024}$'
+_accounts() {
+  local v n i max=0 name token issued j tv iv bad=false
+  local -A used=()
+  ACCOUNTS=""; ACCOUNT_NAMES=(); ACCOUNT_TOKENS=()
+  while IFS= read -r v; do
+    [[ -n "${!v:-}" ]] || continue
+    if [[ "$v" =~ ^DEVLEAD_CLAUDE_ACCOUNT_([1-9])(_TOKEN|_ISSUED)?$ ]]; then
+      n="${BASH_REMATCH[1]}"; used[$n]=1
+      (( n > max )) && max=$n
+    else
+      errors+=("$v is not a setting of the Claude account pool: they are DEVLEAD_CLAUDE_ACCOUNT_<N>, DEVLEAD_CLAUDE_ACCOUNT_<N>_TOKEN and DEVLEAD_CLAUDE_ACCOUNT_<N>_ISSUED, N from 1 to 9")
+      bad=true
+    fi
+  done < <(compgen -e | grep '^DEVLEAD_CLAUDE_ACCOUNT_' | sort)
+  if (( max == 0 )); then
+    $bad || [[ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] || ACCOUNTS="default=CLAUDE_CODE_OAUTH_TOKEN"
+    return 0
+  fi
+  for v in CLAUDE_CODE_OAUTH_TOKEN DEVLEAD_CLAUDE_TOKEN_ISSUED; do
+    [[ -z "${!v:-}" ]] || { errors+=("$v belongs to the single-token setup, and the env file also declares a Claude account pool (DEVLEAD_CLAUDE_ACCOUNT_<N>): use one — put that token in an account of the pool and leave $v empty"); bad=true; }
+  done
+  for (( i = 1; i <= max; i++ )); do
+    v="DEVLEAD_CLAUDE_ACCOUNT_$i"
+    if [[ -z "${used[$i]+x}" ]]; then
+      errors+=("$v is not set, but a later account is: number the accounts from 1, in priority order, without gaps")
+      bad=true
+      continue
+    fi
+    tv="${v}_TOKEN" iv="${v}_ISSUED"
+    name="${!v:-}" token="${!tv:-}" issued="${!iv:-}"
+    if _has_control "$name"; then errors+=("$v $_CONTROL"); bad=true
+    elif ! [[ "$name" =~ $ACCOUNT_RE ]]; then
+      errors+=("$v must be the account's short name: a lowercase letter, then up to 23 lowercase letters, digits or -"); bad=true
+    else
+      for j in "${!ACCOUNT_NAMES[@]}"; do
+        [[ "${ACCOUNT_NAMES[$j]}" != "$name" ]] && continue
+        errors+=("DEVLEAD_CLAUDE_ACCOUNT_$((j + 1)) and $v have the same name: give each account its own"); bad=true
+      done
+    fi
+    if [[ -z "$token" ]]; then
+      errors+=("${v}_TOKEN is not set: every account of the pool needs its own token from claude setup-token"); bad=true
+    elif _has_control "$token" || ! [[ "$token" =~ $TOKEN_RE ]]; then
+      errors+=("${v}_TOKEN is not a token as claude setup-token prints it: one line of letters, digits and - _ . ~ + / ="); bad=true
+    fi
+    if [[ -z "$issued" ]] || _has_control "$issued" || ! _valid_date "$issued"; then
+      errors+=("${v}_ISSUED must be the day you ran claude setup-token for that account, as YYYY-MM-DD"); bad=true
+    fi
+    ACCOUNT_NAMES+=("$name")
+    ACCOUNT_TOKENS+=("${v}_TOKEN=$token")
+    ACCOUNTS+="${ACCOUNTS:+ }$name=${v}_TOKEN"
+  done
+  $bad && { ACCOUNTS=""; ACCOUNT_NAMES=(); ACCOUNT_TOKENS=(); }
+  unset token
+  return 0
+}
 
 # _repos <workspace> — validates DEVLEAD_REPOS; sets REPO_PATHS and
 # REPO_SLUGS, adds to errors.
@@ -396,6 +484,9 @@ _render() {
     fi
   fi
 
+  # The Claude accounts (S12, S21).
+  _accounts
+
   if [[ ${#errors[@]} -gt 0 ]]; then
     for line in "${errors[@]}"; do echo "runner-config: ERROR: $line" >&2; done
     return 1
@@ -427,6 +518,7 @@ _render() {
     echo "JOB_KILL_AFTER=$JOB_KILL_AFTER"
     echo "JOB_LOCK_WAIT=$lock_wait"
     echo "WORKSPACE=$ws"
+    if [[ -n "$ACCOUNTS" ]]; then echo "CLAUDE_ACCOUNTS=$ACCOUNTS"; fi
   } > "$tmp_conf"
   {
     echo "# DevLead server repos (S13). Written by runner-config.sh at container start"
@@ -444,14 +536,29 @@ _render() {
     }
   fi
   chmod 0644 "$tmp_cron" "$tmp_conf" "$tmp_repos" "$tmp_ident"
+  # The pool's tokens (A1): 0600 from the start, never on a command line.
+  local tmp_tokens=""
+  if [[ ${#ACCOUNT_TOKENS[@]} -gt 0 ]]; then
+    tmp_tokens="$(umask 077 && mktemp "$dir/claude-tokens.new.XXXXXX")" \
+      && printf '%s\n' "${ACCOUNT_TOKENS[@]}" > "$tmp_tokens" && chmod 0600 "$tmp_tokens" || {
+      rm -f "$tmp_cron" "$tmp_conf" "$tmp_repos" "$tmp_ident" "$tmp_tokens"
+      echo "runner-config: ERROR: cannot write $dir/claude-tokens" >&2
+      return 1
+    }
+  fi
   mv -f "$tmp_cron" "$dir/crontab" && mv -f "$tmp_conf" "$dir/runner.conf" && mv -f "$tmp_repos" "$dir/repos" \
-    && mv -f "$tmp_ident" "$dir/git-identity" || {
-    rm -f "$tmp_cron" "$tmp_conf" "$tmp_repos" "$tmp_ident"
+    && mv -f "$tmp_ident" "$dir/git-identity" \
+    && if [[ -n "$tmp_tokens" ]]; then mv -f "$tmp_tokens" "$dir/claude-tokens"; else rm -f "$dir/claude-tokens"; fi || {
+    rm -f "$tmp_cron" "$tmp_conf" "$tmp_repos" "$tmp_ident" "$tmp_tokens"
     echo "runner-config: ERROR: cannot write $dir/crontab, $dir/runner.conf, $dir/repos and $dir/git-identity" >&2
     return 1
   }
+  ACCOUNT_TOKENS=()
   echo "runner-config: schedule and limits written to $dir (TZ=$tz, $max sessions a day, $timeout per session)"
   echo "runner-config: ${#REPO_PATHS[@]} enrolled repo(s) written to $dir/repos"
+  if [[ ${#ACCOUNT_NAMES[@]} -gt 0 ]]; then
+    echo "runner-config: ${#ACCOUNT_NAMES[@]} Claude account(s), in priority order: ${ACCOUNT_NAMES[*]}"
+  fi
 }
 
 case "${1:-}" in

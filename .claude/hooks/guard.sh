@@ -13,7 +13,8 @@
 #                un-drafting a PR, deleting a branch on the remote (S2, S3)
 #   database     anything aimed at a database that is not on this machine
 #   secrets      reading or writing a credential file outside the places the
-#                user allowed, or dumping the environment
+#                user allowed, dumping the environment, or reading another
+#                process's environment (/proc/<pid>/environ, ps e)
 #   scope        writing a file outside the repository the session started in
 #   self-config  changing the files that configure these limits
 #
@@ -114,8 +115,19 @@ _is_secret() {
     "$HOME"/.config/gh/hosts.yml|"$HOME"/.config/gcloud/*|"$HOME"/.docker/config.json) return 0 ;;
     "$HOME"/.npmrc|"$HOME"/.devlead/gh-token|"$HOME"/.devlead/*.env) return 0 ;;
     "$HOME"/.config/git/credentials|/proc/*/environ) return 0 ;;
+    # The DevLead server's Claude account tokens (S21): root's, read by the
+    # claude wrapper only.
+    /etc/devlead/claude-tokens) return 0 ;;
   esac
   return 1
+}
+
+# A whole system tree a search would read through: /, /etc or /proc, where
+# every process's environment and the server's token file are (A1).
+_is_system_tree() {
+  local p
+  p="$(_abs "$1")"
+  [[ "$p" == / || "$p" == /etc || "$p" == /etc/devlead || "$p" == /etc/devlead/* || "$p" == /proc || "$p" == /proc/* ]]
 }
 
 # Did the user list this path as a place credentials may be read from?
@@ -190,6 +202,9 @@ case "$_tool" in
   Read|Grep)
     _path="$(jq -r '.tool_input.file_path // .tool_input.path // empty' <<<"$_payload" 2>/dev/null)"
     [[ -n "$_path" ]] && _check_secret_path "$_path"
+    if [[ "$_tool" == Grep && -n "$_path" ]] && _is_system_tree "$_path"; then
+      _deny secrets "a search of $_path reads every process's environment and the server's token file — search the repository instead"
+    fi
     exit 0
     ;;
   Bash) ;;
@@ -407,6 +422,29 @@ while IFS= read -r _line || [[ -n "$_line" ]]; do
     done
   fi
 
+  # Process environments (A1): ps prints them with its BSD e option or the
+  # environ format.
+  if [[ "$_prog" == ps ]]; then
+    for _a in "${_args[@]}"; do
+      if [[ "$_a" =~ ^[aAcCefghjklLmMnOprsStTuUvVwxXZ]+$ && "$_a" == *e* ]] || [[ "$_a" == *environ* ]]; then
+        _deny secrets "ps would print processes' environments, credentials included"
+      fi
+    done
+  fi
+  # A recursive read of a whole system tree (A1).
+  _tree_reader=0
+  case "$_prog" in
+    rg|ag|ack|find|tar|rsync|zip|cpio) _tree_reader=1 ;;
+    grep|egrep|fgrep|zgrep)
+      for _a in "${_args[@]}"; do [[ "$_a" =~ ^-[A-Za-z]*[rR] || "$_a" == --recursive || "$_a" == --dereference-recursive ]] && _tree_reader=1; done ;;
+    cp) for _a in "${_args[@]}"; do [[ "$_a" =~ ^-[A-Za-z]*[rRa] || "$_a" == --recursive || "$_a" == --archive ]] && _tree_reader=1; done ;;
+  esac
+  if [[ $_tree_reader -eq 1 ]]; then
+    for _a in "${_plain[@]}"; do
+      _is_system_tree "$_a" && _deny secrets "the command reads through $_a, where every process's environment and the server's token file are"
+    done
+  fi
+
   # Recursive searches.
   _recursive=0
   case "$_prog" in
@@ -615,6 +653,57 @@ fi
 # (S12), so every session started there carries it.
 if [[ "$_scan" =~ \$\{?CLAUDE_CODE_OAUTH_TOKEN($|[^A-Za-z0-9_]) ]]; then
   _deny secrets "the command reads the Claude token from the environment"
+fi
+# The server's account pool (S21): every account's token is in the
+# environment of the processes that start sessions (the claude wrapper takes
+# them out of the session's own). Any expansion of a pool variable, a listing
+# of them by prefix, or a lookup by name through a language's environment API
+# is refused — names and issue dates included.
+_pool_re='(environ|getenv|process\.env|ENV\[|Deno\.env)[^;&|]*DEVLEAD_CLAUDE_ACCOUNT_'
+# Another process's environment (A1). Every process of the user's runs as
+# the session's uid, so its /proc/<pid>/environ is readable: the command's
+# whole text — heredoc bodies included — is judged with its quotes, escapes,
+# blanks and concatenations taken out, so a split or quoted spelling of
+# /proc/.../environ is caught, and so is a glob that would match "environ".
+# Text matching still is not a sandbox: a name computed at run time escapes it.
+_flat="${_cmd//[\'\"\\]/}"
+_squash="${_flat//[[:space:]+,]/}"
+# The trigger is the /proc mount, not a repository path that merely starts
+# with "proc" (src/processors, lib/procedures, src/proc). The flat spelling
+# keeps word boundaries, so /proc must start a path there (nothing of a path
+# before it). The squashed spelling joins split or concatenated pieces but
+# loses those boundaries, so there /proc only counts before a pid-like part:
+# digits, self, a glob, an expansion ($ ` %), a format field ({) or a call.
+_proc_flat_re='(^|[^A-Za-z0-9_.-])/proc($|[^A-Za-z0-9_.-])'
+_proc_squash_re='/proc/([0-9]|self|thread-self|[][*?$`%{(]|[A-Za-z_][A-Za-z0-9_.]*\()'
+if [[ "$_flat" =~ $_proc_flat_re || "$_squash" =~ $_proc_squash_re ]]; then
+  [[ "$_squash" == *environ* ]] \
+    && _deny secrets "the command reads a process's environment (/proc/<pid>/environ), credentials included"
+  # A glob that would match "environ": the file name of a /proc path
+  # (/proc/1/env*), or a word with no path at all in a command that names
+  # /proc (cd /proc/1 && cat e*). Other patterns of the command — a case
+  # pattern like */claude.exe, /proc/*/status — are not that file.
+  read -ra _words <<<"$(tr ';|&()<>=,`' '         ' <<<"$_flat")" || true
+  for _w in "${_words[@]}"; do
+    if [[ "$_w" =~ (^|[^A-Za-z0-9_.-])/proc(/|$) ]]; then
+      _w="${_w##*/}"
+    elif [[ "$_w" == */* ]]; then
+      continue
+    fi
+    [[ "$_w" == *[\*\?\[]* ]] || continue
+    # shellcheck disable=SC2053 # the right side is the glob under test
+    [[ environ == $_w ]] \
+      && _deny secrets "the command names /proc with a pattern that matches environ — a process's environment, credentials included"
+  done
+fi
+if [[ "$_flat" == *PS_FORMAT* ]] && _runs "$_scan" "ps${_END}"; then
+  _deny secrets "ps with PS_FORMAT can print processes' environments, credentials included"
+fi
+if [[ "$_squash" == *claude-tokens* || "$_squash" == */etc/devlead/claude-* ]]; then
+  _deny secrets "the command names the server's Claude account tokens; only the claude wrapper reads them"
+fi
+if [[ "$_scan" =~ \$\{?!?DEVLEAD_CLAUDE_ACCOUNT_ ]] || [[ "$_scan" =~ $_pool_re ]]; then
+  _deny secrets "the command reads a Claude account's token from the environment"
 fi
 if _runs "$_scan" "printenv${_END}" || _runs "$_scan" "(env|export[[:space:]]+-p|declare[[:space:]]+-x)[[:space:]]*(\$|[;&|)>])"; then
   _deny secrets "the command dumps the environment, credentials included"

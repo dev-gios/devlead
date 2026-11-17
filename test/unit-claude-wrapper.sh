@@ -28,15 +28,26 @@ contains() {
   if [[ "$2" == *"$3"* ]]; then echo "PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1))
   else echo "FAIL  $1"; echo "        expected substring: [$3]"; echo "        actual: [$2]"; FAIL_COUNT=$((FAIL_COUNT + 1)); fi
 }
+lacks() {
+  if [[ "$2" != *"$3"* ]]; then echo "PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1))
+  else echo "FAIL  $1"; echo "        unexpected substring: [$3]"; echo "        actual: [$2]"; FAIL_COUNT=$((FAIL_COUNT + 1)); fi
+}
 
 FAKE_DIR="$SANDBOX/fake"
 FAKE_LOG="$SANDBOX/fake.log"
+FAKE_ENV_LOG="$SANDBOX/fake-env.log"
 CONF="$SANDBOX/runner.conf"
 LEDGER="$SANDBOX/state/sessions.tsv"
 LOCK="$SANDBOX/state/session.lock"
 PAUSE="$SANDBOX/PAUSE"
+MARKS="$SANDBOX/state/accounts.tsv"
+TOKENS="$SANDBOX/claude-tokens"
 WRAPPER="$SANDBOX/claude"
-export FAKE_DIR FAKE_LOG
+export CLAUDE_CONFIG_DIR="$SANDBOX/claude-config"
+export FAKE_DIR FAKE_LOG FAKE_ENV_LOG
+# The suite decides which Claude variables a session gets.
+unset CLAUDE_CODE_OAUTH_TOKEN
+while IFS= read -r _v; do unset "$_v"; done < <(compgen -e | grep '^DEVLEAD_CLAUDE_ACCOUNT_')
 mkdir -p "$FAKE_DIR" "$SANDBOX/state"
 : > "$LEDGER"; : > "$LOCK"
 
@@ -46,10 +57,37 @@ cat > "$SANDBOX/real-claude" <<'EOF'
 #!/usr/bin/env bash
 { printf 'ARGS'; for a in "$@"; do printf ' %s' "$a"; done
   printf '\tRUN=%s\tFD9=%s\n' "${DEVLEAD_RUN_ID:-}" "$([[ -e /proc/$$/fd/9 ]] && echo open || echo closed)"; } >> "$FAKE_LOG"
+# The Claude token it was given, the pool variables it can still see, and
+# how many of its two ancestors (timeout, the wrapper) still carry a pool
+# token in their environment — readable through /proc at the same uid.
+anc=0; p=$PPID
+for _ in 1 2; do
+  grep -qaE 'DEVLEAD_CLAUDE_ACCOUNT_[0-9]+_TOKEN=' "/proc/$p/environ" 2>/dev/null && anc=$((anc + 1))
+  p="$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null)"; [[ -n "$p" ]] || break
+done
+printf 'OAUTH=%s\tPOOL=%s\tANCESTORS=%s\n' "${CLAUDE_CODE_OAUTH_TOKEN-unset}" \
+  "$(compgen -e | grep '^DEVLEAD_CLAUDE_ACCOUNT_' | sort | paste -sd, -)" "$anc" >> "$FAKE_ENV_LOG"
 [[ -f "$FAKE_DIR/spawn" ]] && { sleep 6 >/dev/null 2>&1 & }
 [[ -f "$FAKE_DIR/stubborn" ]] && trap '' TERM
 [[ -f "$FAKE_DIR/sleep" ]] && sleep "$(cat "$FAKE_DIR/sleep")"
-exit "$(cat "$FAKE_DIR/rc" 2>/dev/null || echo 0)"
+# What the account's session ends with (S22): files named after the last part
+# of its token (team, ultra, single) win over the plain ones. The transcript
+# lands where Claude Code keeps it, under the session id the wrapper gave.
+acct="${CLAUDE_CODE_OAUTH_TOKEN##*-}"
+sid=""; prev=""
+for a in "$@"; do [[ "$prev" == "--session-id" ]] && sid="$a"; prev="$a"; done
+# A scenario script that decides, per account and per call, what this session does.
+[[ -f "$FAKE_DIR/hook" ]] && . "$FAKE_DIR/hook"
+for f in "$FAKE_DIR/transcript.$acct" "$FAKE_DIR/transcript"; do
+  if [[ -f "$f" && -n "$sid" ]]; then
+    mkdir -p "$CLAUDE_CONFIG_DIR/projects/-work-repo"
+    cp "$f" "$CLAUDE_CONFIG_DIR/projects/-work-repo/$sid.jsonl"
+    break
+  fi
+done
+for f in "$FAKE_DIR/stdout.$acct" "$FAKE_DIR/stdout"; do [[ -f "$f" ]] && { cat "$f"; break; }; done
+for f in "$FAKE_DIR/rc.$acct" "$FAKE_DIR/rc"; do [[ -f "$f" ]] && exit "$(cat "$f")"; done
+exit 0
 EOF
 chmod +x "$SANDBOX/real-claude"
 
@@ -57,7 +95,7 @@ chmod +x "$SANDBOX/real-claude"
 # found — a renamed constant must fail here, not test the image's paths.
 cp "$SRC" "$WRAPPER"
 for kv in "REAL_CLAUDE=$SANDBOX/real-claude" "RUNNER_CONF=$CONF" "LEDGER=$LEDGER" \
-          "SESSION_LOCK=$LOCK" "PAUSE_FILE=$PAUSE" "CONF_OWNER_UID=$(id -u)"; do
+          "SESSION_LOCK=$LOCK" "PAUSE_FILE=$PAUSE" "ACCOUNTS_FILE=$MARKS" "TOKENS_FILE=$TOKENS" "CONF_OWNER_UID=$(id -u)"; do
   key="${kv%%=*}"
   check "the wrapper has the fixed path $key" "$(grep -c "^$key=" "$WRAPPER")" "1"
   sed -i "s|^$key=.*|$kv|" "$WRAPPER"
@@ -65,18 +103,25 @@ done
 chmod +x "$WRAPPER"
 
 conf() { # conf [KEY=value...] — the defaults with these overrides
-  local tz=UTC max=3 timeout=60m kill=30s kv
+  local tz=UTC max=3 timeout=60m kill=30s accounts="" kv
   for kv in "$@"; do
     case "$kv" in
       TZ=*) tz="${kv#TZ=}" ;; MAX=*) max="${kv#MAX=}" ;;
       TIMEOUT=*) timeout="${kv#TIMEOUT=}" ;; KILL=*) kill="${kv#KILL=}" ;;
+      ACCOUNTS=*) accounts="${kv#ACCOUNTS=}" ;;
     esac
   done
   printf '# test\nTZ=%s\nMAX_SESSIONS_PER_DAY=%s\nSESSION_TIMEOUT=%s\nSESSION_KILL_AFTER=%s\nAUDIT_RETENTION_DAYS=30\n' \
     "$tz" "$max" "$timeout" "$kill" > "$CONF"
+  [[ -n "$accounts" ]] && printf 'CLAUDE_ACCOUNTS=%s\n' "$accounts" >> "$CONF"
   chmod 0644 "$CONF"
 }
-reset() { : > "$LEDGER"; : > "$FAKE_LOG"; rm -f "$FAKE_DIR"/* "$PAUSE"; conf "$@"; }
+# The pool's tokens, as root writes them at start: root's (here the test
+# user, the configured owner), 0640.
+TEAM_TOKEN=sk-ant-oat01-DUMMY-team
+ULTRA_TOKEN=sk-ant-oat01-DUMMY-ultra
+tokens() { rm -f "$TOKENS"; printf 'DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=%s\nDEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=%s\n' "$TEAM_TOKEN" "$ULTRA_TOKEN" > "$TOKENS"; chmod 0640 "$TOKENS"; }
+reset() { : > "$LEDGER"; : > "$FAKE_LOG"; : > "$FAKE_ENV_LOG"; : > "$MARKS"; rm -f "$FAKE_DIR"/* "$PAUSE"; rm -rf "$CLAUDE_CONFIG_DIR"; tokens; conf "$@"; }
 # w <args...> — run the wrapper; OUT holds stderr+stdout, RC the exit code.
 w() { OUT="$("$WRAPPER" "$@" </dev/null 2>&1)"; RC=$?; }
 calls() { if [[ -s "$FAKE_LOG" ]]; then wc -l < "$FAKE_LOG" | tr -d ' '; else echo 0; fi; }
@@ -274,6 +319,327 @@ reset TIMEOUT=60m
 echo 137 > "$FAKE_DIR/rc"
 w -p hi
 check "an exit 137 before the limit is not a timeout" "$(awk -F'\t' '$3 == "end" {print $6 "/" $7}' "$LEDGER")" "137/-"
+
+# ===========================================================================
+# Claude accounts (S21): one account per session, its token and no other
+# ===========================================================================
+POOL="team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN ultra=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN"
+# The jobs' environment keeps the names and the dates; a `docker compose
+# exec` from the operator still carries the env file's tokens too (here with
+# values that differ from root's file, to tell them apart).
+POOL_ENV=(DEVLEAD_CLAUDE_ACCOUNT_1=team "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant-oat01-ENV-envteam" DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-01
+          DEVLEAD_CLAUDE_ACCOUNT_2=ultra "DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=sk-ant-oat01-ENV-envultra" DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-10-15)
+# pw <args...> — the wrapper with the pool in its environment.
+pw() { OUT="$(env "${POOL_ENV[@]}" "$WRAPPER" "$@" </dev/null 2>&1)"; RC=$?; }
+start_account() { awk -F'\t' '$3 == "start" {print $7}' "$LEDGER" | paste -sd, -; }
+
+reset ACCOUNTS="$POOL"
+pw -p hi
+check "pool: the session runs" "$RC" "0"
+check "pool: the first account in priority order is used" "$(start_account)" "team"
+check "pool: its token, from root's file, reaches the session as CLAUDE_CODE_OAUTH_TOKEN" "$(cut -f1 "$FAKE_ENV_LOG")" "OAUTH=$TEAM_TOKEN"
+check "pool (A2): no variable of the pool reaches the session — no token, name or date" "$(cut -f2 "$FAKE_ENV_LOG")" "POOL="
+check "pool (A1): neither the wrapper nor timeout keeps a pool token in its environment" "$(cut -f3 "$FAKE_ENV_LOG")" "ANCESTORS=0"
+check "pool: the ledger names the account, never the token" "$(grep -c 'DUMMY' "$LEDGER")" "0"
+lacks "pool: the wrapper prints no token" "$OUT" "DUMMY"
+
+reset ACCOUNTS="ultra=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN"
+pw -p hi
+check "pool: the order is runner.conf's, not the numbering's" "$(start_account) $(cut -f1 "$FAKE_ENV_LOG")" "ultra OAUTH=$ULTRA_TOKEN"
+
+reset ACCOUNTS="$POOL"
+env "${POOL_ENV[@]}" CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-DUMMY-caller DEVLEAD_CLAUDE_ACCOUNT_7_TOKEN=x \
+  "$WRAPPER" -p hi </dev/null >/dev/null 2>&1
+check "pool: a token the caller set is replaced by the account's" "$(cut -f1 "$FAKE_ENV_LOG")" "OAUTH=$TEAM_TOKEN"
+check "pool: a stray pool token variable does not reach the session" "$(cut -f2 "$FAKE_ENV_LOG" | grep -c '_7_TOKEN')" "0"
+
+reset ACCOUNTS="$POOL"
+"$WRAPPER" -p hi </dev/null >/dev/null 2>&1
+check "pool: the token comes from root's file, whatever the caller's environment holds" \
+  "$(start_account) $(cut -f1 "$FAKE_ENV_LOG")" "team OAUTH=$TEAM_TOKEN"
+# Root's token file must be trustworthy, like runner.conf.
+tokens_refused() { # tokens_refused <label>
+  pw -p hi
+  check "$1: refused as noconf, nothing started" "$RC $(calls) $(awk -F'\t' '{print $7}' "$LEDGER")" "75 0 noconf"
+  contains "$1: says the tokens cannot be read" "$OUT" "cannot read the Claude account tokens"
+  lacks "$1: prints no token" "$OUT" "DUMMY"
+}
+reset ACCOUNTS="$POOL"; rm -f "$TOKENS"; tokens_refused "no token file"
+reset ACCOUNTS="$POOL"; chmod 0660 "$TOKENS"; tokens_refused "a token file its group can write"
+reset ACCOUNTS="$POOL"; mv "$TOKENS" "$TOKENS.real"; ln -s "$TOKENS.real" "$TOKENS"; tokens_refused "a token file that is a link"; rm -f "$TOKENS.real"
+reset ACCOUNTS="$POOL"; sed -i '/ACCOUNT_1_TOKEN/d' "$TOKENS"; tokens_refused "an account missing from the token file"
+reset ACCOUNTS="$POOL"; printf 'DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant DUMMY bad\n' > "$TOKENS"; tokens_refused "a token that is not one"
+
+for bad_item in "team" "team=GH_TOKEN" "Team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN" "team=DEVLEAD_CLAUDE_ACCOUNT_0_TOKEN"; do
+  reset ACCOUNTS="$bad_item"
+  pw -p hi
+  check "a CLAUDE_ACCOUNTS entry that is not name=token variable ($bad_item): refused as noconf" \
+    "$RC $(calls) $(awk -F'\t' '{print $7}' "$LEDGER")" "75 0 noconf"
+done
+
+# Previous behaviour: the single token is a pool of one, "default", and the
+# session gets it exactly as before; with no account line nothing changes.
+reset ACCOUNTS="default=CLAUDE_CODE_OAUTH_TOKEN"
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-DUMMY-single w -p hi
+check "single token: the session runs" "$RC" "0"
+check "single token: the session gets the same token" "$(cut -f1 "$FAKE_ENV_LOG")" "OAUTH=sk-ant-oat01-DUMMY-single"
+check "single token: the ledger names the account default" "$(start_account)" "default"
+reset ACCOUNTS="default=CLAUDE_CODE_OAUTH_TOKEN"
+w -p hi
+check "single token removed by the caller (an API key session): still none" "$(cut -f1 "$FAKE_ENV_LOG")" "OAUTH=unset"
+reset
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-DUMMY-single w -p hi
+check "no account line: the caller's token is left as it was" "$(cut -f1 "$FAKE_ENV_LOG")" "OAUTH=sk-ant-oat01-DUMMY-single"
+check "no account line: the start line's detail stays -" "$(start_account)" "-"
+
+# ===========================================================================
+# Usage limits and refused tokens (S22). The transcripts are the ones Claude
+# Code 2.1.326 recorded against a local mock of the API (no real token, no
+# real limit): test/fixtures/claude-2.1.326/<case>.transcript.jsonl, with
+# the reset time moved to the test's clock where it matters.
+# ===========================================================================
+FIX="$REPO_ROOT/test/fixtures/claude-2.1.326"
+# fixture <case> [resetsAt] — the recorded transcript, its reset replaced.
+fixture() {
+  if [[ -n "${2:-}" ]]; then
+    jq -c --argjson r "$2" 'if .type == "assistant" and (.apiErrorParams.rate_limit_info.resetsAt? != null)
+      then .apiErrorParams.rate_limit_info.resetsAt = $r else . end' "$FIX/$1.transcript.jsonl"
+  else cat "$FIX/$1.transcript.jsonl"; fi
+}
+# limited_by <account> <case> [resetsAt] — that account's sessions end on it.
+limited_by() { fixture "$2" "${3:-}" > "$FAKE_DIR/transcript.$1"; echo 1 > "$FAKE_DIR/rc.$1"; }
+mark() { awk -F'\t' -v a="$1" '$1 == a {l = $0} END {print l}' "$MARKS"; }
+mark_field() { mark "$1" | cut -f"$2"; }
+now() { date +%s; }
+
+# A 5-hour limit with its reset: the account rests until then, and the next
+# session takes the next account (L28 clarification: Team first, Ultra the
+# fallback while Team rests).
+reset ACCOUNTS="$POOL"
+reset_at=$(( $(now) + 3 * 3600 ))
+limited_by team five_hour "$reset_at"
+pw -p "iteration 1"
+check "5-hour limit: the session's own exit code comes back" "$RC" "1"
+check "5-hour limit: it ran on team" "$(start_account)" "team"
+check "5-hour limit: team is marked until the reset Claude reported" \
+  "$(mark_field team 2)/$(mark_field team 3)/$(mark_field team 7)" "$reset_at/five_hour/reported"
+check "5-hour limit: the mark names the session and the run" "$(mark_field team 5)" "$(awk -F'\t' '$3 == "start" {print $4}' "$LEDGER")"
+contains "5-hour limit: the wrapper says so and names the next account" "$OUT" \
+  "the Claude account team rests until $(TZ=UTC date -d "@$reset_at" '+%Y-%m-%d %H:%M %Z') — its 5-hour limit; the next session uses ultra"
+pw -p "iteration 2"
+check "the next session runs on ultra" "$RC $(start_account | cut -d, -f2)" "0 ultra"
+check "with ultra's token" "$(sed -n 2p "$FAKE_ENV_LOG" | cut -f1)" "OAUTH=$ULTRA_TOKEN"
+check "no token in the marks or the ledger" "$(cat "$MARKS" "$LEDGER" | grep -c DUMMY)" "0"
+lacks "no token in what the wrapper prints" "$OUT" "DUMMY"
+
+# When the mark expires, sessions go back to the higher-priority account.
+reset ACCOUNTS="$POOL"
+limited_by team five_hour $(( $(now) + 2 ))
+pw -p "iteration 1"
+rm -f "$FAKE_DIR/transcript.team" "$FAKE_DIR/rc.team"
+pw -p "iteration 2"
+sleep 3
+pw -p "iteration 3"
+check "after team's reset the next session is team's again" "$(start_account)" "team,ultra,team"
+check "with team's token" "$(sed -n 3p "$FAKE_ENV_LOG" | cut -f1)" "OAUTH=$TEAM_TOKEN"
+
+# The weekly limit of the fallback, with its reset.
+reset ACCOUNTS="$POOL"
+printf 'team\t-\tauth\t2026-11-17T00:00:00Z\tsid\trun\tauth\n' > "$MARKS"
+reset_at=$(( $(now) + 4 * 86400 ))
+limited_by ultra seven_day "$reset_at"
+pw -p hi
+check "weekly limit: ultra is marked until its reset" "$(mark_field ultra 2)/$(mark_field ultra 3)" "$reset_at/seven_day"
+contains "weekly limit: named as such; every account is resting now" "$OUT" "— its weekly limit; every account is resting now (team until its token is renewed, ultra until"
+
+# No usable reset time: 5 hours.
+for r in "" $(( $(now) - 60 )) $(( $(now) + 30 * 86400 )); do
+  reset ACCOUNTS="$POOL"
+  if [[ -z "$r" ]]; then fixture five_hour_noreset > "$FAKE_DIR/transcript.team"; label="no reset time"
+  else fixture five_hour "$r" > "$FAKE_DIR/transcript.team"; label="reset $r not believable"; fi
+  echo 1 > "$FAKE_DIR/rc.team"
+  t0=$(now); pw -p hi
+  u="$(mark_field team 2)"
+  check "$label: team rests 5 hours" "$([[ "$u" =~ ^[0-9]+$ ]] && (( u >= t0 + 18000 && u <= $(now) + 18000 )) && echo 5h || echo "[$u]")" "5h"
+  check "$label: the mark says the time is the default" "$(mark_field team 7)" "default"
+  contains "$label: the wrapper says Claude gave no usable reset time" "$OUT" "Claude gave no usable reset time: it rests 5 hours"
+done
+
+# A token the API refused: the account rests until a restart.
+for c in auth_expired auth_invalid auth_revoked; do
+  reset ACCOUNTS="$POOL"
+  fixture "$c" > "$FAKE_DIR/transcript.team"; echo 1 > "$FAKE_DIR/rc.team"
+  pw -p hi
+  check "$c: team rests until its token is renewed" "$(mark_field team 2)/$(mark_field team 3)/$(mark_field team 7)" "-/auth/auth"
+  contains "$c: the wrapper says so" "$OUT" "the Claude account team rests until its token is renewed — a refused token"
+  pw -p hi
+  check "$c: the next session is ultra's" "$(start_account | cut -d, -f2)" "ultra"
+done
+
+# Every account resting: no session, not counted, one machine-readable line.
+reset ACCOUNTS="$POOL" MAX=5
+early=$(( $(now) + 3600 )); late=$(( $(now) + 7200 ))
+printf 'gone\t%s\tfive_hour\tt\ts\tr\treported\nteam\t%s\tfive_hour\tt\ts\tr\treported\nultra\t%s\tseven_day\tt\ts\tr\treported\n' \
+  "$(( $(now) + 60 ))" "$late" "$early" > "$MARKS"
+OUT_STDOUT="$(env "${POOL_ENV[@]}" "$WRAPPER" -p hi </dev/null 2>"$SANDBOX/stderr")"; RC=$?
+check "all resting: refused (75)" "$RC" "75"
+check "all resting: stdout says claude-limited, for the launchers" "$OUT_STDOUT" "STATUS: claude-limited"
+contains "all resting: stderr names each account and the earliest reset" "$(cat "$SANDBOX/stderr")" \
+  "every Claude account is resting (team until $(TZ=UTC date -d "@$late" '+%Y-%m-%d %H:%M %Z'), ultra until $(TZ=UTC date -d "@$early" '+%Y-%m-%d %H:%M %Z')) — no session starts until $(TZ=UTC date -d "@$early" '+%Y-%m-%d %H:%M %Z')"
+check "all resting: nothing started" "$(calls)" "0"
+check "all resting: the refusal is limited, and no start is counted" "$(awk -F'\t' '{print $3 "/" $7}' "$LEDGER")" "refused/limited"
+printf 'team\t-\tauth\tt\ts\tr\tauth\n' > "$MARKS"
+reset_keep() { : > "$LEDGER"; : > "$FAKE_LOG"; }
+reset_keep
+conf ACCOUNTS="default=CLAUDE_CODE_OAUTH_TOKEN"
+printf 'default\t-\tauth\tt\ts\tr\tauth\n' > "$MARKS"
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-DUMMY-single w -p hi
+check "single token refused: the pool of one rests, refused (75)" "$RC" "75"
+contains "single token refused: until a token is renewed" "$OUT" "no session starts until a token is renewed and the container restarted"
+
+# Fail safe: what is not a usage limit or a refused token rests nothing.
+not_marked() { # not_marked <label> — the last session left no mark and the next one is team's again
+  check "$1: no mark" "$(grep -c . "$MARKS")" "0"
+  rm -f "$FAKE_DIR"/transcript.team "$FAKE_DIR"/rc.team
+  pw -p hi
+  check "$1: the next session is still team's" "$(start_account | awk -F, '{print $NF}')" "team"
+}
+reset ACCOUNTS="$POOL"; fixture five_hour "$(( $(now) + 3600 ))" | jq -c 'del(.apiError)' > "$FAKE_DIR/transcript.team"; echo 1 > "$FAKE_DIR/rc.team"
+pw -p hi; not_marked "a rate limit that is not the account's usage limit"
+reset ACCOUNTS="$POOL"; fixture auth_expired | jq -c 'del(.apiErrorStatus)' > "$FAKE_DIR/transcript.team"; echo 1 > "$FAKE_DIR/rc.team"
+pw -p hi; not_marked "an authentication error with no 401 or 403 (a network error)"
+reset ACCOUNTS="$POOL"; fixture overloaded > "$FAKE_DIR/transcript.team"; echo 1 > "$FAKE_DIR/rc.team"
+pw -p hi; not_marked "an overloaded API (529, recorded after Claude Code's retries)"
+reset ACCOUNTS="$POOL"; fixture five_hour "$(( $(now) + 3600 ))" | jq -c 'if .type == "assistant" then .isSidechain = true else . end' > "$FAKE_DIR/transcript.team"; echo 1 > "$FAKE_DIR/rc.team"
+pw -p hi; not_marked "a limit inside a subagent only"
+reset ACCOUNTS="$POOL"; { fixture five_hour "$(( $(now) + 3600 ))"; echo '{"type":"assistant","message":{"content":[{"type":"text","text":"later reply"}]}}'; } > "$FAKE_DIR/transcript.team"; echo 1 > "$FAKE_DIR/rc.team"
+pw -p hi; not_marked "a limit that is not the last message"
+reset ACCOUNTS="$POOL"; echo 1 > "$FAKE_DIR/rc.team"
+pw -p hi; not_marked "no transcript"
+reset ACCOUNTS="$POOL"; printf 'not json\n{"type":"assistant"\n' > "$FAKE_DIR/transcript.team"; echo 1 > "$FAKE_DIR/rc.team"
+pw -p hi; not_marked "a transcript that is not JSON"
+reset ACCOUNTS="$POOL"; fixture five_hour "$(( $(now) + 3600 ))" > "$FAKE_DIR/transcript.team"; echo 0 > "$FAKE_DIR/rc.team"
+pw -p hi; not_marked "a session that exited 0"
+reset ACCOUNTS="$POOL" TIMEOUT=1s KILL=1s; fixture five_hour "$(( $(now) + 3600 ))" > "$FAKE_DIR/transcript.team"; echo 5 > "$FAKE_DIR/sleep"
+pw -p hi; rm -f "$FAKE_DIR/sleep"; conf ACCOUNTS="$POOL"; not_marked "a session stopped at its time limit"
+
+# Through the launcher (L28 clarification): sweep-loop.sh's next iteration
+# gets the next account, and only every account resting stops it. The
+# scripts are a copy whose SERVER_MARKER points at a sandbox file (the image).
+SRV="$SANDBOX/srv-scripts"
+cp -r "$REPO_ROOT/.devlead/scripts" "$SRV"
+sed -i "s|^SERVER_MARKER=.*|SERVER_MARKER=$SANDBOX/server-mode|" "$SRV/sweep-loop.sh"
+touch "$SANDBOX/server-mode"
+printf '#!/usr/bin/env bash\necho "STATUS: ok"\n' > "$SANDBOX/doctor-ok"; chmod +x "$SANDBOX/doctor-ok"
+mkdir -p "$SANDBOX/notify" "$SANDBOX/home"
+# loop <max iterations> — sweep-loop.sh's fleet pass through this wrapper.
+loop() {
+  OUT="$(cd "$SANDBOX" && env "${POOL_ENV[@]}" DEVLEAD_CLAUDE_BIN="$WRAPPER" DEVLEAD_DOCTOR_BIN="$SANDBOX/doctor-ok" \
+    DEVLEAD_LOOP_CLAUDE_ARGS="--permission-mode acceptEdits" DEVLEAD_LOOP_SLEEP=0 DEVLEAD_LOOP_STALL=0 \
+    DEVLEAD_NOTIFY_DIR="$SANDBOX/notify" TMPDIR="$SANDBOX" HOME="$SANDBOX/home" \
+    bash "$SRV/sweep-loop.sh" --max-iterations "$1" -- --fleet </dev/null 2>&1)"; RC=$?
+}
+# The wrapper's line for the launchers when it marks an account.
+reset ACCOUNTS="$POOL"
+limited_by team five_hour $(( $(now) + 3 * 3600 ))
+STDOUT="$(env "${POOL_ENV[@]}" "$WRAPPER" -p hi </dev/null 2>/dev/null)"
+check "a marked account: stdout ends with STATUS: claude-account-limited <name>" "$(tail -n 1 <<<"$STDOUT")" "STATUS: claude-account-limited team"
+reset ACCOUNTS="$POOL"; echo 1 > "$FAKE_DIR/rc.team"
+STDOUT="$(env "${POOL_ENV[@]}" "$WRAPPER" -p hi </dev/null 2>/dev/null)"
+check "an ordinary failure: no such line" "$(grep -c 'claude-account-limited' <<<"$STDOUT")" "0"
+
+# A3: an iteration that ends on an account's limit does not count; it runs
+# again on the next account, within the same run — the nightly fleet pass
+# (one iteration) included.
+reset ACCOUNTS="$POOL"
+limited_by team five_hour $(( $(now) + 3 * 3600 ))
+loop 1
+check "fleet (one iteration): team's limit, the pass runs again on ultra" "$(start_account)" "team,ultra"
+check "fleet: with ultra's token" "$(sed -n 2p "$FAKE_ENV_LOG" | cut -f1)" "OAUTH=$ULTRA_TOKEN"
+check "fleet: exit 0, the limited try not counted" "$RC $(grep -c -- '— invoking' <<<"$OUT")" "0 2"
+contains "fleet: says why the iteration runs again" "$OUT" "the Claude account team reached its usage limit in iteration 1 — the iteration does not count; it runs again on the next account"
+reset ACCOUNTS="$POOL"
+limited_by team five_hour $(( $(now) + 3 * 3600 ))
+limited_by ultra seven_day $(( $(now) + 2 * 86400 ))
+loop 1
+check "fleet: both accounts limited, the next try is refused and the loop stops" \
+  "$(awk -F'\t' '{print $3 ($3 == "start" ? ":" $7 : "") ($3 == "refused" ? ":" $7 : "")}' "$LEDGER" | paste -sd, -)" \
+  "start:team,end,start:ultra,end,refused:limited"
+check "fleet: exit 0" "$RC" "0"
+contains "fleet: says why it stopped" "$OUT" "every Claude account is resting — the claude wrapper refused iteration 1; stopping"
+check "fleet: the refusal is not counted" "$(starts)" "2"
+# Bounded: one free try per account in a row. A line that names an account
+# already given its free try (here forged by the session's own output, with
+# no mark) counts as an ordinary iteration, so the loop cannot spin.
+reset ACCOUNTS="$POOL"
+printf 'STATUS: claude-account-limited team\n' > "$FAKE_DIR/stdout.team"; echo 1 > "$FAKE_DIR/rc.team"
+loop 2
+check "bounded: the same account twice in a row counts — 2 iterations, 3 sessions" "$RC $(starts)" "0 3"
+
+# B1, the verifier's L8 and L4, with a plan (the nightly loop): an iteration
+# ending on an account's limit is not progress-free, and never a stall.
+PLAN_REPO="$SANDBOX/plan-repo"
+git init -q "$PLAN_REPO"
+mkdir -p "$PLAN_REPO/.devlead"; printf 'version: 1\nenabled: true\n' > "$PLAN_REPO/.devlead/envelope.yml"
+PLAN3="$SANDBOX/plan3.yml"
+printf 'version: 1\ntasks:\n  - id: a\n    title: A\n    type: feat\n  - id: b\n    title: B\n    type: feat\n  - id: c\n    title: C\n    type: feat\n' > "$PLAN3"
+PLAN_RUN_ID="plan-$(sha256sum "$PLAN3" | cut -c1-16)"
+export PLAN_RUN_ID SRV FAKE_DIR
+export DEVLEAD_RUN_STATE_DIR="$SANDBOX/run-state"
+fixture five_hour $(( $(now) + 3 * 3600 )) > "$FAKE_DIR/../fix-team"
+fixture seven_day $(( $(now) + 2 * 86400 )) > "$FAKE_DIR/../fix-ultra"
+# plan_loop <max iterations> <hook> — sweep-loop.sh on PLAN3, default stall
+# limit, through this wrapper; the hook scripts each account's sessions.
+plan_loop() {
+  rm -rf "$DEVLEAD_RUN_STATE_DIR" "$SANDBOX/notify"; mkdir -p "$SANDBOX/notify"
+  printf '%s\n' "$2" > "$FAKE_DIR/hook"
+  OUT="$(cd "$PLAN_REPO" && env "${POOL_ENV[@]}" DEVLEAD_CLAUDE_BIN="$WRAPPER" DEVLEAD_DOCTOR_BIN="$SANDBOX/doctor-ok" \
+    DEVLEAD_LOOP_CLAUDE_ARGS="--permission-mode acceptEdits" DEVLEAD_LOOP_SLEEP=0 \
+    DEVLEAD_NOTIFY_DIR="$SANDBOX/notify" TMPDIR="$SANDBOX" HOME="$SANDBOX/home" \
+    bash "$SRV/sweep-loop.sh" --repo "$PLAN_REPO" --plan "$PLAN3" --max-iterations "$1" </dev/null 2>&1)"; RC=$?
+}
+# hook lines: count each account's sessions, then do what the case says.
+HOOK_HEAD='n=$(( $(cat "$FAKE_DIR/count.$acct" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_DIR/count.$acct"
+rm -f "$FAKE_DIR/transcript.$acct" "$FAKE_DIR/rc.$acct"
+done_task() { bash "$SRV/run-state.sh" mark "$PLAN_RUN_ID" "$1" done "pr-created https://example.test/pull/$1" >/dev/null; }
+limit() { cp "$FAKE_DIR/../fix-$acct" "$FAKE_DIR/transcript.$acct"; echo 1 > "$FAKE_DIR/rc.$acct"; }'
+reset ACCOUNTS="$POOL" MAX=20
+plan_loop 5 "$HOOK_HEAD
+case \"\$acct.\$n\" in team.1) done_task a ;; team.2) limit ;; ultra.1) limit ;; esac"
+check "L8: team does a task, then team and ultra hit their limits: the loop stops clean, exit 0" "$RC" "0"
+check "L8: sessions team, team, ultra, then the refusal" \
+  "$(awk -F'\t' '{print $3 ($3 == "start" ? ":" $7 : "") ($3 == "refused" ? ":" $7 : "")}' "$LEDGER" | paste -sd, -)" \
+  "start:team,end,start:team,end,start:ultra,end,refused:limited"
+contains "L8: the clean claude-limited stop is reached" "$OUT" "every Claude account is resting — the claude wrapper refused iteration 2; stopping"
+lacks "L8: no convergence verdict" "$OUT" "converged"
+check "L8: no loop-stuck notice" "$(cut -f3 "$SANDBOX/notify/inbox.tsv" 2>/dev/null | grep -c loop-stuck)" "0"
+reset ACCOUNTS="$POOL" MAX=20
+plan_loop 5 "$HOOK_HEAD
+case \"\$acct.\$n\" in team.1) done_task a ;; team.3) limit ;; ultra.1) done_task b ;; ultra.2) done_task c ;; esac"
+check "L4: progress, a no-op, then team's limit: the run goes on with ultra and finishes, exit 0" "$RC" "0"
+check "L4: sessions team, team, team (limited), ultra, ultra" "$(start_account)" "team,team,team,ultra,ultra"
+lacks "L4: the limited iteration is no stall" "$OUT" "converged"
+contains "L4: the plan is done" "$OUT" "every task in $PLAN3 is done"
+check "L4: no loop-stuck notice" "$(cut -f3 "$SANDBOX/notify/inbox.tsv" 2>/dev/null | grep -c loop-stuck)" "0"
+rm -f "$FAKE_DIR/hook"
+
+# The marks file is root's to prepare: without it no session starts.
+reset ACCOUNTS="$POOL"; rm -f "$MARKS"
+pw -p hi
+check "no marks file: refused as nomarks" "$RC $(calls) $(awk -F'\t' '{print $7}' "$LEDGER")" "75 0 nomarks"
+reset ACCOUNTS="$POOL"; rm -f "$MARKS"; ln -s /dev/null "$MARKS"
+pw -p hi
+check "a marks file that is a link: refused as nomarks" "$RC $(calls)" "75 0"
+rm -f "$MARKS"; : > "$MARKS"
+
+# Previous behaviour: without an account line nothing is marked or needed.
+reset; rm -f "$MARKS"
+fixture five_hour "$(( $(now) + 3600 ))" > "$FAKE_DIR/transcript"; echo 1 > "$FAKE_DIR/rc"
+w -p hi
+check "no account line: a limited session ends as before, with no marks file" "$RC $([[ -e "$MARKS" ]] && echo marks || echo none)" "1 none"
+w -p hi
+check "no account line: and the next one starts" "$(calls)" "2"
+: > "$MARKS"
 
 # ===========================================================================
 # Fail closed: no trustworthy configuration or ledger, no session

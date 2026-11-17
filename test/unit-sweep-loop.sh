@@ -406,6 +406,65 @@ contains "the cap-reached message still appears" "$out" "iteration cap"
 check "no scratch file remains after the normal-cap path" \
   "$(find "$REACT_TMP_B" -name 'sweep-loop-out.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
 
+# --- S22, server image only: the claude wrapper refuses with 75 and the line
+#     `STATUS: claude-limited` when every Claude account is resting. The loop
+#     stops there, exit 0, with no notice of its own (the runner sends one)
+#     and no stall. A copy of the scripts whose SERVER_MARKER points at a
+#     sandbox file stands for the image. -------------------------------------
+SRV_SCRIPTS="$SANDBOX/srv-scripts"
+cp -r "$REPO_ROOT/.devlead/scripts" "$SRV_SCRIPTS"
+check "sweep-loop.sh has the fixed path SERVER_MARKER" "$(grep -c '^SERVER_MARKER=' "$SRV_SCRIPTS/sweep-loop.sh")" "1"
+sed -i "s|^SERVER_MARKER=.*|SERVER_MARKER=$SANDBOX/server-mode|" "$SRV_SCRIPTS/sweep-loop.sh"
+touch "$SANDBOX/server-mode"
+FAKE_CLAUDE_LIMITED="$SANDBOX/fake-claude-limited"
+cat > "$FAKE_CLAUDE_LIMITED" <<'FAKE'
+#!/usr/bin/env bash
+[[ -f "$LIMITED_LINE" ]] && echo "STATUS: claude-limited"
+echo "claude: every Claude account is resting (team until 2026-11-17 15:00 UTC) — no session starts until 2026-11-17 15:00 UTC" >&2
+exit 75
+FAKE
+chmod +x "$FAKE_CLAUDE_LIMITED"
+export LIMITED_LINE="$SANDBOX/limited-line"
+touch "$LIMITED_LINE"
+REACT_TMP_L="$SANDBOX/react-tmp-l"
+mkdir -p "$REACT_TMP_L"
+rm -f "$INBOX"
+out="$(TMPDIR="$REACT_TMP_L" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_LIMITED" DEVLEAD_LOOP_SLEEP=0 \
+  bash "$SRV_SCRIPTS/sweep-loop.sh" --repo "$GIT_REPO_DIR" --max-iterations 5 2>&1)"
+rc=$?
+check "every account resting: the loop stops, exit 0" "$rc" "0"
+check "every account resting: one invocation, not five" "$(printf '%s' "$out" | grep -c -- '— invoking')" "1"
+contains "every account resting: says why it stops" "$out" "every Claude account is resting — the claude wrapper refused iteration 1; stopping"
+not_contains "every account resting: no stall verdict" "$out" "converged"
+check "every account resting: the loop itself notifies nothing" "$(inbox_codes)" ""
+check "every account resting: no scratch file left" "$(find "$REACT_TMP_L" -name 'sweep-loop-out.*' | wc -l | tr -d ' ')" "0"
+# Previous behaviour: a refusal without the line (busy, cap, ...) in the
+# server, and the same output outside it, change nothing.
+rm -f "$LIMITED_LINE"
+out="$(TMPDIR="$REACT_TMP_L" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_LIMITED" DEVLEAD_LOOP_SLEEP=0 DEVLEAD_LOOP_STALL=0 \
+  bash "$SRV_SCRIPTS/sweep-loop.sh" --repo "$GIT_REPO_DIR" --max-iterations 2 2>&1)"
+check "server, a refusal without the line: iterates to the cap as before" "$(printf '%s' "$out" | grep -c -- '— invoking')" "2"
+touch "$LIMITED_LINE"
+out="$(TMPDIR="$REACT_TMP_L" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_LIMITED" DEVLEAD_LOOP_SLEEP=0 DEVLEAD_LOOP_STALL=0 \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 2 2>&1)"
+check "outside the server: the same output stops nothing" "$(printf '%s' "$out" | grep -c -- '— invoking')" "2"
+not_contains "outside the server: no resting message" "$out" "every Claude account is resting —"
+rm -f "$LIMITED_LINE" "$INBOX"
+# A session that ENDS on an account's limit: in the server the iteration is
+# not counted and runs again (unit-claude-wrapper.sh pins it through the real
+# wrapper); outside the server the same output is an ordinary iteration.
+FAKE_CLAUDE_ACCT="$SANDBOX/fake-claude-account-limited"
+printf '#!/usr/bin/env bash\necho "did a little"\nprintf "\\nSTATUS: claude-account-limited team\\n"\nexit 1\n' > "$FAKE_CLAUDE_ACCT"
+chmod +x "$FAKE_CLAUDE_ACCT"
+out="$(TMPDIR="$REACT_TMP_L" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ACCT" DEVLEAD_LOOP_SLEEP=0 DEVLEAD_LOOP_STALL=0 \
+  bash "$SRV_SCRIPTS/sweep-loop.sh" --repo "$GIT_REPO_DIR" --max-iterations 2 2>&1)"
+check "server, account limited by the same name every time: one free try, then counted (3 sessions for 2 iterations)" \
+  "$(printf '%s' "$out" | grep -c -- '— invoking')" "3"
+out="$(TMPDIR="$REACT_TMP_L" DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ACCT" DEVLEAD_LOOP_SLEEP=0 DEVLEAD_LOOP_STALL=0 \
+  bash "$LOOP" --repo "$GIT_REPO_DIR" --max-iterations 2 2>&1)"
+check "outside the server: an account-limited line is an ordinary iteration" "$(printf '%s' "$out" | grep -c -- '— invoking')" "2"
+not_contains "outside the server: no free try" "$out" "does not count"
+
 # --- F1 follow-up c: every iteration starts a FRESH session. The loop never
 #     resumes, continues or forks an earlier one, nor picks a session id —
 #     neither in the plan run nor in the fleet pass the server schedules. ----
