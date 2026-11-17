@@ -109,12 +109,12 @@ EOF
 chmod +x "$SANDBOX/sync-repos.sh"
 export SANDBOX_SYNC_FAIL="$SANDBOX/sync-fail" SESSION_LOCK="$SANDBOX/state/session.lock"
 
-# session <sid> [end detail] [rc] — what the wrapper writes for one session of
-# this run; used inside behaviours.
+# session <sid> [end detail] [rc] [account] — what the wrapper writes for one
+# session of this run; used inside behaviours.
 cat > "$SANDBOX/lib.sh" <<'EOF'
 session() {
   local d; d="$(TZ=UTC date +%F)"
-  printf '%s\t%s\tstart\t%s\t%s\t-\t-\n' "$d" "$(date -u +%FT%TZ)" "$1" "$DEVLEAD_RUN_ID" >> "$LEDGER"
+  printf '%s\t%s\tstart\t%s\t%s\t-\t%s\n' "$d" "$(date -u +%FT%TZ)" "$1" "$DEVLEAD_RUN_ID" "${4:--}" >> "$LEDGER"
   printf '%s\t%s\tend\t%s\t%s\t%s\t%s\n' "$d" "$(date -u +%FT%TZ)" "$1" "$DEVLEAD_RUN_ID" "${3:-0}" "${2:--}" >> "$LEDGER"
 }
 refused() { printf '%s\t%s\trefused\t-\t%s\t-\t%s\n' "$(TZ=UTC date +%F)" "$(date -u +%FT%TZ)" "$DEVLEAD_RUN_ID" "$1" >> "$LEDGER"; }
@@ -172,7 +172,7 @@ check "exit code" "$(field .exit_code)" "0"
 check "flags: no timeout, no cap refusal, not paused, not skipped" "$(field '[.timed_out, .cap_refused, .paused, .skipped]')" '[false,false,false,null]'
 check "no session was refused" "$(field .refusals)" "[]"
 check "the session id" "$(field .session_ids)" "[\"$SID\"]"
-check "sessions with their exit codes" "$(field .sessions)" "[{\"id\":\"$SID\",\"exit_code\":0,\"timed_out\":false}]"
+check "sessions with their exit codes (no account line: account null)" "$(field .sessions)" "[{\"id\":\"$SID\",\"exit_code\":0,\"timed_out\":false,\"account\":null}]"
 check "tool uses, subagents included" "$(field '.tool_uses')" '{"Bash":2,"Edit":1,"Read":1,"Write":1}'
 check "files changed through file tools" "$(field .files_changed)" '["/work/repo-a/a.sh","/work/repo-a/b.md"]'
 check "PRs opened by open-pr.sh or gh pr create only" "$(field .prs_opened)" '["https://github.com/acme/widgets/pull/42"]'
@@ -504,7 +504,8 @@ echo "WARN:   the Claude token (DEVLEAD_CLAUDE_TOKEN_ISSUED=2025-12-01) is 11 mo
 run morning
 check "token warning: need token-expiring" "$(need_codes)" "token-expiring"
 msg="$(cut -f6 "$INBOX")"
-contains "token warning: says the token is 11 or more months old" "$msg" "the Claude token was issued 11 or more months ago"
+check "token warning: the single token's notice is what it was" "$msg" \
+  "the Claude token was issued 11 or more months ago and lasts one year — renew it: run claude setup-token, put the new token in .env, update DEVLEAD_CLAUDE_TOKEN_ISSUED and restart the container"
 contains "token warning: says how to renew it" "$msg" "claude setup-token"
 lacks "token warning: the issue date (an environment value) is not in the notice" "$msg" "2025-12-01"
 lacks "token warning: no environment assignment in the notice" "$msg" "DEVLEAD_CLAUDE_TOKEN_ISSUED="
@@ -521,7 +522,42 @@ msg="$(cut -f6 "$INBOX")"
 check "unreadable issue date: need token-expiring" "$(need_codes)" "token-expiring"
 contains "unreadable issue date: says the age cannot be checked" "$msg" "is not a valid date, so the Claude token's age cannot be checked"
 contains "unreadable issue date: says how to fix it" "$msg" "claude setup-token"
+# The account pool (S21): one notice a day, naming every account concerned.
+fresh
+cat > "$SANDBOX_WARN" <<'EOF'
+WARN:   the Claude token of account team (DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-12-01) is 11 months old and expires one year after it was issued — renew it now: run 'claude setup-token' logged in to that account, put the new token in DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN in .env and update DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED
+WARN:   DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED is not a valid issue date (YYYY-MM-DD, not in the future), so the age of the Claude token of account ultra cannot be checked
+EOF
+run morning
+check "pool token warnings: one need token-expiring" "$(need_codes)" "token-expiring"
+msg="$(cut -f6 "$INBOX")"
+contains "pool token warnings: names the old account and how to renew it" "$msg" \
+  "the Claude token of account team was issued 11 or more months ago and lasts one year — renew it: run claude setup-token logged in to that account, put the new token in DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN in .env, update DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED and restart the container"
+contains "pool token warnings: names the account whose date is unreadable" "$msg" \
+  "DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED in the env file is not a valid date, so the age of the Claude token of account ultra cannot be checked"
+lacks "pool token warnings: no issue date in the notice" "$msg" "2025-12-01"
+lacks "pool token warnings: no environment assignment in the notice" "$msg" "_ISSUED="
+run morning
+check "pool token warnings: not again the same day" "$(need_codes)" "token-expiring"
 rm -f "$SANDBOX_WARN"
+
+# ===========================================================================
+# The account each session used (S21): named in the audit, never a token
+# ===========================================================================
+fresh
+behaviour <<'EOF'
+session 44444444-4444-4444-8444-444444444441 - 1 team
+session 44444444-4444-4444-8444-444444444442 - 0 ultra
+EOF
+run fleet DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant-oat01-DUMMY-team-probe
+check "audit: each session names its account" "$(field '[.sessions[] | .account]')" '["team","ultra"]'
+lacks "audit: no token in the audit line" "$LAST" "DUMMY-team-probe"
+fresh
+behaviour <<'EOF'
+session 44444444-4444-4444-8444-444444444443 - 0 'Team!x'
+EOF
+run fleet
+check "audit: a ledger account that is not a name is recorded as null" "$(field '[.sessions[] | .account]')" '[null]'
 
 # ===========================================================================
 # A run that rewrites the audit or the ledger is reported (S18)

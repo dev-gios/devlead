@@ -50,12 +50,17 @@
 #   GAP:      <reason>                      — only on STATUS: unknown
 #   WARN:     the Claude token is 11 months old or more, or its issue date
 #             cannot be read — only when DEVLEAD_CLAUDE_TOKEN_ISSUED is set
-#             (the server's .env, S12). Always the last line; it changes
+#             (the server's .env, S12). With the server's account pool (S21)
+#             one such line per account whose DEVLEAD_CLAUDE_ACCOUNT_<N>_ISSUED
+#             is set, naming the account. Always the last lines; they change
 #             neither STATUS nor the exit code.
 #
 # Environment:
 #   DEVLEAD_CLAUDE_TOKEN_ISSUED  YYYY-MM-DD, the day `claude setup-token`
 #                                issued CLAUDE_CODE_OAUTH_TOKEN
+#   DEVLEAD_CLAUDE_ACCOUNT_<N>, DEVLEAD_CLAUDE_ACCOUNT_<N>_ISSUED
+#                                the name of account N of the server's pool
+#                                (1 to 9) and the day its token was issued
 #   DEVLEAD_DOCTOR_DATE          today's date, YYYY-MM-DD (tests)
 #
 # Exit codes:
@@ -129,7 +134,37 @@ _token_age_warning() {
   fi
   echo "WARN:   DEVLEAD_CLAUDE_TOKEN_ISSUED is not a valid issue date (YYYY-MM-DD, not in the future), so the Claude token's age cannot be checked"
 }
-trap _token_age_warning EXIT
+
+# _pool_token_age_warnings — the same WARN, once per account of the server's
+# pool (S21) whose issue date is set, naming the account. The name is printed
+# only when it is a valid account name; the date, only once it is a date.
+_pool_token_age_warnings() {
+  local n nv iv name issued today iy im id ty tm td months
+  today="${DEVLEAD_DOCTOR_DATE:-$(date +%F)}"
+  _valid_date "$today" || return 0
+  for n in 1 2 3 4 5 6 7 8 9; do
+    nv="DEVLEAD_CLAUDE_ACCOUNT_$n"; iv="DEVLEAD_CLAUDE_ACCOUNT_${n}_ISSUED"
+    issued="${!iv:-}"
+    [[ -n "$issued" ]] || continue
+    name="${!nv:-}"
+    [[ "$name" =~ ^[a-z][a-z0-9-]{0,23}$ ]] || name="number $n"
+    if _valid_date "$issued" && [[ ! "$issued" > "$today" ]]; then
+      IFS=- read -r iy im id <<<"$issued"
+      IFS=- read -r ty tm td <<<"$today"
+      months=$(( (10#$ty * 12 + 10#$tm) - (10#$iy * 12 + 10#$im) ))
+      (( 10#$td < 10#$id )) && months=$((months - 1))
+      (( months >= _TOKEN_WARN_MONTHS )) || continue
+      if (( months >= _TOKEN_LIFE_MONTHS )); then
+        echo "WARN:   the Claude token of account $name ($iv=$issued) is $months months old and has expired — run 'claude setup-token' logged in to that account, put the new token in DEVLEAD_CLAUDE_ACCOUNT_${n}_TOKEN in .env and update $iv"
+      else
+        echo "WARN:   the Claude token of account $name ($iv=$issued) is $months months old and expires one year after it was issued — renew it now: run 'claude setup-token' logged in to that account, put the new token in DEVLEAD_CLAUDE_ACCOUNT_${n}_TOKEN in .env and update $iv"
+      fi
+      continue
+    fi
+    echo "WARN:   $iv is not a valid issue date (YYYY-MM-DD, not in the future), so the age of the Claude token of account $name cannot be checked"
+  done
+}
+trap '_token_age_warning; _pool_token_age_warnings' EXIT
 
 # ---------------------------------------------------------------------------
 # 0b. The DevLead server image (docker/). Nothing there is published from a

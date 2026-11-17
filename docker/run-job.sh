@@ -61,7 +61,8 @@
 #      time limit, or a job that waited past JOB_LOCK_WAIT), job-refused (a
 #      session refused by the daily cap, because another was running, or
 #      because its lock could not be opened). doctor.sh's Claude token
-#      warning becomes a `need` token-expiring, once a day; like every notice it
+#      warnings become one `need` token-expiring a day, naming each account
+#      of the pool (S21) whose token needs renewing; like every notice it
 #      carries no environment value (not even the token's issue date).
 #
 # The audit line: run_id, trigger, repos, started_at, ended_at, exit_code,
@@ -71,7 +72,9 @@
 # paused, skipped (the reason, or null), synced [{repo, branch, commit}] (the
 # clones as the job found them), sync_error (the repo and the reason, or
 # null), sessions
-# [{id, exit_code, timed_out}], session_ids, tool_uses {tool: count},
+# [{id, exit_code, timed_out, account}] (account: the name of the Claude
+# account the session used, from the ledger, or null; never a token),
+# session_ids, tool_uses {tool: count},
 # files_changed, prs_opened, parked {count, issues}, transcripts_kept,
 # outcome (ok, failed, timeout,
 # refused, paused, skipped), notified, notify_codes, leftovers_killed,
@@ -324,20 +327,31 @@ _need() {
 }
 
 _token_check() {
-  local out warn today
+  local out warn today parts=() name n
+  local pool_re='account ([a-z][a-z0-9-]{0,23}|number [1-9]) \(DEVLEAD_CLAUDE_ACCOUNT_([1-9])_ISSUED='
+  local pool_bad_re='^DEVLEAD_CLAUDE_ACCOUNT_([1-9])_ISSUED is not a valid issue date.* of account ([a-z][a-z0-9-]{0,23}|number [1-9]) cannot be checked$'
   [[ -f "$SCRIPTS_DIR/doctor.sh" ]] || return 0
   out="$(bash "$SCRIPTS_DIR/doctor.sh" </dev/null 2>/dev/null)"
-  warn="$(grep -m1 '^WARN:' <<<"$out" | sed 's/^WARN:[[:space:]]*//')"
-  [[ -n "$warn" ]] || return 0
+  grep -q '^WARN:' <<<"$out" || return 0
   today="$(date +%F)"
   [[ "$(cat "$TOKEN_STAMP" 2>/dev/null)" == "$today" ]] && return 0
-  # doctor's line names DEVLEAD_CLAUDE_TOKEN_ISSUED with its value: the notice
-  # says what it means instead.
-  if [[ "$warn" == *"not a valid issue date"* ]]; then
-    _need token-expiring "DEVLEAD_CLAUDE_TOKEN_ISSUED in the env file is not a valid date, so the Claude token's age cannot be checked — set it to the day you ran claude setup-token (YYYY-MM-DD) and restart the container"
-  else
-    _need token-expiring "the Claude token was issued 11 or more months ago and lasts one year — renew it: run claude setup-token, put the new token in .env, update DEVLEAD_CLAUDE_TOKEN_ISSUED and restart the container"
-  fi
+  # doctor's lines name the issue-date variables with their values: the
+  # notice says what they mean instead. One notice a day, every account in it.
+  while IFS= read -r warn; do
+    warn="${warn#WARN:}"; warn="${warn#"${warn%%[![:space:]]*}"}"
+    if [[ "$warn" =~ $pool_re ]]; then
+      name="${BASH_REMATCH[1]}"; n="${BASH_REMATCH[2]}"
+      parts+=("the Claude token of account $name was issued 11 or more months ago and lasts one year — renew it: run claude setup-token logged in to that account, put the new token in DEVLEAD_CLAUDE_ACCOUNT_${n}_TOKEN in .env, update DEVLEAD_CLAUDE_ACCOUNT_${n}_ISSUED and restart the container")
+    elif [[ "$warn" =~ $pool_bad_re ]]; then
+      n="${BASH_REMATCH[1]}"; name="${BASH_REMATCH[2]}"
+      parts+=("DEVLEAD_CLAUDE_ACCOUNT_${n}_ISSUED in the env file is not a valid date, so the age of the Claude token of account $name cannot be checked — set it to the day you ran claude setup-token for that account (YYYY-MM-DD) and restart the container")
+    elif [[ "$warn" == *"not a valid issue date"* ]]; then
+      parts+=("DEVLEAD_CLAUDE_TOKEN_ISSUED in the env file is not a valid date, so the Claude token's age cannot be checked — set it to the day you ran claude setup-token (YYYY-MM-DD) and restart the container")
+    else
+      parts+=("the Claude token was issued 11 or more months ago and lasts one year — renew it: run claude setup-token, put the new token in .env, update DEVLEAD_CLAUDE_TOKEN_ISSUED and restart the container")
+    fi
+  done < <(grep '^WARN:' <<<"$out")
+  _need token-expiring "$(printf '%s; ' "${parts[@]}" | sed 's/; $//')"
   mkdir -p "${TOKEN_STAMP%/*}" 2>/dev/null
   printf '%s\n' "$today" > "$TOKEN_STAMP" 2>/dev/null || true
 }
@@ -361,10 +375,12 @@ _sessions_json() {
   awk -F'\t' -v r="$RUN_ID" '$5 == r' "$LEDGER" 2>/dev/null | jq -R -s -c '
     split("\n") | map(select(length > 0) | split("\t")) as $l
     | { sessions: [ $l[] | select(.[2] == "start") | .[3] as $id
+          | ((.[6] // "") | if test("^[a-z][a-z0-9-]{0,23}$") then . else null end) as $account
           | ([ $l[] | select(.[2] == "end" and .[3] == $id) ] | .[0]) as $e
           | { id: $id,
               exit_code: (if $e then ($e[5] | tonumber? // null) else null end),
-              timed_out: (($e // [])[6] == "timeout") } ],
+              timed_out: (($e // [])[6] == "timeout"),
+              account: $account } ],
         refusals: [ $l[] | select(.[2] == "refused") | .[6] ] }'
 }
 

@@ -280,7 +280,7 @@ Lo que esta sección agrega es un canal de **escalada de nivel run**, implementa
 - en el servidor, una sesión de `claude` o un trabajo completo llegó a su tiempo máximo y se lo detuvo, o un trabajo esperó a otro más que el máximo configurado y no corrió (`job-timeout`)
 - en el servidor, se rechazó una sesión de `claude` por el tope diario, porque otra sesión estaba corriendo, porque no se pudo abrir su lock o porque no se pudieron leer los límites (`job-refused`)
 - en el servidor, el log de auditoría o el registro de sesiones cambió durante una corrida, o el registro de sesiones apareció vaciado al empezar una (y el trabajo no corrió) (`audit-tampered`)
-- `doctor` avisa que el token de Claude tiene 11 meses o más, o que su fecha de emisión no es válida; como máximo un aviso por día, que dice cómo renovarlo sin repetir la fecha (`token-expiring`)
+- `doctor` avisa que el token de Claude tiene 11 meses o más, o que su fecha de emisión no es válida; con un pool de cuentas en el servidor, por cuenta y con su nombre; como máximo un aviso por día, que nombra cada cuenta y dice cómo renovarla sin repetir la fecha (`token-expiring`)
 - en el servidor, un trabajo abrió uno o más PRs, que esperan al usuario: un aviso por corrida con los links (`pr-opened`)
 - en el servidor, el reporte de un trabajo aparcó o escaló una o más unidades de trabajo: un aviso por corrida con la cantidad y los números de issue, nunca la razón ni el título (la razón queda en el reporte) (`park`)
 

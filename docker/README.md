@@ -158,7 +158,7 @@ Los comandos que actúan como el agente llevan `-u devlead`. `docker compose exe
   El conteo diario sobrevive a recrear el contenedor.
 - **Avisos:**
   - **nivel `agenda`:** la agenda de la mañana y el resumen del día;
-  - **nivel `need`:** PR abierto, trabajo parado (PARK), corrida fallida o excedida, sesión rechazada por un tope, auditoría alterada, token por vencer y una issue con instrucciones dirigidas al agente (`untrusted-content`), que queda fuera del plan.
+  - **nivel `need`:** PR abierto, trabajo parado (PARK), corrida fallida o excedida, sesión rechazada por un tope, auditoría alterada, token por vencer (con un pool, nombra la cuenta) y una issue con instrucciones dirigidas al agente (`untrusted-content`), que queda fuera del plan.
 - **Cambiar el plan del loop:** edita el archivo y reinicia el contenedor con `docker compose restart devlead`.
 
 ## Mantenimiento
