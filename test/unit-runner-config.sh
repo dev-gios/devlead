@@ -35,7 +35,8 @@ lacks() {
 # shell gets no vote.
 SETTINGS=(TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER
           DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT DEVLEAD_AUDIT_RETENTION_DAYS
-          DEVLEAD_CLAUDE_BIN DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO)
+          DEVLEAD_CLAUDE_BIN DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_STATE_DIR
+          DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL)
 UNSET=()
 for _v in "${SETTINGS[@]}"; do UNSET+=(-u "$_v"); done
 
@@ -73,7 +74,8 @@ check "the crontab has exactly five schedule lines" "$(grep -cv '^#' <<<"$cronta
 check "default limits" "$(grep -v '^#' <<<"$conf")" \
   "$(printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30\nWORKSPACE=')"
 check "default: no repo enrolled" "$(grep -cv '^#' "$OUT/repos")" "0"
-check "the three files are 0644" "$(stat -c %a "$OUT/crontab" "$OUT/runner.conf" "$OUT/repos" | paste -sd' ' -)" "644 644 644"
+check "default: no git identity" "$(git config --file "$OUT/git-identity" --list | wc -l | tr -d ' ')" "0"
+check "the four files are 0644" "$(stat -c %a "$OUT/crontab" "$OUT/runner.conf" "$OUT/repos" "$OUT/git-identity" | paste -sd' ' -)" "644 644 644 644"
 check "no temporary file is left behind" "$(find "$OUT" -name '*.new*' | wc -l)" "0"
 
 # ===========================================================================
@@ -124,6 +126,7 @@ bad() { # bad <label> <expected message> VAR=value...
   check "$label: writes no crontab" "$([[ -e $OUT/crontab ]] && echo written || echo none)" "none"
   check "$label: writes no runner.conf" "$([[ -e $OUT/runner.conf ]] && echo written || echo none)" "none"
   check "$label: writes no repos" "$([[ -e $OUT/repos ]] && echo written || echo none)" "none"
+  check "$label: writes no git identity" "$([[ -e $OUT/git-identity ]] && echo written || echo none)" "none"
 }
 bad "bad loop schedule" "DEVLEAD_CRON_LOOP='61 22 * * *' is not a valid schedule" 'DEVLEAD_CRON_LOOP=61 22 * * *'
 bad "bad fleet schedule" "DEVLEAD_CRON_FLEET='@daily' is not a valid schedule" 'DEVLEAD_CRON_FLEET=@daily'
@@ -164,8 +167,9 @@ contains "several errors: all of them are named (TZ)" "$out" "TZ='Nowhere/City'"
 # ===========================================================================
 WS=/home/me/Work
 OUT="$SANDBOX/repos"
+ID=(DEVLEAD_GIT_NAME=Dev\ Lead DEVLEAD_GIT_EMAIL=devlead@example.com)
 out="$(render "$OUT" DEVLEAD_WORKSPACE="$WS/" "DEVLEAD_REPOS= $WS/app=acme/app , $WS/clients/x/site=Acme-Co/site.git,," \
-  DEVLEAD_LOOP_REPO="$WS/app")"; rc=$?
+  DEVLEAD_LOOP_REPO="$WS/app" "${ID[@]}")"; rc=$?
 check "repos: render exits 0" "$rc" "0"
 check "repos: one line per repo, host path TAB owner/repo (.git dropped)" "$(grep -v '^#' "$OUT/repos")" \
   "$(printf '%s\tacme/app\n%s\tAcme-Co/site' "$WS/app" "$WS/clients/x/site")"
@@ -210,6 +214,30 @@ bad "a loop repo with no repo enrolled" "DEVLEAD_LOOP_REPO must be one of the pa
 bad "newline in DEVLEAD_REPOS" "DEVLEAD_REPOS $CTRL" DEVLEAD_WORKSPACE="$WS" $'DEVLEAD_REPOS=/home/me/Work/a=acme/a\nx'
 bad "newline in DEVLEAD_WORKSPACE" "DEVLEAD_WORKSPACE $CTRL" $'DEVLEAD_WORKSPACE=/home/me/Work\n'
 bad "newline in DEVLEAD_LOOP_REPO" "DEVLEAD_LOOP_REPO $CTRL" $'DEVLEAD_LOOP_REPO=/home/me/Work/a\n'
+
+# ===========================================================================
+# The host's state and the git identity (S14)
+# ===========================================================================
+OUT="$SANDBOX/ident"
+out="$(render "$OUT" DEVLEAD_STATE_DIR=/home/me/.devlead/ 'DEVLEAD_GIT_NAME=  Ana "the bot" O\Neil ' DEVLEAD_GIT_EMAIL=ana+bot@users.noreply.github.com)"; rc=$?
+check "identity: render exits 0" "$rc" "0"
+check "identity: the name, as text" "$(git config --file "$OUT/git-identity" user.name)" 'Ana "the bot" O\Neil'
+check "identity: the email" "$(git config --file "$OUT/git-identity" user.email)" "ana+bot@users.noreply.github.com"
+check "identity: nothing else in the file" "$(git config --file "$OUT/git-identity" --list | cut -d= -f1 | paste -sd, -)" "user.name,user.email"
+bad "a name without an email" "DEVLEAD_GIT_NAME and DEVLEAD_GIT_EMAIL go together" DEVLEAD_GIT_NAME=Ana
+bad "an email without a name" "DEVLEAD_GIT_NAME and DEVLEAD_GIT_EMAIL go together" DEVLEAD_GIT_EMAIL=a@example.com
+bad "repos without an identity" "DEVLEAD_GIT_NAME and DEVLEAD_GIT_EMAIL are required once DEVLEAD_REPOS lists a repo" \
+  DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=$WS/app=acme/app"
+bad "an email that is not one" "DEVLEAD_GIT_EMAIL must be an email address" DEVLEAD_GIT_NAME=Ana "DEVLEAD_GIT_EMAIL=ana at example"
+nothing_echoed "an email that is not one" "ana at example"
+bad "a name with angle brackets" "DEVLEAD_GIT_NAME must be a name of at most 100 characters, without < or >" \
+  "DEVLEAD_GIT_NAME=Ana <evil@x>" DEVLEAD_GIT_EMAIL=a@example.com
+bad "a name too long" "DEVLEAD_GIT_NAME must be a name of at most 100" "DEVLEAD_GIT_NAME=$(printf 'a%.0s' {1..101})" DEVLEAD_GIT_EMAIL=a@example.com
+bad "newline in the name (a config line of its own)" "DEVLEAD_GIT_NAME $CTRL" $'DEVLEAD_GIT_NAME=Ana\n[core]\n\tfsmonitor = touch /tmp/x' DEVLEAD_GIT_EMAIL=a@example.com
+nothing_echoed "newline in the name" "fsmonitor"
+bad "a relative state dir" "DEVLEAD_STATE_DIR must be the absolute path of your ~/.devlead" DEVLEAD_STATE_DIR=.devlead
+bad "a state dir with .." "DEVLEAD_STATE_DIR must be the absolute path" DEVLEAD_STATE_DIR=/home/me/../../etc
+bad "newline in the state dir" "DEVLEAD_STATE_DIR $CTRL" $'DEVLEAD_STATE_DIR=/home/me/.devlead\n'
 
 # Previous behaviour: with none of the F3 settings, the crontab and the F2
 # limits are exactly what they were.

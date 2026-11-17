@@ -4,8 +4,8 @@
 # container start.
 #
 #   runner-config.sh render <dir>       validate the settings below and write
-#                                       <dir>/crontab, <dir>/runner.conf and
-#                                       <dir>/repos
+#                                       <dir>/crontab, <dir>/runner.conf,
+#                                       <dir>/repos and <dir>/git-identity
 #   runner-config.sh check-cron <expr>  exit 0 when <expr> is a valid schedule
 #
 # entrypoint.sh runs `render /etc/devlead` as root, before privileges are
@@ -38,6 +38,13 @@
 #                                  DEVLEAD_WORKSPACE, none inside another
 #   DEVLEAD_LOOP_REPO              empty, or one of the paths in DEVLEAD_REPOS:
 #                                  the loop job works only in a clone
+#   DEVLEAD_STATE_DIR              the host's ~/.devlead, absolute: compose
+#                                  mounts its state subdirectories (S14)
+#   DEVLEAD_GIT_NAME               the author of the commits made in the
+#   DEVLEAD_GIT_EMAIL              container; both, or neither. Required once
+#                                  a repo is enrolled. Written to git-identity,
+#                                  which the image's root-owned git config
+#                                  includes: no session can change it
 #
 # The paths of DEVLEAD_REPOS are the repos' paths on the host: each clone sits
 # at that same path in the container, so the state the host's /devlead keys
@@ -47,7 +54,8 @@
 #
 # runner.conf (KEY=value lines, parsed and never sourced) is read by the claude
 # wrapper and by run-job.sh; repos (host path TAB owner/repo) by sync-repos.sh
-# and the entrypoint; the crontab by supercronic. Missed runs are never made
+# and the entrypoint; git-identity (a git config file) by git; the crontab by
+# supercronic. Missed runs are never made
 # up: supercronic keeps no state between starts.
 set -uo pipefail
 
@@ -250,7 +258,7 @@ _render() {
   done <<<"$table"
 
   for var in TZ DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT DEVLEAD_AUDIT_RETENTION_DAYS DEVLEAD_CLAUDE_BIN \
-             DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO; do
+             DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_STATE_DIR DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL; do
     _has_control "${!var:-}" && errors+=("$var $_CONTROL")
   done
 
@@ -310,15 +318,45 @@ _render() {
     fi
   fi
 
+  # The host's state (S14): compose mounts its subdirectories; the value
+  # itself must at least be a plain absolute path.
+  local state_dir
+  if ! _has_control "${DEVLEAD_STATE_DIR:-}"; then
+    state_dir="$(_trim "${DEVLEAD_STATE_DIR:-}")"
+    while [[ ${#state_dir} -gt 1 && "$state_dir" == */ ]]; do state_dir="${state_dir%/}"; done
+    if [[ -n "$state_dir" ]] && ! _valid_path "$state_dir"; then
+      errors+=("DEVLEAD_STATE_DIR must be the absolute path of your ~/.devlead, of plain characters (letters, digits, . _ @ + -)")
+    fi
+  fi
+
+  # Who the commits made in the container are by.
+  local git_name="" git_email=""
+  if ! _has_control "${DEVLEAD_GIT_NAME:-}${DEVLEAD_GIT_EMAIL:-}"; then
+    git_name="$(_trim "${DEVLEAD_GIT_NAME:-}")"
+    git_email="$(_trim "${DEVLEAD_GIT_EMAIL:-}")"
+    if [[ -n "$git_name" ]] && { (( ${#git_name} > 100 )) || [[ "$git_name" == *[\<\>]* ]]; }; then
+      errors+=("DEVLEAD_GIT_NAME must be a name of at most 100 characters, without < or >")
+    fi
+    if [[ -n "$git_email" ]] && { (( ${#git_email} > 254 )) || ! [[ "$git_email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$ ]]; }; then
+      errors+=("DEVLEAD_GIT_EMAIL must be an email address (name@example.com)")
+    fi
+    if [[ -n "$git_name" && -z "$git_email" ]] || [[ -z "$git_name" && -n "$git_email" ]]; then
+      errors+=("DEVLEAD_GIT_NAME and DEVLEAD_GIT_EMAIL go together: set both, or neither")
+    elif [[ -z "$git_name" && ${#REPO_PATHS[@]} -gt 0 ]]; then
+      errors+=("DEVLEAD_GIT_NAME and DEVLEAD_GIT_EMAIL are required once DEVLEAD_REPOS lists a repo: they sign the commits the server makes")
+    fi
+  fi
+
   if [[ ${#errors[@]} -gt 0 ]]; then
     for line in "${errors[@]}"; do echo "runner-config: ERROR: $line" >&2; done
     return 1
   fi
 
-  local tmp_cron tmp_conf tmp_repos
+  local tmp_cron tmp_conf tmp_repos tmp_ident
   tmp_cron="$(mktemp "$dir/crontab.new.XXXXXX")" || return 1
   tmp_conf="$(mktemp "$dir/runner.conf.new.XXXXXX")" || { rm -f "$tmp_cron"; return 1; }
   tmp_repos="$(mktemp "$dir/repos.new.XXXXXX")" || { rm -f "$tmp_cron" "$tmp_conf"; return 1; }
+  tmp_ident="$(mktemp "$dir/git-identity.new.XXXXXX")" || { rm -f "$tmp_cron" "$tmp_conf" "$tmp_repos"; return 1; }
   {
     echo "# DevLead server schedule (S11, S16). Written by runner-config.sh at container"
     echo "# start from the env file; root's, read by supercronic. Change the DEVLEAD_CRON_*"
@@ -344,10 +382,20 @@ _render() {
     echo "# where its clone sits in the container too, TAB owner/repo on GitHub."
     for i in "${!REPO_PATHS[@]}"; do printf '%s\t%s\n' "${REPO_PATHS[$i]}" "${REPO_SLUGS[$i]}"; done
   } > "$tmp_repos"
-  chmod 0644 "$tmp_cron" "$tmp_conf" "$tmp_repos"
-  mv -f "$tmp_cron" "$dir/crontab" && mv -f "$tmp_conf" "$dir/runner.conf" && mv -f "$tmp_repos" "$dir/repos" || {
-    rm -f "$tmp_cron" "$tmp_conf" "$tmp_repos"
-    echo "runner-config: ERROR: cannot write $dir/crontab, $dir/runner.conf and $dir/repos" >&2
+  # git writes the identity, so a quote or a backslash in the name stays text.
+  printf '# DevLead server git identity. Written by runner-config.sh at container start\n# from DEVLEAD_GIT_NAME and DEVLEAD_GIT_EMAIL; root'"'"'s, included by the git config.\n' > "$tmp_ident"
+  if [[ -n "$git_name" ]]; then
+    git config --file "$tmp_ident" user.name "$git_name" && git config --file "$tmp_ident" user.email "$git_email" || {
+      rm -f "$tmp_cron" "$tmp_conf" "$tmp_repos" "$tmp_ident"
+      echo "runner-config: ERROR: cannot write the git identity" >&2
+      return 1
+    }
+  fi
+  chmod 0644 "$tmp_cron" "$tmp_conf" "$tmp_repos" "$tmp_ident"
+  mv -f "$tmp_cron" "$dir/crontab" && mv -f "$tmp_conf" "$dir/runner.conf" && mv -f "$tmp_repos" "$dir/repos" \
+    && mv -f "$tmp_ident" "$dir/git-identity" || {
+    rm -f "$tmp_cron" "$tmp_conf" "$tmp_repos" "$tmp_ident"
+    echo "runner-config: ERROR: cannot write $dir/crontab, $dir/runner.conf, $dir/repos and $dir/git-identity" >&2
     return 1
   }
   echo "runner-config: schedule and limits written to $dir (TZ=$tz, $max sessions a day, $timeout per session)"

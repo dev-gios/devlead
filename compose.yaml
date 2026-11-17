@@ -21,7 +21,8 @@
 # longer enroll with: docker compose down && docker volume rm devlead_workspace
 #
 # Everything secret comes from .env, which stays out of git and out of the
-# image (.dockerignore). compose also reads DEVLEAD_UID and DEVLEAD_GID from it
+# image (.dockerignore); none of your ~/.devlead secrets (gh-token,
+# notify.env, loop.env) is mounted. compose also reads DEVLEAD_UID and DEVLEAD_GID from it
 # and refuses to go on without them: the container must run as your user, and
 # a silent default could be someone else's. DEVLEAD_ENV_FILE and DEVLEAD_IMAGE
 # exist so the smoke test (make docker-test) can use dummy values and its own
@@ -71,6 +72,24 @@ services:
       - type: volume
         source: workspace
         target: ${DEVLEAD_WORKSPACE:?set DEVLEAD_WORKSPACE in .env to the host directory that holds your repos}
+      # S14: the host's state the jobs share with the morning /devlead, and
+      # only that: these subdirectories of DEVLEAD_STATE_DIR (your ~/.devlead)
+      # and the inbox — never gh-token, notify.env, loop.env or anything else
+      # in it. They are written as your user (DEVLEAD_UID), each TSV writer
+      # under flock. learn/ is read-only: the jobs only read preferences.
+      # profile/ and run/ stay the container's. Each must exist on the host
+      # before the first start (compose does not create them); see
+      # docker/devlead.env.example.
+      - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/agenda", target: /home/devlead/.devlead/agenda, bind: {create_host_path: false}}
+      - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/audit", target: /home/devlead/.devlead/audit, bind: {create_host_path: false}}
+      - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/decisions", target: /home/devlead/.devlead/decisions, bind: {create_host_path: false}}
+      - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/journals", target: /home/devlead/.devlead/journals, bind: {create_host_path: false}}
+      - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/outcomes", target: /home/devlead/.devlead/outcomes, bind: {create_host_path: false}}
+      - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/reports", target: /home/devlead/.devlead/reports, bind: {create_host_path: false}}
+      - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/run-state", target: /home/devlead/.devlead/run-state, bind: {create_host_path: false}}
+      - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/learn", target: /home/devlead/.devlead/learn, read_only: true, bind: {create_host_path: false}}
+      - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/inbox.tsv", target: /home/devlead/.devlead/inbox.tsv, bind: {create_host_path: false}}
+      - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/inbox.read.tsv", target: /home/devlead/.devlead/inbox.read.tsv, bind: {create_host_path: false}}
 
 volumes:
   workspace:

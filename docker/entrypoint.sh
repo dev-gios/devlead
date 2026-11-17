@@ -11,19 +11,24 @@
 #      start: the command below never runs on an open network;
 #   3. hand the ntfy settings to notify.sh, in the file it reads
 #      (~/.devlead/notify.env, mode 600), and drop them from the environment;
-#   4. prepare the workspace (S13): the clones volume, mounted by compose at
+#   4. check the host's state is mounted (S14): the subdirectories of the
+#      host's ~/.devlead the jobs share with the morning /devlead, and the
+#      inbox — never gh-token, notify.env, loop.env or anything else of it.
+#      Each must be a mount of the user's (same UID as on the host); learn/
+#      read-only, since the unattended commands only read preferences;
+#   5. prepare the workspace (S13): the clones volume, mounted by compose at
 #      DEVLEAD_WORKSPACE — the host directory that holds the enrolled repos,
 #      so each clone sits at the repo's host path and every piece of state
 #      keyed by that path is the key the host's /devlead reads. Root owns the
 #      workspace and every directory above a clone; each clone's own
 #      directory is the user's. sync-repos.sh fills it before a job;
-#   5. write ~/.devlead/autonomous-repos — the fleet list the jobs read — from
+#   6. write ~/.devlead/autonomous-repos — the fleet list the jobs read — from
 #      DEVLEAD_REPOS, root's and read-only to the user: no session can enroll
 #      a repo (Inv 3);
-#   6. prepare /var/lib/devlead, where the claude wrapper keeps its session
+#   7. prepare /var/lib/devlead, where the claude wrapper keeps its session
 #      ledger and locks: root's directory, so the user can neither remove nor
 #      replace them. Ledger lines older than two days are dropped;
-#   7. switch to the devlead user for good — same UID/GID as the host user,
+#   8. switch to the devlead user for good — same UID/GID as the host user,
 #      every capability gone, no way back through setuid binaries —, prune the
 #      run transcripts past their retention, and run the command (S9): by
 #      default supercronic with that crontab.
@@ -86,9 +91,6 @@ done
 unset _v
 
 
-# _is_mount <path> — something is mounted exactly there.
-_is_mount() { awk -v p="$1" '$5 == p { found = 1 } END { exit !found }' /proc/self/mountinfo; }
-
 # _clone_dir <workspace> <repo path> <entry number> — root's directories down
 # to the clone's, which is the user's. Nothing on the way may be a link or a
 # directory someone else owns (a clone of an earlier DEVLEAD_REPOS, say):
@@ -121,6 +123,32 @@ _clone_dir() {
     fi
   done
 }
+
+# _is_mount <path> — something is mounted exactly there.
+_is_mount() { awk -v p="$1" '$5 == p { found = 1 } END { exit !found }' /proc/self/mountinfo; }
+
+# The host's state (S14): what compose mounts from DEVLEAD_STATE_DIR. A
+# missing mount would leave the jobs writing state the host never sees.
+_mount_opts() { awk -v p="$1" '$5 == p { o = $6 } END { print o }' /proc/self/mountinfo; }
+# shellcheck disable=SC2088 # "~/.devlead/..." in the messages is display text
+for _m in agenda audit decisions journals outcomes reports run-state learn inbox.tsv inbox.read.tsv; do
+  _p="$DEVLEAD_HOME/.devlead/$_m"
+  _is_mount "$_p" || die "~/.devlead/$_m is not mounted from the host's DEVLEAD_STATE_DIR — compose.yaml mounts it (create it on the host first, see docker/devlead.env.example); the container does not start"
+  if [[ "$_m" == *.tsv ]]; then
+    [[ -f "$_p" && ! -L "$_p" ]] || die "~/.devlead/$_m from the host is not a regular file"
+  else
+    [[ -d "$_p" && ! -L "$_p" ]] || die "~/.devlead/$_m from the host is not a directory"
+  fi
+  [[ "$(stat -c %u "$_p")" == "$_uid" ]] \
+    || die "~/.devlead/$_m on the host is not owned by DEVLEAD_UID — the container writes the host's state as you"
+  _ro=false; [[ ",$(_mount_opts "$_p")," == *,ro,* ]] && _ro=true
+  if [[ "$_m" == learn ]]; then
+    $_ro || die "~/.devlead/learn must be mounted read-only: the jobs only read preferences"
+  else
+    ! $_ro || die "~/.devlead/$_m is mounted read-only: the jobs write it"
+  fi
+done
+unset _m _p _ro
 
 # The workspace and the clones' directories (S13).
 _ws="$(sed -n 's/^WORKSPACE=//p' /etc/devlead/runner.conf)"

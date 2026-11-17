@@ -111,6 +111,9 @@ COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
 #                           guard.sh on whatever the environment says.
 #                           gitconfig: git's only config file besides each
 #                           repo's own (GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM).
+#                           It includes git-identity, the commits' author,
+#                           written at start from DEVLEAD_GIT_NAME and
+#                           DEVLEAD_GIT_EMAIL.
 #                           install-stamp: the source revision and the SHA-256
 #                           of every installed file (doctor.sh checks it).
 #                           crontab, runner.conf and repos: the schedule, the
@@ -152,7 +155,12 @@ COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
 #                           create or remove ~/.devlead/PAUSE, the global
 #                           pause (S17), or autonomous-repos, the fleet list
 #                           the entrypoint writes from DEVLEAD_REPOS (S13).
-#                           F3 (S14) mounts the host's state over them.
+#                           compose mounts the host's state over them (S14):
+#                           agenda, audit, decisions, journals, learn
+#                           (read-only), outcomes, reports, run-state and the
+#                           two inbox files. profile/ and run/ stay the
+#                           container's; nothing else of the host's ~/.devlead
+#                           (gh-token, notify.env, loop.env) is mounted.
 #   DEVLEAD_WORKSPACE       the clones volume (S13), at the host path that
 #                           holds the enrolled repos: each clone sits at its
 #                           repo's host path. Root owns it and every directory
@@ -164,6 +172,7 @@ RUN set -eux; \
       > /etc/devlead/server-mode; \
     git config --file /etc/devlead/gitconfig credential.https://github.com.helper ''; \
     git config --file /etc/devlead/gitconfig --add credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'; \
+    git config --file /etc/devlead/gitconfig include.path /etc/devlead/git-identity; \
     chown -R root:root /opt/devlead /etc/claude-code /etc/devlead; \
     real_claude=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe; \
     [ "$(readlink -f /usr/local/bin/claude)" = "$real_claude" ]; \

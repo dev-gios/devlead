@@ -70,23 +70,36 @@ DEVLEAD_MAX_SESSIONS_PER_DAY=50
 DEVLEAD_WORKSPACE=/home/smoke/Work
 DEVLEAD_REPOS=/home/smoke/Work/hello=octocat/Hello-World
 DEVLEAD_LOOP_REPO=
+DEVLEAD_GIT_NAME=Smoke Bot
+DEVLEAD_GIT_EMAIL=smoke-bot@example.com
 EOF
 )
 # The workspace path of this run: compose mounts the clones volume there.
 WORKSPACE=/home/smoke/Work
 CLONE="$WORKSPACE/hello"
+# A stand-in for the host's ~/.devlead (S14): the state subdirectories and the
+# inbox compose mounts, and decoys of what it must never mount.
+HOST_STATE="$SCRATCH/host-devlead"
+mkdir -p "$HOST_STATE"/{agenda,audit,decisions,journals,learn,outcomes,reports,run-state}
+touch "$HOST_STATE/inbox.tsv" "$HOST_STATE/inbox.read.tsv"
+( umask 077
+  echo "github_pat_DECOY_host_token" > "$HOST_STATE/gh-token"
+  echo "DEVLEAD_NTFY_URL=https://decoy.invalid/host-topic" > "$HOST_STATE/notify.env"
+  echo "DEVLEAD_LOOP_CLAUDE_ARGS=--decoy" > "$HOST_STATE/loop.env" )
+echo "DEVLEAD_STATE_DIR=$HOST_STATE" >> "$ENV_FILE"
 # The image is built from this checkout's commit (doctor.sh's install stamp).
 SOURCE_REV="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 # Interpolation values for compose.yaml, so neither a real .env in the repo
 # nor the caller's shell decides what this run builds or reads.
 COMPOSE_ENV="$SCRATCH/compose.env"
-printf 'DEVLEAD_UID=%s\nDEVLEAD_GID=%s\nDEVLEAD_IMAGE=%s\nDEVLEAD_ENV_FILE=%s\nDEVLEAD_SOURCE_REV=%s\nDEVLEAD_WORKSPACE=%s\n' \
-  "$HOST_UID" "$HOST_GID" "$IMAGE" "$ENV_FILE" "$SOURCE_REV" "$WORKSPACE" > "$COMPOSE_ENV"
+printf 'DEVLEAD_UID=%s\nDEVLEAD_GID=%s\nDEVLEAD_IMAGE=%s\nDEVLEAD_ENV_FILE=%s\nDEVLEAD_SOURCE_REV=%s\nDEVLEAD_WORKSPACE=%s\nDEVLEAD_STATE_DIR=%s\n' \
+  "$HOST_UID" "$HOST_GID" "$IMAGE" "$ENV_FILE" "$SOURCE_REV" "$WORKSPACE" "$HOST_STATE" > "$COMPOSE_ENV"
 
 # SERVICE_ENV, when set, replaces the env file (the F2 service section).
 compose() {
   DEVLEAD_UID="$HOST_UID" DEVLEAD_GID="$HOST_GID" DEVLEAD_IMAGE="$IMAGE" \
   DEVLEAD_ENV_FILE="${SERVICE_ENV:-$ENV_FILE}" DEVLEAD_SOURCE_REV="$SOURCE_REV" DEVLEAD_WORKSPACE="$WORKSPACE" \
+  DEVLEAD_STATE_DIR="$HOST_STATE" \
     docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" \
       -p "$PROJECT" --env-file "$COMPOSE_ENV" "$@"
 }
@@ -109,7 +122,8 @@ for var in DEVLEAD_UID DEVLEAD_GID CLAUDE_CODE_OAUTH_TOKEN DEVLEAD_CLAUDE_TOKEN_
            DEVLEAD_NTFY_URL DEVLEAD_NTFY_TOKEN DEVLEAD_NOTIFY_DETAIL DEVLEAD_LOOP_CLAUDE_ARGS \
            DEVLEAD_DISCOVER_CLAUDE_ARGS DEVLEAD_EGRESS_ALLOW TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP \
            DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT \
-           DEVLEAD_AUDIT_RETENTION_DAYS DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO; do
+           DEVLEAD_AUDIT_RETENTION_DAYS DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO \
+           DEVLEAD_STATE_DIR DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL; do
   check "the template lists $var" "$(grep -cE "^#?${var}=" <<<"$_tpl")" "1"
 done
 for line in "Contents        Read and write" "Pull requests   Read and write" \
@@ -118,17 +132,26 @@ for line in "Contents        Read and write" "Pull requests   Read and write" \
   contains "the template states the PAT rule: $line" "$_tpl" "$line"
 done
 check "the template leaves DEVLEAD_UID for you to fill in" "$(grep -cx 'DEVLEAD_UID=' <<<"$_tpl")" "1"
-out="$(env -u DEVLEAD_UID DEVLEAD_GID="$HOST_GID" DEVLEAD_ENV_FILE="$ENV_FILE" DEVLEAD_WORKSPACE="$WORKSPACE" \
+out="$(env -u DEVLEAD_UID DEVLEAD_GID="$HOST_GID" DEVLEAD_ENV_FILE="$ENV_FILE" DEVLEAD_WORKSPACE="$WORKSPACE" DEVLEAD_STATE_DIR="$HOST_STATE" \
   docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" --env-file /dev/null config -q 2>&1)"; rc=$?
 check "compose refuses to run without DEVLEAD_UID (no silent 1000)" "$([[ $rc -ne 0 ]] && echo refused || echo accepted)" "refused"
 contains "compose says what to set" "$out" "DEVLEAD_UID"
-out="$(env -u DEVLEAD_GID DEVLEAD_UID="$HOST_UID" DEVLEAD_ENV_FILE="$ENV_FILE" DEVLEAD_WORKSPACE="$WORKSPACE" \
+out="$(env -u DEVLEAD_GID DEVLEAD_UID="$HOST_UID" DEVLEAD_ENV_FILE="$ENV_FILE" DEVLEAD_WORKSPACE="$WORKSPACE" DEVLEAD_STATE_DIR="$HOST_STATE" \
   docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" --env-file /dev/null config -q 2>&1)"; rc=$?
 check "compose refuses to run without DEVLEAD_GID" "$([[ $rc -ne 0 ]] && echo refused || echo accepted)" "refused"
-out="$(env -u DEVLEAD_WORKSPACE DEVLEAD_UID="$HOST_UID" DEVLEAD_GID="$HOST_GID" DEVLEAD_ENV_FILE="$ENV_FILE" \
+out="$(env -u DEVLEAD_WORKSPACE DEVLEAD_UID="$HOST_UID" DEVLEAD_GID="$HOST_GID" DEVLEAD_ENV_FILE="$ENV_FILE" DEVLEAD_STATE_DIR="$HOST_STATE" \
   docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" --env-file /dev/null config -q 2>&1)"; rc=$?
 check "compose refuses to run without DEVLEAD_WORKSPACE" "$([[ $rc -ne 0 ]] && echo refused || echo accepted)" "refused"
 contains "compose says what to set (workspace)" "$out" "DEVLEAD_WORKSPACE"
+out="$(env -u DEVLEAD_STATE_DIR DEVLEAD_UID="$HOST_UID" DEVLEAD_GID="$HOST_GID" DEVLEAD_ENV_FILE="$ENV_FILE" DEVLEAD_WORKSPACE="$WORKSPACE" \
+  docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" --env-file /dev/null config -q 2>&1)"; rc=$?
+check "compose refuses to run without DEVLEAD_STATE_DIR" "$([[ $rc -ne 0 ]] && echo refused || echo accepted)" "refused"
+contains "compose says what to set (state)" "$out" "DEVLEAD_STATE_DIR"
+_mounts="$(DEVLEAD_UID="$HOST_UID" DEVLEAD_GID="$HOST_GID" DEVLEAD_ENV_FILE="$ENV_FILE" DEVLEAD_WORKSPACE="$WORKSPACE" DEVLEAD_STATE_DIR="$HOST_STATE" \
+  docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" --env-file /dev/null config --format json 2>/dev/null \
+  | jq -r '.services.devlead.volumes[] | select(.type == "bind") | .source' | sed "s|^$HOST_STATE/||" | sort | paste -sd, -)"
+check "compose mounts only the state subdirectories and the inbox of ~/.devlead (S14)" "$_mounts" \
+  "agenda,audit,decisions,inbox.read.tsv,inbox.tsv,journals,learn,outcomes,reports,run-state"
 
 echo "=== build (project $PROJECT, image $IMAGE) ==="
 if ! compose build >"$SCRATCH/build.log" 2>&1; then
@@ -399,6 +422,19 @@ git -C "$WS/hello" status >/dev/null 2>&1
 p clone_planted_ran "$(yn test -e /tmp/mark-clone-fsmonitor) $(yn test -e /tmp/mark-clone-hook)"
 p clone_readme "$(grep -c PLANTED "$WS/hello/README")"
 p sync_stray "$(/opt/devlead/docker/sync-repos.sh /home/devlead 2>/dev/null | cut -f1,3)"
+
+# --- F3: the host's state (S14) and the commits' author ------------------------
+D="$HOME/.devlead"
+p host_decoys "$(yn test -e "$D/gh-token") $(yn test -e "$D/loop.env") $(grep -c decoy.invalid "$D/notify.env" 2>/dev/null || echo 0)"
+p state_owners "$(stat -c %u "$D/agenda" "$D/decisions" "$D/inbox.tsv" | sort -u | paste -sd' ' -)"
+p learn_ro "$(yn touch "$D/learn/planted")"
+( cd "$WS/hello" && bash "$D/scripts/decisions.sh" record probe "the server's key" "same path as on the host" >/dev/null 2>&1 )
+p ident "$(git -C "$WS/hello" config user.name)|$(git -C "$WS/hello" config user.email)"
+p ident_meta "$(stat -c '%U %a' /etc/devlead/git-identity)"
+p ident_write "$(yn sh -c 'echo "[user]" >> /etc/devlead/git-identity')"
+p ident_override "$(yn git config --global user.email evil@example.com)"
+git -C "$WS/hello" -c core.hooksPath=/dev/null commit -q --allow-empty -m probe >/dev/null 2>&1
+p commit_author "$(git -C "$WS/hello" log -1 --format='%an <%ae>|%cn <%ce>')"
 PROBE_EOF
 
 echo "=== inside the container, as the devlead user ==="
@@ -545,6 +581,22 @@ check "a resync after a session: synced" "$(v sync2)" "SYNCED"
 check "a planted fsmonitor and hook never run after the resync" "$(v clone_planted_ran)" "no no"
 check "a planted change is gone after the resync" "$(v clone_readme)" "0"
 check "sync refuses a path that is not enrolled" "$(v sync_stray)" "$(printf 'FAILED\tnot an enrolled repo (DEVLEAD_REPOS)')"
+# F3: the host's state (S14)
+check "none of the host's gh-token, loop.env or notify.env is in the container" "$(v host_decoys)" "no no 0"
+check "the mounted state is the host user's" "$(v state_owners)" "$HOST_UID"
+check "learn/ is read-only in the container" "$(v learn_ro)" "no"
+check "what the container writes, the host sees (reports/)" \
+  "$(stat -c '%u' "$HOST_STATE/reports/probe" 2>/dev/null || echo missing)" "$HOST_UID"
+check "the container's notices land in the host's inbox" "$(grep -c 'smoke-check' "$HOST_STATE/inbox.tsv")" "1"
+_key="$(printf '%s' "$CLONE" | sha256sum | cut -c1-20)"
+check "same key on both sides: the decision lands where the host's /devlead reads it" \
+  "$(cut -f4,5 "$HOST_STATE/decisions/$_key/log.tsv" 2>/dev/null)" "$(printf "probe\tthe server's key")"
+check "and names the repo by its host path" "$(cat "$HOST_STATE/decisions/$_key/repo" 2>/dev/null)" "$CLONE"
+check "the commits' author is the env file's" "$(v ident)" "Smoke Bot|smoke-bot@example.com"
+check "the git identity is root's, 0644" "$(v ident_meta)" "root 644"
+check "the user cannot change the git identity" "$(v ident_write)" "no"
+check "the user cannot override it in the global config" "$(v ident_override)" "no"
+check "a commit in a clone carries that author" "$(v commit_author)" "Smoke Bot <smoke-bot@example.com>|Smoke Bot <smoke-bot@example.com>"
 
 echo "=== the long-lived service: scheduler and runner (F2) ==="
 # Its own env file: no push channel (the failures below send `need`), a
@@ -694,6 +746,17 @@ if compose up -d --wait --wait-timeout 180 >"$SCRATCH/up.log" 2>&1; then
   check "root: the refused job left no audit line" "$(audit 'length')" "$fleet_runs"
   check "root: claude --version still answers" "$(rx claude --version 2>/dev/null)" "2.1.326 (Claude Code)"
 
+  # 5c. One writer at a time across the container boundary (S14): a host
+  #     process holding the inbox lock makes the container's notify.sh wait.
+  flock -o "$HOST_STATE/inbox.tsv" sleep 4 & holder=$!
+  sleep 0.5
+  t0="$(date +%s)"
+  dx bash /home/devlead/.devlead/scripts/notify.sh send info lock-probe "waits for the host" >/dev/null 2>&1
+  waited=$(( $(date +%s) - t0 ))
+  kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+  check "a host process holding the inbox lock makes the container wait" "$([[ $waited -ge 3 ]] && echo waited || echo "did not wait (${waited}s)")" "waited"
+  check "then the container writes the host's inbox" "$(grep -c 'lock-probe' "$HOST_STATE/inbox.tsv")" "1"
+
   # 6. Retention: an old run's transcripts are pruned.
   dx mkdir -p /home/devlead/.devlead/audit/runs/20200101T000000Z-fleet-aaaaaa
   dx /opt/devlead/docker/run-job.sh --prune >/dev/null 2>&1
@@ -746,6 +809,30 @@ contains "it says the loop works only in the clones" "$out" "DEVLEAD_LOOP_REPO m
 out="$(compose run --rm -T -e 'DEVLEAD_WORKSPACE=/home/elsewhere' -e 'DEVLEAD_REPOS=/home/elsewhere/x=octocat/Hello-World' devlead id -u 2>&1)"; rc=$?
 check "a workspace that is not where compose mounted the clones stops the start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
 contains "it says nothing is mounted there" "$out" "nothing is mounted at DEVLEAD_WORKSPACE"
+
+out="$(compose run --rm -T -e 'DEVLEAD_GIT_EMAIL=not an address' devlead id -u 2>&1)"; rc=$?
+check "an invalid git email stops the start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
+contains "the variable is named" "$out" "DEVLEAD_GIT_EMAIL must be an email address"
+check "the value is not echoed" "$(grep -c 'not an address' <<<"$out")" "0"
+out="$(compose run --rm -T -e 'DEVLEAD_GIT_NAME=' -e 'DEVLEAD_GIT_EMAIL=' devlead id -u 2>&1)"; rc=$?
+check "repos without a git identity stop the start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
+mv "$HOST_STATE/run-state" "$HOST_STATE/run-state.away"
+out="$(compose run --rm -T devlead id -u 2>&1)"; rc=$?
+check "a state subdirectory missing on the host stops the start (compose does not create it)" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
+check "and nothing was created in its place on the host" "$([[ -e "$HOST_STATE/run-state" ]] && echo created || echo absent)" "absent"
+mv "$HOST_STATE/run-state.away" "$HOST_STATE/run-state"
+# Without compose's mounts, or with learn/ writable, the entrypoint refuses.
+_net=(--cap-add NET_ADMIN --cap-add NET_RAW --sysctl net.ipv6.conf.all.disable_ipv6=1)
+out="$(docker run --rm "${_net[@]}" --env-file "$ENV_FILE" "$IMAGE" id -u 2>&1)"; rc=$?
+check "without the host's state mounted the container does not start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
+contains "it names what is not mounted" "$out" "~/.devlead/agenda is not mounted from the host's DEVLEAD_STATE_DIR"
+_v=()
+for _d in agenda audit decisions journals learn outcomes reports run-state inbox.tsv inbox.read.tsv; do
+  _v+=(-v "$HOST_STATE/$_d:/home/devlead/.devlead/$_d")
+done
+out="$(docker run --rm "${_net[@]}" "${_v[@]}" --env-file "$ENV_FILE" "$IMAGE" id -u 2>&1)"; rc=$?
+check "learn/ mounted writable: the container does not start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
+contains "it says learn/ must be read-only" "$out" "~/.devlead/learn must be mounted read-only"
 
 out="$(docker run --rm --user "$HOST_UID" --cap-add NET_ADMIN --env-file "$ENV_FILE" "$IMAGE" id -u 2>&1)"; rc=$?
 check "started as a non-root user, the container does not start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
