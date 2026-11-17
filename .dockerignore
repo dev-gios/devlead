@@ -1,0 +1,10 @@
+# The image is built from an allowlist: only what docker/Dockerfile copies
+# enters the build context. .env (the secrets) can never reach an image layer.
+*
+!.devlead/scripts/
+!.devlead/bin/devlead
+!.claude/hooks/
+!.claude/commands/
+!docker/entrypoint.sh
+!docker/init-firewall.sh
+!docker/managed-settings.json
