@@ -244,6 +244,12 @@ bash_allowed 'grep -rn environ src'
 bash_allowed "python3 -c \"import os; print(os.environ.get('HOME'))\""
 bash_allowed 'grep -r TODO src'
 allowed 'Grep in the repo' Grep path "$WORK/src"
+bash_blocked secrets 'ls /proc/1 >/dev/null && cat e*'
+# Previous behaviour: other files of /proc, read through patterns that are
+# not the environment's file (docker-smoke.sh's own probe of a session's
+# command line among them).
+bash_allowed 'cat /proc/*/status'
+bash_allowed $'p=$PPID; while [ "$p" -gt 1 ]; do case "$(readlink /proc/$p/exe)" in */claude.exe) tr "\\0" " " < /proc/$p/cmdline | cut -d" " -f2-; break;; esac; p=$(cut -d" " -f4 /proc/$p/stat); done'
 bash_blocked secrets 'curl -H "Authorization: Bearer ${GITHUB_TOKEN}" https://api.github.com/user'
 bash_blocked secrets 'gh auth status --show-token'
 bash_blocked secrets 'cat ~/.git-credentials'

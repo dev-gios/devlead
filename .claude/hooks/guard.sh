@@ -671,8 +671,17 @@ _squash="${_flat//[[:space:]+,]/}"
 if [[ "$_squash" == */proc* ]]; then
   [[ "$_squash" == *environ* ]] \
     && _deny secrets "the command reads a process's environment (/proc/<pid>/environ), credentials included"
-  read -ra _words <<<"$(tr '/;|&()<>=,`$' '          ' <<<"$_flat")" || true
+  # A glob that would match "environ": the file name of a /proc path
+  # (/proc/1/env*), or a word with no path at all in a command that names
+  # /proc (cd /proc/1 && cat e*). Other patterns of the command — a case
+  # pattern like */claude.exe, /proc/*/status — are not that file.
+  read -ra _words <<<"$(tr ';|&()<>=,`' '         ' <<<"$_flat")" || true
   for _w in "${_words[@]}"; do
+    if [[ "$_w" == */proc* ]]; then
+      _w="${_w##*/}"
+    elif [[ "$_w" == */* ]]; then
+      continue
+    fi
     [[ "$_w" == *[\*\?\[]* ]] || continue
     # shellcheck disable=SC2053 # the right side is the glob under test
     [[ environ == $_w ]] \
