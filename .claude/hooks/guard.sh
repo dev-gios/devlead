@@ -8,6 +8,9 @@
 #                publishing packages or releases, pushing to the default branch
 #   merge-door   merging a PR any other way than merge.sh (which reads the
 #                envelope the user wrote)
+#   irreversible in the DevLead server image only: closing, deleting or
+#                commenting on an issue, commenting on, reviewing or closing a
+#                PR, deleting a branch on the remote (S2)
 #   database     anything aimed at a database that is not on this machine
 #   secrets      reading or writing a credential file outside the places the
 #                user allowed, or dumping the environment
@@ -500,6 +503,40 @@ fi
 if { _runs "$_scan" "gh[[:space:]]+api${_END}" || [[ "$_scan" =~ api\.github\.com ]]; } \
    && [[ "$_scan" =~ /merges?($|[^A-Za-z0-9_-]) ]]; then
   _deny merge-door "the command calls a GitHub merge endpoint; a PR is merged only through merge.sh"
+fi
+
+# -- irreversible (S2), in the DevLead server image only. Nobody is watching
+# there, so nothing irreversible from the user's list happens without them:
+# no issue closed or deleted, no comment or review posted in their name, no
+# branch deleted on GitHub. (A merge goes through merge.sh, above; a push to
+# the default branch is a production limit.) An interactive session on the
+# host keeps these: the user is there.
+if [[ -e "$SERVER_MARKER" ]]; then
+  if _runs "$_scan" "gh[[:space:]]+issue[[:space:]]+(close|delete|comment|lock|transfer)${_END}"; then
+    _deny irreversible "the command closes, deletes, moves or comments on an issue — in the DevLead server only the user does that"
+  fi
+  if _runs "$_scan" "gh[[:space:]]+pr[[:space:]]+(close|comment|review)${_END}"; then
+    _deny irreversible "the command closes, comments on or reviews a PR in the user's name — in the DevLead server only the user does that"
+  fi
+  if _runs "$_scan" "git[[:space:]]+${_ARGS}push${_END}" \
+     && [[ "$_scan" =~ push[^\;\&\|]*[[:space:]](--delete|-d)($|[[:space:]]) \
+           || "$_scan" =~ push[^\;\&\|]*[[:space:]][\"\']?\+?:[^[:space:]] ]]; then
+    _deny irreversible "the command deletes a branch on the remote — in the DevLead server only the user deletes branches"
+  fi
+  if _runs "$_scan" "gh[[:space:]]+api${_END}"; then
+    _up="${_scan^^}"
+    if [[ "$_up" =~ (^|[[:space:]])(-X|--METHOD)[[:space:]=]*[\"\']?DELETE ]]; then
+      _deny irreversible "the command sends a DELETE to the GitHub API — in the DevLead server only the user deletes on GitHub"
+    fi
+    if [[ "$_scan" =~ state[[:space:]]*=[[:space:]]*[\"\']?closed ]]; then
+      _deny irreversible "the command closes something through the GitHub API — in the DevLead server only the user does that"
+    fi
+    if [[ "$_scan" =~ /(comments|reviews)($|[^A-Za-z0-9_-]) ]] \
+       && { [[ "$_up" =~ (^|[[:space:]])(-X|--METHOD)[[:space:]=]*[\"\']?(POST|PATCH|PUT) ]] \
+            || [[ "$_scan" =~ (^|[[:space:]])(-[fF]|--field|--raw-field|--input)([[:space:]=]|[^[:space:]]*) ]]; }; then
+      _deny irreversible "the command posts a comment or review through the GitHub API in the user's name — in the DevLead server only the user does that"
+    fi
+  fi
 fi
 
 # -- database

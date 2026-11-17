@@ -91,6 +91,7 @@ DevLead trabaja por su cuenta. Lo que NO puede hacer no depende de una frase en 
 |---|---|
 | `production` | Deploys, cambios de infraestructura o de cluster, CLIs de nube, conexión a otra máquina, publicar paquetes o releases, push a la rama por defecto |
 | `merge-door` | Mergear un PR por cualquier vía que no sea `merge.sh` (que lee el envelope — §A3) |
+| `irreversible` | Solo en el servidor (Docker), donde nadie mira (S2): cerrar, borrar, transferir o comentar una issue; comentar, revisar o cerrar un PR en nombre del usuario; borrar una rama en GitHub (también por `gh api`) |
 | `database` | Todo lo que apunte a una base de datos que no esté en esta máquina, incluida una dirección tomada de una variable |
 | `secrets` | Leer o escribir un archivo de credenciales fuera de los lugares permitidos; volcar el entorno; `gh auth token` |
 | `scope` | Escribir un archivo fuera del repositorio en el que se inició la sesión |
