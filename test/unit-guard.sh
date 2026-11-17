@@ -249,6 +249,20 @@ bash_blocked secrets 'ls /proc/1 >/dev/null && cat e*'
 # not the environment's file (docker-smoke.sh's own probe of a session's
 # command line among them).
 bash_allowed 'cat /proc/*/status'
+# Previous behaviour (review finding R3-guard-proc-substring-overblock):
+# repository paths that start with "proc" are not /proc.
+bash_allowed 'cat src/processors/environment.ts'
+bash_allowed 'grep -rn environ lib/procedures/'
+bash_allowed 'git add src/processing/*'
+bash_allowed 'ls src/procedures/*'
+bash_allowed 'cat src/proc/environ.c'
+bash_allowed 'ls app/process && grep -n environ app/process/env.ts'
+# ... while the real mount stays refused, however it is spelled.
+bash_blocked secrets 'ls /proc >/dev/null && cat 1/environ'
+bash_blocked secrets 'cat //proc/1/environ'
+bash_blocked secrets 'cat /proc/`pgrep -n claude`/environ'
+bash_blocked secrets "python3 -c \"import os; print(open('/proc/'+str(os.getppid())+'/environ').read())\""
+bash_blocked secrets "python3 -c \"import os; p=os.getppid(); print(open(f'/proc/{p}/environ').read())\""
 bash_allowed $'p=$PPID; while [ "$p" -gt 1 ]; do case "$(readlink /proc/$p/exe)" in */claude.exe) tr "\\0" " " < /proc/$p/cmdline | cut -d" " -f2-; break;; esac; p=$(cut -d" " -f4 /proc/$p/stat); done'
 bash_blocked secrets 'curl -H "Authorization: Bearer ${GITHUB_TOKEN}" https://api.github.com/user'
 bash_blocked secrets 'gh auth status --show-token'
