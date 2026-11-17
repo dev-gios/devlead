@@ -267,6 +267,37 @@ git init -q "$OTHER"
 check "another repo: has no agenda" "$(cd "$OTHER" && bash "$AGENDA" show)" "STATUS: none"
 
 # ===========================================================================
+# One writer at a time (S14): the host's /devlead and the DevLead server
+# share this state; a writer holds the state directory's lock.
+# ===========================================================================
+plan "#12  Fix login" "#20  Add search" | bash "$AGENDA" publish >/dev/null
+bash "$AGENDA" reset >/dev/null
+flock "$STATE" sleep 2 & holder=$!
+sleep 0.3
+t0="$(date +%s%N)"
+out="$(bash "$AGENDA" skip 12)"
+waited_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+wait "$holder"
+check "skip waits while another DevLead process holds the lock" "$([[ $waited_ms -ge 1500 ]] && echo waited || echo "did not wait (${waited_ms}ms)")" "waited"
+check "and then records it" "$(sed -n 's/^STATUS: //p' <<<"$out") $(cut -f2,3 "$STATE/adjust.tsv")" "$(printf 'recorded skip\t12')"
+mkdir -p "$SANDBOX/stuck"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/stuck/flock"; chmod +x "$SANDBOX/stuck/flock"
+before="$(state_hash)"
+out="$(PATH="$SANDBOX/stuck:$PATH" bash "$AGENDA" first 20 2>&1)"; rc=$?
+check "a lock never released: first fails" "$rc" "1"
+contains "a lock never released: says so" "$out" "another DevLead process kept $STATE locked"
+out="$(plan "#30  Other" | PATH="$SANDBOX/stuck:$PATH" bash "$AGENDA" publish 2>&1)"; rc=$?
+check "a lock never released: publish fails" "$rc" "1"
+out="$(PATH="$SANDBOX/stuck:$PATH" bash "$AGENDA" reset 2>&1)"; rc=$?
+check "a lock never released: reset fails" "$rc" "1"
+check "a lock never released: nothing changed" "$(state_hash)" "$before"
+# Previous behaviour: without flock (not util-linux) the commands work as before.
+mkdir -p "$SANDBOX/noflock"; cp -s /usr/bin/* "$SANDBOX/noflock/" 2>/dev/null; rm -f "$SANDBOX/noflock/flock"
+out="$(PATH="$SANDBOX/noflock" "$BASH" "$AGENDA" first 20)"
+check "without flock: first records as before" "$(sed -n 's/^STATUS: //p' <<<"$out") $(tail -n 1 "$STATE/adjust.tsv" | cut -f2,3)" "$(printf 'recorded first\t20')"
+check "without flock: the queue applies it as before" "$(queue_of "$(printf '12\n20\n' | PATH="$SANDBOX/noflock" "$BASH" "$AGENDA" apply)")" "20"
+bash "$AGENDA" reset >/dev/null
+
+# ===========================================================================
 # A1/A3 — nothing that grants or gates authority reads the agenda
 # ===========================================================================
 for f in .devlead/scripts/open-pr.sh .devlead/scripts/merge.sh .devlead/scripts/envelope.sh \

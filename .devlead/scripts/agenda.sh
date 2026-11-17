@@ -35,6 +35,12 @@
 #   ~/.devlead/agenda/<repo-key>/date    the day of the published agenda
 #   ~/.devlead/agenda/<repo-key>/repo    the repository path the key stands for
 #
+# One writer at a time: the host's /devlead and the DevLead server share this
+# state (S14). publish, first, skip and reset hold an exclusive flock on the
+# repository's state directory while they read and change it, and wait up to
+# LOCK_WAIT_SECS for another DevLead process to finish. Without flock (not
+# util-linux) they run unlocked, as before.
+#
 # Exit codes: 0 ok · 1 misuse, input that is not a plan, an issue that is not
 # on the agenda, a queue line that is not an issue number, adjustments that
 # cannot be read, or a local write that failed.
@@ -49,6 +55,7 @@ set -uo pipefail
 
 AGENDA_ROOT="${DEVLEAD_AGENDA_DIR:-$HOME/.devlead/agenda}"
 TITLE_MAX_CHARS=200
+LOCK_WAIT_SECS=30
 
 _root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$_root" ]]; then
@@ -62,11 +69,25 @@ AGENDA="$STATE_DIR/agenda.tsv"
 ADJUST="$STATE_DIR/adjust.tsv"
 DATE_FILE="$STATE_DIR/date"
 
+# _lock_state — hold the state directory's lock until this script exits.
+_LOCKED=0
+_lock_state() {
+  [[ $_LOCKED -eq 1 || ! -d "$STATE_DIR" ]] && return 0
+  command -v flock >/dev/null 2>&1 || return 0
+  { exec {_LOCK_FD}<"$STATE_DIR"; } 2>/dev/null || return 0
+  if ! flock -w "$LOCK_WAIT_SECS" "$_LOCK_FD"; then
+    echo "agenda: another DevLead process kept $STATE_DIR locked for ${LOCK_WAIT_SECS}s — nothing changed, try again" >&2
+    return 1
+  fi
+  _LOCKED=1
+}
+
 _ensure_state() {
   if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
     echo "agenda: cannot create $STATE_DIR" >&2
     return 1
   fi
+  _lock_state || return 1
   [[ -f "$STATE_DIR/repo" ]] || printf '%s\n' "$_root" > "$STATE_DIR/repo" 2>/dev/null
   return 0
 }
@@ -199,6 +220,9 @@ _adjust() {
     echo "agenda: usage: agenda.sh $verb <issue number>" >&2
     return 1
   fi
+  # Under the lock: a publish for a new day must not slip in between the
+  # check below and the write.
+  _lock_state || return 1
   # Refusing an issue the agenda does not hold keeps a typo from sitting in
   # the file until some later queue happens to contain that number.
   if [[ ! -f "$AGENDA" ]] || ! cut -f2 "$AGENDA" | grep -qx "$num"; then
@@ -217,6 +241,7 @@ _adjust() {
 }
 
 _reset() {
+  _lock_state || return 1
   if ! rm -f "$ADJUST" 2>/dev/null; then
     echo "agenda: could not remove $ADJUST" >&2
     return 1

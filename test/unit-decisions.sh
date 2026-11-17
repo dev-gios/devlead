@@ -139,6 +139,32 @@ for f in arranquemos.md devlead.md sweep-execute.md; do
   check "$f has balanced code fences" "$(( $(grep -c '^[[:space:]]*```' "$CMDS/$f") % 2 ))" "0"
 done
 
+echo "=== one writer at a time (S14) ==="
+# The host's /devlead and the DevLead server write this log; a writer holds
+# the state directory's lock while it reads and rewrites the file.
+DIR="$(dirname "$(ls "$DEVLEAD_DECISIONS_DIR"/*/log.tsv | head -n 1)")"
+rows_before="$(wc -l < "$DIR/log.tsv")"
+flock "$DIR" sleep 2 & holder=$!
+sleep 0.3
+t0="$(date +%s%N)"
+out="$(a record "lock" "espero al otro" "otro proceso de DevLead tiene el lock")"
+waited_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+wait "$holder"
+check "record waits while another DevLead process holds the lock" "$([[ $waited_ms -ge 1500 ]] && echo waited || echo "did not wait (${waited_ms}ms)")" "waited"
+check "and then records" "$(field "$out" STATUS) $(wc -l < "$DIR/log.tsv")" "recorded $((rows_before + 1))"
+# A lock that is never released: the write gives up and changes nothing.
+mkdir -p "$SANDBOX/stuck"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/stuck/flock"; chmod +x "$SANDBOX/stuck/flock"
+cp "$DIR/log.tsv" "$SANDBOX/log.before"
+out="$(cd "$A" && PATH="$SANDBOX/stuck:$PATH" bash "$D" record "lock" "nunca" "el lock no se libera" 2>&1)"; rc=$?
+check "a lock never released: record fails" "$rc" "1"
+contains "a lock never released: says so" "$out" "another DevLead process kept $DIR locked"
+check "a lock never released: the log is unchanged" "$(cmp -s "$SANDBOX/log.before" "$DIR/log.tsv" && echo same || echo changed)" "same"
+# Previous behaviour: without flock (not util-linux) it records as before.
+mkdir -p "$SANDBOX/noflock"; cp -s /usr/bin/* "$SANDBOX/noflock/" 2>/dev/null; rm -f "$SANDBOX/noflock/flock"
+out="$(cd "$A" && PATH="$SANDBOX/noflock" "$BASH" "$D" record "sin flock" "registro igual" "flock no está instalado")"
+check "without flock: records as before" "$(field "$out" STATUS) $(tail -n 1 "$DIR/log.tsv" | cut -f3-8)" \
+  "$(printf 'recorded new\tsin flock\tregistro igual\tflock no está instalado\t\t-')"
+
 echo "=== it is only a record ==="
 for f in .devlead/scripts/open-pr.sh .devlead/scripts/merge.sh .devlead/scripts/envelope.sh \
          .devlead/scripts/forbidden-check.sh .claude/hooks/gate-check.sh .claude/hooks/guard.sh; do
