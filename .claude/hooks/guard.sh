@@ -9,8 +9,8 @@
 #   merge-door   merging a PR any other way than merge.sh (which reads the
 #                envelope the user wrote)
 #   irreversible in the DevLead server image only: closing, deleting or
-#                commenting on an issue, commenting on, reviewing or closing a
-#                PR, deleting a branch on the remote (S2)
+#                commenting on an issue, commenting on, reviewing, closing or
+#                un-drafting a PR, deleting a branch on the remote (S2, S3)
 #   database     anything aimed at a database that is not on this machine
 #   secrets      reading or writing a credential file outside the places the
 #                user allowed, or dumping the environment
@@ -512,11 +512,21 @@ fi
 # the default branch is a production limit.) An interactive session on the
 # host keeps these: the user is there.
 if [[ -e "$SERVER_MARKER" ]]; then
-  if _runs "$_scan" "gh[[:space:]]+issue[[:space:]]+(close|delete|comment|lock|transfer)${_END}"; then
+  # gh's options may sit between the noun and the verb (`gh issue -R o/r
+  # close 5`, `gh pr --repo=o/r review 5`): flags, each with at most one
+  # value. A word that is not a flag ends them, so `gh issue list --search
+  # close` reads as the list it is.
+  _ghopts='((-[^[:space:];&|]+)([[:space:]]+[^-[:space:];&|][^[:space:];&|]*)?[[:space:]]+)*'
+  if _runs "$_scan" "gh[[:space:]]+issue[[:space:]]+${_ghopts}(close|delete|comment|lock|transfer)${_END}"; then
     _deny irreversible "the command closes, deletes, moves or comments on an issue — in the DevLead server only the user does that"
   fi
-  if _runs "$_scan" "gh[[:space:]]+pr[[:space:]]+(close|comment|review)${_END}"; then
+  if _runs "$_scan" "gh[[:space:]]+pr[[:space:]]+${_ghopts}(close|comment|review)${_END}"; then
     _deny irreversible "the command closes, comments on or reviews a PR in the user's name — in the DevLead server only the user does that"
+  fi
+  # A draft is open-pr.sh's call (S3): with merge granted the PR opens ready,
+  # so no run of the server needs to un-draft one.
+  if _runs "$_scan" "gh[[:space:]]+pr[[:space:]]+${_ghopts}ready${_END}"; then
+    _deny irreversible "the command marks a draft PR ready for review — in the DevLead server open-pr.sh decides drafts from the envelope, and only the user un-drafts a PR"
   fi
   if _runs "$_scan" "git[[:space:]]+${_ARGS}push${_END}" \
      && [[ "$_scan" =~ push[^\;\&\|]*[[:space:]](--delete|-d)($|[[:space:]]) \

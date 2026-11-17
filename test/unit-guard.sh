@@ -439,6 +439,26 @@ bash_blocked irreversible 'gh api --method=delete repos/o/r/issues/comments/9'
 bash_blocked irreversible 'gh api repos/o/r/issues/12 -X PATCH -f state=closed'
 bash_blocked irreversible 'gh api repos/o/r/issues/12/comments -f body=hi'
 bash_blocked irreversible 'gh api -X POST repos/o/r/pulls/7/reviews --input review.json'
+# gh's options between the noun and the verb (B1), every verb of the rule.
+for _v in 'close 5' 'comment 5 --body hi' 'delete 5 --yes' 'lock 5' 'transfer 5 o/other'; do
+  bash_blocked irreversible "gh issue -R o/r $_v"
+  bash_blocked irreversible "gh issue --repo o/r $_v"
+  bash_blocked irreversible "gh issue --repo=o/r $_v"
+  bash_blocked irreversible "gh issue -Ro/r $_v"
+done
+for _v in 'close 5' 'comment 5 -b hi' 'review 5 --approve' 'ready 5'; do
+  bash_blocked irreversible "gh pr -R o/r $_v"
+  bash_blocked irreversible "gh pr --repo o/r $_v"
+  bash_blocked irreversible "gh pr --repo=o/r $_v"
+done
+# S3: a draft is the door's call; nothing in the server un-drafts a PR.
+bash_blocked irreversible 'gh pr ready 7'
+bash_blocked irreversible 'gh pr ready https://github.com/o/r/pull/7'
+bash_blocked irreversible 'cd sub && gh pr ready --undo 7'
+bash_allowed 'gh issue list --search close'
+bash_allowed 'gh issue -R o/r list --search close --json number'
+bash_allowed 'gh pr -R o/r view 5 --json reviews'
+bash_allowed 'gh pr list --label ready'
 bash_allowed 'gh issue view 12 --json title,body'
 bash_allowed 'gh issue list --search "close the modal"'
 bash_allowed 'gh issue create --title t --body b'
@@ -454,6 +474,9 @@ bash_allowed 'gh issue close 12'
 bash_allowed 'gh pr comment 7 -b "looks good"'
 bash_allowed 'git push origin --delete feat/x'
 bash_allowed 'gh api -X DELETE repos/o/r/git/refs/heads/feat/x'
+bash_allowed 'gh issue -R o/r close 5'
+bash_allowed 'gh pr --repo=o/r review 5 --approve'
+bash_allowed 'gh pr ready 7'
 
 echo "=== inert outside DevLead ==="
 _payload='{"tool_name":"Bash","tool_input":{"command":"vercel --prod"},"cwd":"'"$WORK"'"}'
