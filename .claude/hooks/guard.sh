@@ -134,11 +134,16 @@ _check_secret_path() {
 }
 
 # The files that configure these limits. Judged before `scope`, so the reason
-# names what the file is.
+# names what the file is. In the server image (docker/) DevLead's scripts and
+# hooks are installed in /opt/devlead — ~/.devlead/scripts and ~/.devlead/hooks
+# are links to it, and a path through them resolves there — and Claude Code's
+# managed settings and skills live in /etc/claude-code.
 _check_self_config() {
   local abs
   abs="$(_abs "$1")"
   if _under "$abs" "$HOME/.devlead" \
+     || _under "$abs" /opt/devlead \
+     || _under "$abs" /etc/claude-code \
      || [[ "$abs" == "$HOME"/.claude/settings*.json ]] \
      || _under "$abs" "$HOME/.claude/hooks" \
      || [[ "$abs" == "$_root"/.claude/settings*.json ]] \
@@ -542,6 +547,11 @@ if _runs "$_scan" "gh[[:space:]]+auth[[:space:]]+token${_END}" \
 fi
 if [[ "$_scan" =~ \$\{?(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN)($|[^A-Za-z0-9_]) ]]; then
   _deny secrets "the command reads the GitHub token from the environment"
+fi
+# The server image hands Claude Code its subscription token in the environment
+# (S12), so every session started there carries it.
+if [[ "$_scan" =~ \$\{?CLAUDE_CODE_OAUTH_TOKEN($|[^A-Za-z0-9_]) ]]; then
+  _deny secrets "the command reads the Claude token from the environment"
 fi
 if _runs "$_scan" "printenv${_END}" || _runs "$_scan" "(env|export[[:space:]]+-p|declare[[:space:]]+-x)[[:space:]]*(\$|[;&|)>])"; then
   _deny secrets "the command dumps the environment, credentials included"
