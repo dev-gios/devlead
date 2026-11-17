@@ -5,6 +5,11 @@
 # Operates on $PWD (the user's work repo).
 #
 # Usage: branch.sh <issue-number> "<issue-title>" <type> [<dep-num>] [<integration-branch>]
+#   <issue-title>: "-" reads the title of GitHub issue <issue-number> itself
+#                  (gh issue view). An issue title is untrusted text
+#                  (GOVERNANCE.md §untrusted-content): passed this way it never
+#                  travels through a command line, where `$(...)` or a backtick
+#                  inside double quotes would run.
 #   <type> ∈ {feat, fix, chore, docs, refactor, perf, test} (default: feat)
 #   <dep-num>: optional predecessor issue number (stacked PR chain)
 #   <integration-branch>: optional cut-point/PR-base branch (default: dev)
@@ -79,6 +84,27 @@ if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; th
   echo "STATUS: blocked"
   echo "GAP:    uncommitted changes — commit or stash before dispatching"
   exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Title "-": read it from the issue. Fails closed — no title, no branch.
+# ---------------------------------------------------------------------------
+if [[ "$ISSUE_TITLE" == "-" ]]; then
+  if [[ ! "$ISSUE_NUM" =~ ^[0-9]+$ ]]; then
+    echo "BRANCH: "
+    echo "BASE:   "
+    echo "STATUS: blocked"
+    echo "GAP:    title '-' needs a numeric issue number (got '$ISSUE_NUM')"
+    exit 0
+  fi
+  if ! ISSUE_TITLE="$(gh issue view "$ISSUE_NUM" --json title -q .title 2>/dev/null)" \
+     || [[ -z "$ISSUE_TITLE" ]]; then
+    echo "BRANCH: "
+    echo "BASE:   "
+    echo "STATUS: blocked"
+    echo "GAP:    could not read the title of issue #$ISSUE_NUM (gh issue view failed)"
+    exit 0
+  fi
 fi
 
 # ---------------------------------------------------------------------------

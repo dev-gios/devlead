@@ -5,7 +5,9 @@
 # Filesystem writes, all local state under ~/.devlead: the digest
 # reports/YYYY-MM-DD.md (OVERWRITE each run), the outcomes history, and the
 # day's agenda of each included repo (agenda.sh publish). After the last repo
-# it tells the human ONCE what the fleet plans to work on (notify.sh agenda).
+# it tells the human ONCE what the fleet plans to work on (notify.sh agenda),
+# and ONCE which issues the plans left out because their text carries
+# instructions aimed at the agent (notify.sh need untrusted-content).
 # ZERO mutation verbs: no branch creation, no PRs, no commits, no pushes.
 set -uo pipefail
 
@@ -159,6 +161,7 @@ _sweep_repo() {
     echo "~~~"
     echo ""
     _publish_agenda "$repo_path" "$plan_out"
+    _collect_untrusted "$repo_path" "$plan_out"
     _reckon_repo "$repo_path" "$_auth_token"
   else
     # Empty, crashed, or unknown output — honest error, NOT "success"
@@ -213,6 +216,44 @@ _notify_agenda() {
   fi
   bash "$NOTIFY_BIN" send agenda "${repos} repo(s), ${issues} issue(s) today" \
     "$message — change it per repo: devlead agenda first <N> | skip <N>" >/dev/null 2>&1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _collect_untrusted <repo_path> <plan_out> — appends one line to
+# $_untrusted_tmp, "<repo name>: #N, #M", naming the EXCLUDED issues whose
+# reason is untrusted-content (GOVERNANCE.md §untrusted-content). Only the
+# reason that ENDS the line counts — it is the one plan wrote; a title cannot
+# imitate it (and plan prints these lines with the title omitted). Trailing
+# whitespace or a CR does not hide a line. `untrusted-content-unverified` is
+# a missing body, not a detection, and is not reported here. Writes nothing
+# to fd 1 or fd 4 and always returns 0.
+# ---------------------------------------------------------------------------
+_collect_untrusted() {
+  local repo_path="$1" plan_out="$2" nums
+  [[ -n "${_untrusted_tmp:-}" ]] || return 0
+  nums="$(awk '
+    /^--- EXCLUDED ---$/ { on = 1; next }
+    /^--- / || /^=== END PLAN/ { on = 0 }
+    on && $0 ~ /   reason: untrusted-content \([a-z,-]+\)[[:space:]]*$/ && match($0, /^#[0-9]+  /) {
+      print substr($0, 1, RLENGTH - 2)
+    }' <<<"$plan_out" | paste -sd ' ' - | sed 's/ /, /g')"
+  [[ -n "$nums" ]] || return 0
+  printf '%s: %s\n' "${repo_path##*/}" "$nums" >> "$_untrusted_tmp" 2>/dev/null
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _notify_untrusted — ONE `need` notice per sweep run when any plan left out
+# issues for untrusted content. The message carries repo names and issue
+# numbers only, never issue text: that text is exactly what is not trusted.
+# ---------------------------------------------------------------------------
+_notify_untrusted() {
+  [[ -n "${_untrusted_tmp:-}" && -s "$_untrusted_tmp" && -f "$NOTIFY_BIN" ]] || return 0
+  local message
+  message="$(paste -sd '|' - < "$_untrusted_tmp" | sed 's/|/ | /g')"
+  bash "$NOTIFY_BIN" send need untrusted-content \
+    "$message — left out of today's plan: their text carries instructions aimed at DevLead (GOVERNANCE.md §untrusted-content). Review them yourself." >/dev/null 2>&1
   return 0
 }
 
@@ -442,8 +483,11 @@ _outcomes_body=""
 # Every repo runs in its own subshell, so the agenda lines travel through a
 # file. No temp file -> no agenda notice this run; the sweep itself goes on.
 _agenda_tmp="$(mktemp "$REPORTS_DIR/.agenda-XXXXXX" 2>/dev/null || true)"
-# A sweep killed mid-run must not leave the file behind.
-trap '[[ -n "${_agenda_tmp:-}" ]] && rm -f "$_agenda_tmp"' EXIT
+# Same for the issues left out for untrusted content: no temp file -> no
+# untrusted-content notice; the issues stay excluded in the plan either way.
+_untrusted_tmp="$(mktemp "$REPORTS_DIR/.untrusted-XXXXXX" 2>/dev/null || true)"
+# A sweep killed mid-run must not leave the files behind.
+trap 'rm -f "${_agenda_tmp:-}" "${_untrusted_tmp:-}"' EXIT
 
 for _repo in "${_repos[@]}"; do
   # _sweep_repo is called EXACTLY ONCE per repo. It emits two streams:
@@ -507,7 +551,9 @@ for _repo in "${_repos[@]}"; do
 done
 
 _notify_agenda
+_notify_untrusted
 [[ -n "$_agenda_tmp" ]] && rm -f "$_agenda_tmp"
+[[ -n "$_untrusted_tmp" ]] && rm -f "$_untrusted_tmp"
 
 # FIX 5: Atomic digest write via temp file + mv
 _tmp="$(mktemp "$REPORTS_DIR/.sweep-XXXXXX.md")"

@@ -122,6 +122,27 @@ if [[ "${1:-}" == "--task-spec" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# _contained <path> — 0 when a path read from an issue body is safe to use:
+# repo-relative, with no '..' component, and — when it exists — resolving,
+# symlinks included, inside the repository root. The issue body is written
+# by anyone who can open an issue (GOVERNANCE.md §untrusted-content): without
+# this, `Spec: ../../home/me/.devlead/gh-token` would be copied into
+# ~/.devlead/run/ for the model to read. A path that does not exist cannot
+# leak anything and keeps its usual "file not found" report.
+# ---------------------------------------------------------------------------
+_contained() {
+  local p="$1" root real
+  [[ -n "$p" && "$p" != /* ]] || return 1
+  case "/$p/" in */../*) return 1 ;; esac
+  [[ -e "$PWD/$p" || -L "$PWD/$p" ]] || return 0
+  root="$(git rev-parse --show-toplevel 2>/dev/null)" || root="$PWD"
+  root="$(readlink -f -- "$root" 2>/dev/null)" || return 1
+  real="$(readlink -f -- "$PWD/$p" 2>/dev/null)" || return 1
+  [[ -n "$root" && -n "$real" && ( "$real" == "$root" || "$real" == "$root"/* ) ]]
+}
+_REJECT_RULE="must be repo-relative, without '..', and inside the repository"
+
+# ---------------------------------------------------------------------------
 # Dependency: gh must be present and authenticated
 # ---------------------------------------------------------------------------
 if ! command -v gh &>/dev/null; then
@@ -179,7 +200,12 @@ fi
 # Emit Design: line (path only — prose layer handles PDF ingestion per ADR-3)
 # ---------------------------------------------------------------------------
 if [[ -n "$_design_path" ]]; then
-  echo "DESIGN: ${_design_path}"
+  if _contained "$_design_path"; then
+    echo "DESIGN: ${_design_path}"
+  else
+    # Not emitted at all: the prose layer would open whatever path it reads.
+    echo "ref-resolver: Design: path rejected — ${_REJECT_RULE}: ${_design_path}" >&2
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -207,6 +233,17 @@ fi
 if [[ -z "$_spec_path" ]]; then
   echo "SPEC:   none"
   echo "GAP:    no Spec: line found in issue #${ISSUE_NUM} body"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Reject a spec path that could read outside the repository. The path itself
+# is issue text, so it goes to stderr only, never to the parsed stdout.
+# ---------------------------------------------------------------------------
+if ! _contained "$_spec_path"; then
+  echo "ref-resolver: Spec: path rejected — ${_REJECT_RULE}: ${_spec_path}" >&2
+  echo "SPEC:   none"
+  echo "GAP:    spec path rejected — ${_REJECT_RULE}"
   exit 0
 fi
 

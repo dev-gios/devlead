@@ -138,6 +138,42 @@ rm -rf "$FAKEBIN"
 
 git checkout -q main
 
+# --- Title '-' : branch.sh reads the issue title itself ---------------------
+# An issue title is untrusted text (GOVERNANCE.md §untrusted-content): placed
+# inside a double-quoted shell argument, `$(...)` or a backtick in it would
+# run. With '-' the title never travels through a command line at all.
+FAKEBIN="$(mktemp -d /tmp/devlead-branch-deps-fakebin.XXXXXX)"
+cat > "$FAKEBIN/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == "issue view 61 --json title -q .title" ]]; then
+  printf '%s\n' 'Fix $(touch PWNED) login `touch PWNED2`'
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$FAKEBIN/gh"
+
+out="$(PATH="$FAKEBIN:$PATH" bash "$BRANCH_SH" 61 - fix "" "main" 2>&1)"
+check "title '-': STATUS created" "$(field "$out" STATUS)" "created"
+check "title '-': slug comes from the issue's own title" "$(field "$out" BRANCH)" "fix/issue-61-fix-touch-pwned-login-touch-pwned2"
+check "title '-': nothing in the title ran" "$(ls PWNED PWNED2 2>/dev/null | wc -l | tr -d ' ')" "0"
+git checkout -q main
+
+out="$(PATH="$FAKEBIN:$PATH" bash "$BRANCH_SH" 62 - fix "" "main" 2>&1)"
+check "title '-', gh fails: STATUS blocked" "$(field "$out" STATUS)" "blocked"
+contains "title '-', gh fails: GAP says why" "$out" "could not read the title of issue #62"
+check "title '-', gh fails: no branch created" "$(git branch --list 'fix/issue-62*' | wc -l | tr -d ' ')" "0"
+
+out="$(PATH="$FAKEBIN:$PATH" bash "$BRANCH_SH" plan-zeta - feat "" "main" 2>&1)"
+check "title '-' on a plan task: STATUS blocked" "$(field "$out" STATUS)" "blocked"
+contains "title '-' on a plan task: GAP says why" "$out" "needs a numeric issue number"
+
+out="$(PATH="$FAKEBIN:$PATH" bash "$BRANCH_SH" 63 "Add export" feat "" "main" 2>&1)"
+check "explicit title: unchanged slug" "$(field "$out" BRANCH)" "feat/issue-63-add-export"
+check "explicit title: STATUS created" "$(field "$out" STATUS)" "created"
+rm -rf "$FAKEBIN"
+git checkout -q main
+
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
 cd /tmp || exit 1

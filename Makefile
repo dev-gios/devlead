@@ -16,6 +16,9 @@ test:
 	bash test/unit-envelope-merge-mode.sh
 	bash test/unit-envelope-discover.sh
 	bash test/unit-envelope-schema.sh
+	bash test/unit-envelope-plan.sh
+	bash test/unit-untrusted.sh
+	bash test/unit-ref-resolver.sh
 	bash test/unit-devlead-session.sh
 	bash test/unit-gate-check.sh
 	bash test/unit-guard.sh
