@@ -490,6 +490,39 @@ pw -p hi; not_marked "a session that exited 0"
 reset ACCOUNTS="$POOL" TIMEOUT=1s KILL=1s; fixture five_hour "$(( $(now) + 3600 ))" > "$FAKE_DIR/transcript.team"; echo 5 > "$FAKE_DIR/sleep"
 pw -p hi; rm -f "$FAKE_DIR/sleep"; conf ACCOUNTS="$POOL"; not_marked "a session stopped at its time limit"
 
+# Through the launcher (L28 clarification): sweep-loop.sh's next iteration
+# gets the next account, and only every account resting stops it. The
+# scripts are a copy whose SERVER_MARKER points at a sandbox file (the image).
+SRV="$SANDBOX/srv-scripts"
+cp -r "$REPO_ROOT/.devlead/scripts" "$SRV"
+sed -i "s|^SERVER_MARKER=.*|SERVER_MARKER=$SANDBOX/server-mode|" "$SRV/sweep-loop.sh"
+touch "$SANDBOX/server-mode"
+printf '#!/usr/bin/env bash\necho "STATUS: ok"\n' > "$SANDBOX/doctor-ok"; chmod +x "$SANDBOX/doctor-ok"
+mkdir -p "$SANDBOX/notify" "$SANDBOX/home"
+# loop <max iterations> — sweep-loop.sh's fleet pass through this wrapper.
+loop() {
+  OUT="$(cd "$SANDBOX" && env "${POOL_ENV[@]}" DEVLEAD_CLAUDE_BIN="$WRAPPER" DEVLEAD_DOCTOR_BIN="$SANDBOX/doctor-ok" \
+    DEVLEAD_LOOP_CLAUDE_ARGS="--permission-mode acceptEdits" DEVLEAD_LOOP_SLEEP=0 DEVLEAD_LOOP_STALL=0 \
+    DEVLEAD_NOTIFY_DIR="$SANDBOX/notify" TMPDIR="$SANDBOX" HOME="$SANDBOX/home" \
+    bash "$SRV/sweep-loop.sh" --max-iterations "$1" -- --fleet </dev/null 2>&1)"; RC=$?
+}
+reset ACCOUNTS="$POOL"
+limited_by team five_hour $(( $(now) + 3 * 3600 ))
+loop 2
+check "sweep-loop: team limited in iteration 1, iteration 2 runs on ultra" "$(start_account)" "team,ultra"
+check "sweep-loop: iteration 2 got ultra's token" "$(sed -n 2p "$FAKE_ENV_LOG" | cut -f1)" "OAUTH=$ULTRA_TOKEN"
+check "sweep-loop: the run goes on to its cap, exit 0" "$RC $(grep -c -- '— invoking' <<<"$OUT")" "0 2"
+reset ACCOUNTS="$POOL"
+limited_by team five_hour $(( $(now) + 3 * 3600 ))
+limited_by ultra seven_day $(( $(now) + 2 * 86400 ))
+loop 5
+check "sweep-loop: both accounts limited, the third iteration is refused and the loop stops" \
+  "$(awk -F'\t' '{print $3 ($3 == "start" ? ":" $7 : "") ($3 == "refused" ? ":" $7 : "")}' "$LEDGER" | paste -sd, -)" \
+  "start:team,end,start:ultra,end,refused:limited"
+check "sweep-loop: exit 0, three iterations of five" "$RC $(grep -c -- '— invoking' <<<"$OUT")" "0 3"
+contains "sweep-loop: says why it stopped" "$OUT" "every Claude account is resting — the claude wrapper refused iteration 3; stopping"
+check "sweep-loop: the refusal is not counted" "$(starts)" "2"
+
 # The marks file is root's to prepare: without it no session starts.
 reset ACCOUNTS="$POOL"; rm -f "$MARKS"
 pw -p hi

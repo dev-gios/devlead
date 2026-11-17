@@ -56,6 +56,7 @@ cat > "$SANDBOX/fakebin/claude" <<'EOF'
 { printf 'CWD=%s' "$PWD"; for a in "$@"; do printf '\t%s' "$a"; done
   printf '\tGUARD=%s' "${DEVLEAD_GUARD:-}"
   printf '\tLEAK=%s%s%s\n' "${DEVLEAD_LOOP_CLAUDE_ARGS:-}" "${DEVLEAD_DISCOVER_CLAUDE_ARGS:-}" "${DEVLEAD_ALLOW_DRIFT:-}"; } >> "$CLAUDE_LOG"
+[[ -f .claude-stdout ]] && cat .claude-stdout
 [[ -f .claude-rc ]] && exit "$(cat .claude-rc)"
 exit 0
 EOF
@@ -238,6 +239,46 @@ contains "failing session: reported with its exit code" "$out" "$ON — session 
 contains "failing session: summary counts it" "$out" "2 repo(s) explored, 1 failed"
 check "failing session: inbox says so" "$(inbox | cut -f2,3)" "info"$'\t'"discover-failed"
 rm -f "$ON/.claude-rc"
+
+# ===========================================================================
+# S22, server image only: the claude wrapper refuses with 75 and
+# `STATUS: claude-limited` when every Claude account is resting — the pass
+# stops there instead of trying every repo (a copy whose SERVER_MARKER points
+# at a sandbox file stands for the image)
+# ===========================================================================
+SRVBIN="$SANDBOX/srv-scripts"
+mkdir -p "$SRVBIN"
+cp "$BIN"/*.sh "$SRVBIN/"
+check "discover-fleet.sh has the fixed path SERVER_MARKER" "$(grep -c '^SERVER_MARKER=' "$SRVBIN/discover-fleet.sh")" "1"
+sed -i "s|^SERVER_MARKER=.*|SERVER_MARKER=$SANDBOX/server-mode|" "$SRVBIN/discover-fleet.sh"
+touch "$SANDBOX/server-mode"
+srv_run() {
+  rm -f "$CLAUDE_LOG"
+  ( cd "$SANDBOX" && HOME="$SANDBOX/home" DEVLEAD_NOTIFY_DIR="$SANDBOX/home/.devlead" TMPDIR="$SANDBOX/tmp" \
+      DEVLEAD_CLAUDE_BIN="$SANDBOX/fakebin/claude" DEVLEAD_DOCTOR_BIN="$SANDBOX/doctor.sh" \
+      "$@" bash "$SRVBIN/discover-fleet.sh" 2>&1 )
+}
+mkdir -p "$SANDBOX/tmp"
+for r in "$ON" "$ON2"; do echo 75 > "$r/.claude-rc"; echo "STATUS: claude-limited" > "$r/.claude-stdout"; done
+enroll "$ON" "$ON2"
+clear_inbox
+out="$(srv_run env DEVLEAD_LOOP_CLAUDE_ARGS="$FLAGS")"; rc=$?
+check "every account resting: the pass exits 0" "$rc" "0"
+check "every account resting: one attempt, the next repo is not tried" "$(calls)" "1"
+contains "every account resting: says why it stops" "$out" "every Claude account is resting — the claude wrapper refused the session for $ON; stopping"
+contains "every account resting: the summary counts no repo" "$out" "0 repo(s) explored, 0 failed"
+contains "every account resting: info says the rest wait" "$(inbox | cut -f6)" "stopped after 0 of 2 repo(s): every Claude account is resting"
+check "every account resting: no scratch file left" "$(find "$SANDBOX/tmp" -name 'discover-fleet-out.*' | wc -l | tr -d ' ')" "0"
+# Previous behaviour: any other failure, in the server too, is reported and
+# the pass goes on; outside the server the same output stops nothing.
+rm -f "$ON/.claude-stdout"
+out="$(srv_run env DEVLEAD_LOOP_CLAUDE_ARGS="$FLAGS")"
+check "server, a refusal without the limited line: the next repo still runs" "$(calls)" "2"
+echo "STATUS: claude-limited" > "$ON/.claude-stdout"
+out="$(run env DEVLEAD_LOOP_CLAUDE_ARGS="$FLAGS")"
+check "outside the server: the same output stops nothing" "$(calls)" "2"
+contains "outside the server: counted as failures, as before" "$out" "2 repo(s) explored, 2 failed"
+for r in "$ON" "$ON2"; do rm -f "$r/.claude-rc" "$r/.claude-stdout"; done
 
 # ===========================================================================
 # dry run -> shows the command, starts nothing, tells nobody

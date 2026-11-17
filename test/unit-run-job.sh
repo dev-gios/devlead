@@ -51,7 +51,8 @@ LEDGER="$SANDBOX/state/sessions.tsv"
 TMPROOT="$SANDBOX/tmp"
 PAUSE="$SANDBOX/PAUSE"
 RUNJOB="$SANDBOX/run-job.sh"
-export LEDGER TMPROOT
+MARKS="$SANDBOX/state/accounts.tsv"
+export LEDGER TMPROOT MARKS
 mkdir -p "$SCRIPTS" "$SANDBOX/state" "$TMPROOT" "$HOME/.devlead/run" "$CLAUDE_CONFIG_DIR/projects/-home-x"
 printf '%s\n' "# DevLead session ledger (root writes this line at container start)" > "$LEDGER"
 : > "$SANDBOX/state/job.lock"; : > "$SANDBOX/state/session.lock"
@@ -62,7 +63,7 @@ setconf() { sed -i "s|^$1=.*|$1=$2|" "$CONF"; }
 chmod 0644 "$CONF"
 
 cp "$SRC" "$RUNJOB"
-for kv in "RUNNER_CONF=$CONF" "LEDGER=$LEDGER" "JOB_LOCK=$SANDBOX/state/job.lock" "SESSION_LOCK=$SANDBOX/state/session.lock" "PAUSE_FILE=$PAUSE" \
+for kv in "RUNNER_CONF=$CONF" "LEDGER=$LEDGER" "ACCOUNTS_FILE=$MARKS" "JOB_LOCK=$SANDBOX/state/job.lock" "SESSION_LOCK=$SANDBOX/state/session.lock" "PAUSE_FILE=$PAUSE" \
           "SCRIPTS_DIR=$SCRIPTS" "SYNC_REPOS=$SANDBOX/sync-repos.sh" "TMP_ROOT=$TMPROOT" "ORPHAN_PARENT=-1" "CONF_OWNER_UID=$(id -u)"; do
   key="${kv%%=*}"
   check "run-job.sh has the fixed path $key" "$(grep -c "^$key=" "$RUNJOB")" "1"
@@ -118,6 +119,9 @@ session() {
   printf '%s\t%s\tend\t%s\t%s\t%s\t%s\n' "$d" "$(date -u +%FT%TZ)" "$1" "$DEVLEAD_RUN_ID" "${3:-0}" "${2:--}" >> "$LEDGER"
 }
 refused() { printf '%s\t%s\trefused\t-\t%s\t-\t%s\n' "$(TZ=UTC date +%F)" "$(date -u +%FT%TZ)" "$DEVLEAD_RUN_ID" "$1" >> "$LEDGER"; }
+# mark <account> <until: epoch or -> <kind> [session id] — a mark the wrapper
+# appends when a session of this run ends on a usage limit or a refused token.
+mark() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(date -u +%FT%T.%NZ)" "${4:-55555555-5555-4555-8555-555555555555}" "$DEVLEAD_RUN_ID" reported >> "$MARKS"; }
 EOF
 behaviour() { { echo "source '$SANDBOX/lib.sh'"; cat; } > "$SANDBOX/behaviour"; }
 
@@ -131,7 +135,10 @@ run() {
   LAST="$(tail -n 1 "$(MONTH_FILE)" 2>/dev/null)"
 }
 field() { jq -c "$1" <<<"$LAST" 2>/dev/null; }
-fresh() { rm -f "$SANDBOX/behaviour" "$SANDBOX/warn" "$SANDBOX_SYNC_FAIL" "$PAUSE" "$INBOX" "$(MONTH_FILE)" "$HOME/.devlead/run/token-warned"; printf '%s\n' "$HEADER" > "$LEDGER"; }
+fresh() { rm -f "$SANDBOX/behaviour" "$SANDBOX/warn" "$SANDBOX_SYNC_FAIL" "$PAUSE" "$INBOX" "$(MONTH_FILE)" "$HOME/.devlead/run/token-warned" "$HOME/.devlead/run/limit-notified"; printf '%s\n' "$HEADER" > "$LEDGER"; : > "$MARKS"; sed -i '/^CLAUDE_ACCOUNTS=/d' "$CONF"; }
+# accounts <runner.conf CLAUDE_ACCOUNTS value> — the pool root rendered.
+accounts() { sed -i '/^CLAUDE_ACCOUNTS=/d' "$CONF"; printf 'CLAUDE_ACCOUNTS=%s\n' "$1" >> "$CONF"; }
+POOL="team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN ultra=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN"
 joblog() { grep -v '^SYNC' "$SANDBOX_LOG"; }
 synclog() { grep '^SYNC' "$SANDBOX_LOG"; }
 need_codes() { if [[ -f "$INBOX" ]]; then awk -F'\t' '$2 == "need" {print $3}' "$INBOX" | paste -sd, -; fi; }
@@ -560,6 +567,85 @@ run fleet
 check "audit: a ledger account that is not a name is recorded as null" "$(field '[.sessions[] | .account]')" '[null]'
 
 # ===========================================================================
+# Usage limits (S22): the marks a run's sessions left, and one notice when
+# every account rests
+# ===========================================================================
+fresh
+accounts "$POOL"
+behaviour <<'EOF'
+session 66666666-6666-4666-8666-666666666661 - 1 team
+mark team "$(( $(date +%s) + 3 * 3600 ))" five_hour 66666666-6666-4666-8666-666666666661
+session 66666666-6666-4666-8666-666666666662 - 0 ultra
+EOF
+run fleet DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant-oat01-DUMMY-team-probe
+check "a mark: the run is ok (the next session ran on the next account)" "$(field '[.outcome, .exit_code]')" '["ok",0]'
+check "a mark: the audit names it, with its kind and session" "$(field '[.limit_marks[] | [.account, .kind, .session_id]]')" \
+  '[["team","five_hour","66666666-6666-4666-8666-666666666661"]]'
+check "a mark: its reset in UTC" "$(field '.limit_marks[0].until | test("^[0-9-]{10}T[0-9:]{8}Z$")')" "true"
+check "a mark with another account available: no notice" "$(need_codes)" ""
+lacks "a mark: no token in the audit line" "$LAST" "DUMMY"
+
+fresh
+accounts "$POOL"
+printf 'team\t%s\tfive_hour\t2026-11-17T10:00:00Z\tx\tother-run\treported\n' "$(( $(date +%s) + 3600 ))" > "$MARKS"
+behaviour <<'EOF'
+session 66666666-6666-4666-8666-666666666663 - 1 ultra
+mark ultra "$(( $(date +%s) + 2 * 86400 ))" seven_day 66666666-6666-4666-8666-666666666663
+echo "STATUS: claude-limited"
+refused limited
+EOF
+run fleet
+check "every account resting: the run is limited, exit 0" "$(field '[.outcome, .exit_code, .refusals]')" '["limited",0,["limited"]]'
+check "every account resting: one need claude-limited, no job-refused" "$(need_codes)" "claude-limited"
+msg="$(awk -F'\t' '$3 == "claude-limited" {print $6}' "$INBOX")"
+early="$(TZ=UTC date -d "@$(cut -f2 "$MARKS" | head -n 1)" '+%Y-%m-%d %H:%M %Z')"
+contains "the notice names each account and until when" "$msg" "every Claude account is resting (team until $early, ultra until "
+contains "the notice gives the earliest reset" "$msg" "— no claude session starts until $early (run "
+check "the marks of other runs are not this run's" "$(field '[.limit_marks[].account]')" '["ultra"]'
+behaviour <<'EOF'
+echo "STATUS: claude-limited"
+refused limited
+EOF
+run fleet
+check "the same stretch: no second notice" "$(need_codes)" "claude-limited"
+check "the same stretch: still limited, still exit 0" "$(field '[.outcome, .exit_code]')" '["limited",0]'
+run morning
+check "a job with no session in the same stretch: no notice either" "$(need_codes)" "claude-limited"
+# A new stretch: team's reset passed, a new mark rests it again.
+printf 'team\t%s\tfive_hour\t2026-11-17T23:59:59Z\tx\tother-run\treported\n' "$(( $(date +%s) + 7200 ))" >> "$MARKS"
+run fleet
+check "a new stretch: a new notice" "$(need_codes)" "claude-limited,claude-limited"
+
+fresh
+accounts "$POOL"
+printf 'team\t-\tauth\t2026-11-17T10:00:00Z\tx\tr\tauth\n' > "$MARKS"
+behaviour <<'EOF'
+session 66666666-6666-4666-8666-666666666664 - 1 ultra
+mark ultra - auth 66666666-6666-4666-8666-666666666664
+EOF
+run fleet
+check "the last account resting during the run: the notice goes now" "$(need_codes)" "claude-limited"
+contains "only refused tokens: no session until one is renewed" "$(awk -F'\t' '$3 == "claude-limited" {print $6}' "$INBOX")" \
+  "every Claude account is resting (team until its token is renewed, ultra until its token is renewed) — no claude session starts until a token is renewed and the container restarted"
+check "a refused token: until null in the audit" "$(field '.limit_marks')" '[{"account":"ultra","kind":"auth","until":null,"session_id":"66666666-6666-4666-8666-666666666664"}]'
+
+fresh
+accounts "$POOL"
+behaviour <<<'refused nomarks'
+run fleet
+contains "a marks file that cannot be read: job-refused, says so" "$(awk -F'\t' '$3 == "job-refused" {print $6}' "$INBOX")" \
+  "the Claude account marks could not be read"
+
+# Previous behaviour: no account line, no marks, no notice.
+fresh
+printf 'team\t-\tauth\tt\ts\tr\tauth\n' > "$MARKS"
+behaviour <<<'session 66666666-6666-4666-8666-666666666665'
+run fleet
+check "no account line: no limit notice and no marks of this run" "$(need_codes)|$(field .limit_marks)" "|[]"
+check "no account line: the outcome is what it was" "$(field '[.outcome, .exit_code]')" '["ok",0]'
+fresh
+
+# ===========================================================================
 # A run that rewrites the audit or the ledger is reported (S18)
 # ===========================================================================
 fresh
@@ -686,7 +772,7 @@ check "S19: a run that opened and parked nothing sends neither" "$(field '[.noti
 # ===========================================================================
 gov="$(sed -n '/^## §escalation-channel/,/^## §learned-preferences/p' "$REPO_ROOT/.claude/GOVERNANCE.md")"
 codes="$(grep -oE '_need [a-z-]+' "$SRC" | awk '{print $2}' | sort -u)"
-check "run-job.sh sends the seven server codes" "$(paste -sd, - <<<"$codes")" "audit-tampered,job-failed,job-refused,job-timeout,park,pr-opened,token-expiring"
+check "run-job.sh sends the eight server codes" "$(paste -sd, - <<<"$codes")" "audit-tampered,claude-limited,job-failed,job-refused,job-timeout,park,pr-opened,token-expiring"
 while IFS= read -r c; do
   contains "GOVERNANCE §escalation-channel lists need code $c" "$gov" "(\`$c\`)"
 done <<<"$codes"

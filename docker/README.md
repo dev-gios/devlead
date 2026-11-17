@@ -55,7 +55,7 @@ DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=sk-ant-oat01-...
 DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-11-17
 ```
 
-El orden es tuyo: el número 1 es la cuenta que se usa primero. Cada sesión usa la cuenta de mayor prioridad y recibe solo el token de esa cuenta. El registro de sesiones y la auditoría nombran la cuenta, nunca el token. Con un pool, deja vacíos `CLAUDE_CODE_OAUTH_TOKEN` y `DEVLEAD_CLAUDE_TOKEN_ISSUED`: las dos formas no se mezclan, y si una cuenta está incompleta o mal escrita el contenedor no arranca y el log nombra la variable.
+El orden es tuyo: el número 1 es la cuenta que se usa primero. Cada sesión usa la cuenta de mayor prioridad que esté disponible y recibe solo el token de esa cuenta. El registro de sesiones y la auditoría nombran la cuenta, nunca el token. Con un pool, deja vacíos `CLAUDE_CODE_OAUTH_TOKEN` y `DEVLEAD_CLAUDE_TOKEN_ISSUED`: las dos formas no se mezclan, y si una cuenta está incompleta o mal escrita el contenedor no arranca y el log nombra la variable.
 
 ### 2. Token de GitHub
 
@@ -158,8 +158,12 @@ Los comandos que actúan como el agente llevan `-u devlead`. `docker compose exe
   El conteo diario sobrevive a recrear el contenedor.
 - **Avisos:**
   - **nivel `agenda`:** la agenda de la mañana y el resumen del día;
-  - **nivel `need`:** PR abierto, trabajo parado (PARK), corrida fallida o excedida, sesión rechazada por un tope, auditoría alterada, token por vencer (con un pool, nombra la cuenta) y una issue con instrucciones dirigidas al agente (`untrusted-content`), que queda fuera del plan.
+  - **nivel `need`:** PR abierto, trabajo parado (PARK), corrida fallida o excedida, sesión rechazada por un tope, auditoría alterada, token por vencer (con un pool, nombra la cuenta), todas las cuentas de Claude descansando (`claude-limited`) y una issue con instrucciones dirigidas al agente (`untrusted-content`), que queda fuera del plan.
 - **Cambiar el plan del loop:** edita el archivo y reinicia el contenedor con `docker compose restart devlead`.
+- **Límites de uso de Claude:** cuando una sesión termina porque la cuenta llegó a su límite de uso (el de 5 horas o el semanal), esa cuenta descansa hasta la hora de reinicio que informa Claude, o 5 horas si Claude no la informa. Las sesiones siguientes usan la próxima cuenta del pool y, cuando pasa esa hora, vuelven solas a la cuenta de mayor prioridad. Con Team primero y Ultra de respaldo: Team trabaja hasta su límite de 5 horas, Ultra toma las sesiones durante esa ventana y después todo vuelve a Team. Si Claude rechaza un token (inválido, vencido o revocado), su cuenta descansa hasta que lo renueves y reinicies el contenedor. Si todas las cuentas descansan, ninguna sesión arranca hasta el reinicio más próximo, los trabajos dejan de reintentar y llega un solo aviso `need` (`claude-limited`) con la hora. Esa espera no gasta el tope diario. La línea de auditoría dice qué cuenta usó cada sesión (`sessions[].account`) y qué cuentas quedaron descansando (`limit_marks`). Las marcas viven en el volumen `/var/lib/devlead/accounts.tsv`; para que una cuenta vuelva antes de tiempo, borra su línea como root:
+  ```bash
+  docker compose exec -u root devlead sed -i '/^team\t/d' /var/lib/devlead/accounts.tsv
+  ```
 
 ## Mantenimiento
 
@@ -171,6 +175,8 @@ Los comandos que actúan como el agente llevan `-u devlead`. `docker compose exe
 
 - El horario no recupera las corridas que se perdieron mientras la máquina estaba apagada.
 - El límite `irreversible` de `guard.sh` compara texto. No es un sandbox, y el token de GitHub sigue pudiendo cerrar issues. La protección de rama del paso 3 es la red de respaldo.
+- La sesión que descubre el límite de una cuenta sí cuenta para el tope diario. Los trabajos de una sola iteración (`fleet` y la corrida de `poll`) no la repiten con la siguiente cuenta: esa pasada queda para la próxima corrida. El loop nocturno sí sigue con la siguiente cuenta en su próxima iteración.
+- Una sesión corre como el mismo usuario que escribe las marcas de las cuentas, así que podría alterarlas. Lo peor que logra es dejar descansando una cuenta, o devolver antes una que Claude va a rechazar otra vez.
 - Cada consulta de issues sincroniza todos los repos enrolados. Si uno falla, el aviso `job-failed` se repite en cada consulta hasta que se arregle.
 - Las corridas guiadas no pueden escribir el reporte `~/.devlead/reports/*-execute.md`, así que el aviso de PARK puede apuntar a un reporte que no existe. Los motivos quedan en la transcripción de la corrida.
 

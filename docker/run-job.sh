@@ -60,7 +60,11 @@
 #      not be synced), job-timeout (a session or the whole job stopped at its
 #      time limit, or a job that waited past JOB_LOCK_WAIT), job-refused (a
 #      session refused by the daily cap, because another was running, or
-#      because its lock could not be opened). doctor.sh's Claude token
+#      because its lock could not be opened), claude-limited (every Claude
+#      account of the pool rests — usage limit or refused token, S22 — so no
+#      session starts until the earliest reset: one notice per such stretch,
+#      sent by the first run that sees it, with each account and the time;
+#      a session refused for it is not job-refused). doctor.sh's Claude token
 #      warnings become one `need` token-expiring a day, naming each account
 #      of the pool (S21) whose token needs renewing; like every notice it
 #      carries no environment value (not even the token's issue date).
@@ -68,16 +72,20 @@
 # The audit line: run_id, trigger, repos, started_at, ended_at, exit_code,
 # timed_out, cap_refused (a session refused by the daily cap), refusals (the
 # reason of every refused session: cap, busy, nolock, paused, noconf, noledger,
-# root),
+# nomarks, limited, root),
 # paused, skipped (the reason, or null), synced [{repo, branch, commit}] (the
 # clones as the job found them), sync_error (the repo and the reason, or
 # null), sessions
 # [{id, exit_code, timed_out, account}] (account: the name of the Claude
 # account the session used, from the ledger, or null; never a token),
+# limit_marks [{account, kind, until, session_id}] (the accounts its sessions
+# left resting: kind the usage limit, five_hour, seven_day, ..., or auth for
+# a refused token; until the reset in UTC, or null until a restart),
 # session_ids, tool_uses {tool: count},
 # files_changed, prs_opened, parked {count, issues}, transcripts_kept,
 # outcome (ok, failed, timeout,
-# refused, paused, skipped), notified, notify_codes, leftovers_killed,
+# refused, paused, skipped, limited: a session refused because every Claude
+# account rests), notified, notify_codes, leftovers_killed,
 # lock_wait_seconds, lock_timed_out (gave up waiting for the job lock),
 # job_timed_out (stopped at JOB_TIMEOUT), audit_intact. Files changed are those the sessions'
 # Write, Edit, MultiEdit and NotebookEdit calls name — a file a shell command
@@ -111,6 +119,7 @@ set -uo pipefail
 RUNNER_CONF=/etc/devlead/runner.conf
 LEDGER=/var/lib/devlead/sessions.tsv
 LEDGER_HEADER="# DevLead session ledger"
+ACCOUNTS_FILE=/var/lib/devlead/accounts.tsv
 JOB_LOCK=/var/lib/devlead/job.lock
 SESSION_LOCK=/var/lib/devlead/session.lock
 PAUSE_FILE=/home/devlead/.devlead/PAUSE
@@ -126,6 +135,7 @@ STATE_DIR="$HOME/.devlead"
 AUDIT_DIR="$STATE_DIR/audit"
 CLAUDE_PROJECTS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
 TOKEN_STAMP="$STATE_DIR/run/token-warned"
+LIMIT_STAMP="$STATE_DIR/run/limit-notified"
 
 # --- The jobs ------------------------------------------------------------------
 # One line per job. Adding a job is adding a line here: runner-config.sh gives
@@ -356,6 +366,65 @@ _token_check() {
   printf '%s\n' "$today" > "$TOKEN_STAMP" 2>/dev/null || true
 }
 
+# --- Claude accounts (S22) -------------------------------------------------------
+# _marks_json — the marks this run's sessions left (docker/claude-wrapper.sh).
+_marks_json() {
+  [[ -f "$ACCOUNTS_FILE" && ! -L "$ACCOUNTS_FILE" ]] || { echo '[]'; return; }
+  awk -F'\t' -v r="$RUN_ID" '!/^#/ && $6 == r' "$ACCOUNTS_FILE" 2>/dev/null | jq -R -s -c '
+    split("\n") | map(select(length > 0) | split("\t")
+      | select((.[0] | test("^[a-z][a-z0-9-]{0,23}$")) and ((.[1] // "") | test("^(-|[0-9]{1,12})$")))
+      | { account: .[0],
+          kind: ((.[2] // "") | if test("^[a-z0-9_]{1,40}$") then . else null end),
+          until: (if .[1] == "-" then null else (.[1] | tonumber | todate) end),
+          session_id: ((.[4] // "") | if test("^[0-9a-f-]{36}$") then . else null end) })' 2>/dev/null
+}
+
+# _exhaustion — when every account of the pool rests, prints
+# "<stretch key> TAB <earliest reset, epoch, or -> TAB <account list>";
+# nothing otherwise. The key is the time of the newest mark: while every
+# account rests no session runs, so no mark is added, and a new stretch
+# always starts with a newer one.
+_exhaustion() {
+  local items=() names=() item a u t now key="" earliest="" list=""
+  local -A rest=() set=()
+  read -ra items <<<"$(_conf_get CLAUDE_ACCOUNTS)"
+  for item in "${items[@]}"; do
+    [[ "${item%%=*}" =~ ^[a-z][a-z0-9-]{0,23}$ ]] && names+=("${item%%=*}")
+  done
+  [[ ${#names[@]} -gt 0 && -f "$ACCOUNTS_FILE" && ! -L "$ACCOUNTS_FILE" ]] || return 0
+  while IFS=$'\t' read -r a u _ t _; do
+    [[ "$a" =~ ^[a-z][a-z0-9-]{0,23}$ && "$u" =~ ^(-|[0-9]{1,12})$ ]] || continue
+    rest[$a]="$u"; set[$a]="$t"
+  done < "$ACCOUNTS_FILE"
+  now="$(date +%s)"
+  for a in "${names[@]}"; do
+    u="${rest[$a]:-0}"
+    [[ "$u" != "-" ]] && (( 10#$u <= now )) && return 0
+    [[ "${set[$a]}" > "$key" ]] && key="${set[$a]}"
+    if [[ "$u" == "-" ]]; then
+      list+="${list:+, }$a until its token is renewed"
+    else
+      list+="${list:+, }$a until $(date -d "@$((10#$u))" '+%Y-%m-%d %H:%M %Z')"
+      [[ -z "$earliest" ]] || (( 10#$u < earliest )) && earliest=$((10#$u))
+    fi
+  done
+  printf '%s\t%s\t%s\n' "${key:--}" "${earliest:--}" "$list"
+}
+
+# _limit_notice — one need claude-limited per stretch of every account resting.
+_limit_notice() {
+  local ex key until list when
+  ex="$(_exhaustion)"
+  [[ -n "$ex" ]] || return 0
+  IFS=$'\t' read -r key until list <<<"$ex"
+  [[ "$(cat "$LIMIT_STAMP" 2>/dev/null)" == "$key" ]] && return 0
+  when="a token is renewed and the container restarted"
+  [[ "$until" != "-" ]] && when="$(date -d "@$until" '+%Y-%m-%d %H:%M %Z')"
+  _need claude-limited "every Claude account is resting ($list) — no claude session starts until $when (run $RUN_ID)"
+  mkdir -p "${LIMIT_STAMP%/*}" 2>/dev/null
+  printf '%s\n' "$key" > "$LIMIT_STAMP" 2>/dev/null || true
+}
+
 # --- The audit line ----------------------------------------------------------------
 _repos_json() {
   case "$1" in
@@ -417,13 +486,13 @@ _transcript_stats() {
 
 _audit() { # _audit <outcome> <exit code> [skipped reason]
   local outcome="$1" rc="$2" skipped="${3:-}" line month file
-  local sessions="${SESSIONS_JSON:-}" stats="${STATS_JSON:-}" synced="${SYNCED_JSON:-[]}"
+  local sessions="${SESSIONS_JSON:-}" stats="${STATS_JSON:-}" synced="${SYNCED_JSON:-[]}" marks="${MARKS_JSON:-[]}"
   [[ -n "$sessions" ]] || sessions='{"sessions":[],"refusals":[]}'
   [[ -n "$stats" ]] || stats="$_NO_STATS"
   line="$(jq -n -c \
     --arg run_id "$RUN_ID" --arg trigger "$JOB" --argjson repos "$(_repos_json "$JOB_REPOS")" \
     --arg started "$STARTED_AT" --arg ended "$(date -Is)" --argjson rc "$rc" \
-    --argjson s "$sessions" --argjson stats "$stats" --arg outcome "$outcome" \
+    --argjson s "$sessions" --argjson stats "$stats" --arg outcome "$outcome" --argjson marks "$marks" \
     --arg skipped "$skipped" --argjson paused "${PAUSED:-false}" \
     --argjson synced "$synced" --arg sync_error "${SYNC_ERROR:-}" \
     --argjson codes "$(printf '%s\n' "${NOTIFY_CODES[@]}" | jq -R . | jq -s -c 'map(select(length > 0))')" \
@@ -438,7 +507,7 @@ _audit() { # _audit <outcome> <exit code> [skipped reason]
       paused: $paused,
       skipped: (if $skipped == "" then null else $skipped end),
       synced: $synced, sync_error: (if $sync_error == "" then null else $sync_error end),
-      sessions: $s.sessions, session_ids: [$s.sessions[].id],
+      sessions: $s.sessions, limit_marks: $marks, session_ids: [$s.sessions[].id],
       tool_uses: $stats.tool_uses, files_changed: $stats.files_changed, prs_opened: $stats.prs_opened,
       parked: $stats.parked,
       transcripts_kept: $transcripts, outcome: $outcome,
@@ -681,6 +750,8 @@ while IFS= read -r _sid; do
 done < <(jq -r '.sessions[].id' <<<"$SESSIONS_JSON")
 shopt -u nullglob
 STATS_JSON="$(_transcript_stats "$RUN_DIR")"
+MARKS_JSON="$(_marks_json)"
+[[ -n "$MARKS_JSON" ]] || MARKS_JSON='[]'
 
 AUDIT_INTACT=true
 if ! _still_there "$LEDGER" "$_fp_ledger" || ! _still_there "$_month_file" "$_fp_audit"; then
@@ -702,10 +773,14 @@ if [[ "$_parked" =~ ^[1-9][0-9]*$ ]]; then
   _need park "$JOB: $_parked work unit(s) parked${_issues:+ ($_issues)} — the reasons are in ~/.devlead/reports/$(date +%F)-execute.md (run $RUN_ID)"
 fi
 
+# Every Claude account resting (S22): one notice per stretch.
+_limit_notice
+
 # Outcome.
 _timed_out="$(jq '[.sessions[] | select(.timed_out)] | length > 0' <<<"$SESSIONS_JSON")"
-_refusal="$(jq -r '[.refusals[] | select(. != "paused")] | .[0] // ""' <<<"$SESSIONS_JSON")"
+_refusal="$(jq -r '[.refusals[] | select(. != "paused" and . != "limited")] | .[0] // ""' <<<"$SESSIONS_JSON")"
 _paused_refusal="$(jq '[.refusals[] | select(. == "paused")] | length > 0' <<<"$SESSIONS_JSON")"
+_limited_refusal="$(jq '[.refusals[] | select(. == "limited")] | length > 0' <<<"$SESSIONS_JSON")"
 OUTCOME=ok
 if [[ "$JOB_TIMED_OUT" == "true" ]]; then
   OUTCOME=timeout
@@ -722,12 +797,15 @@ elif [[ -n "$_refusal" ]]; then
     cap)  _why="the daily limit of $CONF_MAX claude sessions is reached" ;;
     busy) _why="another claude session was running" ;;
     nolock) _why="the session lock could not be opened" ;;
+    nomarks) _why="the Claude account marks could not be read" ;;
     *)    _why="the session limits could not be read" ;;
   esac
   _need job-refused "$JOB: a claude session was refused — $_why (run $RUN_ID)"
 elif [[ "$RC" -ne 0 ]]; then
   OUTCOME=failed
   _need job-failed "$JOB: exited $RC (run $RUN_ID)"
+elif [[ "$_limited_refusal" == "true" ]]; then
+  OUTCOME=limited
 elif [[ "$_paused_refusal" == "true" ]]; then
   OUTCOME=paused
   PAUSED=true
@@ -735,6 +813,6 @@ fi
 
 _audit "$OUTCOME" "$RC"
 case "$OUTCOME" in
-  ok|paused) exit 0 ;;
+  ok|paused|limited) exit 0 ;;
   *) [[ "$RC" -ne 0 ]] && exit "$RC"; exit 1 ;;
 esac

@@ -118,8 +118,18 @@
 # happens to be installed, and dry-run is also how the guard's own wiring
 # gets tested without a real git sandbox.
 #
+# In the DevLead server image (the root-owned marker /etc/devlead/server-mode)
+# the claude wrapper refuses a session with exit 75 and the stdout line
+# `STATUS: claude-limited` when every Claude account of the pool is resting
+# (S22). No session can start until the earliest reset, so the loop stops
+# there, exit 0, instead of trying again until the stall check gives up; the
+# runner sends the one notice. A session that ends on one account's limit is
+# an ordinary iteration: the next one runs on the next account. Outside the
+# server none of this applies.
+#
 # Exit codes:
-#   0  plan exhausted, cap reached, or dry run — all normal outcomes
+#   0  plan exhausted, cap reached, dry run, or (server) every Claude account
+#      resting — all normal outcomes
 #   1  usage error, a plan file that cannot be read, --repo does not exist,
 #      the resolved cwd is not inside a git work tree (pre-check), the
 #      installed artifacts do not verify as the reviewed trunk — doctor.sh
@@ -136,6 +146,7 @@ set -uo pipefail
 
 _SCRIPT_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 RUN_STATE="$_SCRIPT_DIR/run-state.sh"
+SERVER_MARKER=/etc/devlead/server-mode
 CLAUDE_BIN="${DEVLEAD_CLAUDE_BIN:-claude}"
 MAX_ITER="${DEVLEAD_LOOP_MAX:-10}"
 SLEEP_SECS="${DEVLEAD_LOOP_SLEEP:-5}"
@@ -623,6 +634,11 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
   env "${_ENV_STRIP[@]}" DEVLEAD_GUARD=1 "$CLAUDE_BIN" -p "$(_sweep_prompt)" "${_CLAUDE_ARGS[@]}" | tee "$_SWEEP_OUT"
   _rc=${PIPESTATUS[0]}
   echo "sweep-loop: iteration $_iter exited $_rc"
+
+  if [[ -e "$SERVER_MARKER" && "$_rc" -eq 75 ]] && grep -qx 'STATUS: claude-limited' "$_SWEEP_OUT"; then
+    echo "sweep-loop: every Claude account is resting — the claude wrapper refused iteration $_iter; stopping, nothing is re-invoked until an account is back"
+    exit 0
+  fi
 
   if grep -q '^STATUS: not-a-git-repo' "$_SWEEP_OUT"; then
     echo "sweep-loop: dispatched invocation reported STATUS: not-a-git-repo — it could not resolve a repo from cwd" >&2

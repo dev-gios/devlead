@@ -611,6 +611,80 @@ check "the user cannot change the git identity" "$(v ident_write)" "no"
 check "the user cannot override it in the global config" "$(v ident_override)" "no"
 check "a commit in a clone carries that author" "$(v commit_author)" "Smoke Bot <smoke-bot@example.com>|Smoke Bot <smoke-bot@example.com>"
 
+echo "=== the Claude account pool: one token per session, usage limits (S21, S22) ==="
+# The real Claude Code 2.1.326 of the image, through the wrapper, against a
+# mock of the API that answers the team account's token with the 5-hour
+# usage limit (429 and the rate-limit headers the API sends) and any other
+# with a reply. Dummy tokens; no real limit is reached.
+read -r -d '' POOL_PROBE <<'POOL_EOF'
+p() { printf '%s=%s\n' "$1" "$2"; }
+M=/home/devlead/.cache/smoke
+mkdir -p "$M" /tmp/work && cd /tmp/work && git init -q -b feat/work 2>/dev/null
+cat > "$M/pool-mock.js" <<'JS'
+const http = require('http'), fs = require('fs');
+const log = s => fs.appendFileSync('/home/devlead/.cache/smoke/pool-mock.log', s + '\n');
+const reset = Math.floor(Date.now() / 1000) + 3 * 3600;
+fs.writeFileSync('/home/devlead/.cache/smoke/pool-reset', String(reset));
+http.createServer((req, res) => {
+  let b = ''; req.on('data', c => b += c);
+  req.on('end', () => {
+    if (!/\/v1\/messages(\?|$)/.test(req.url)) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{}'); }
+    const a = req.headers.authorization || '';
+    const who = a.endsWith('-team') ? 'team' : a.endsWith('-ultra') ? 'ultra' : 'other';
+    log('REQ ' + who);
+    if (who === 'team') {
+      res.writeHead(429, { 'content-type': 'application/json', 'request-id': 'req_mock',
+        'anthropic-ratelimit-unified-status': 'rejected', 'anthropic-ratelimit-unified-representative-claim': 'five_hour',
+        'anthropic-ratelimit-unified-reset': String(reset), 'anthropic-ratelimit-unified-5h-status': 'rejected',
+        'anthropic-ratelimit-unified-5h-reset': String(reset), 'anthropic-ratelimit-unified-overage-status': 'rejected',
+        'anthropic-ratelimit-unified-overage-disabled-reason': 'org_level_disabled' });
+      return res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'This request would exceed your account\'s rate limit. Please try again later.' } }));
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: 'msg_mock', type: 'message', role: 'assistant', model: 'mock', content: [{ type: 'text', text: 'ok' }],
+      stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }));
+  });
+}).listen(8099, '127.0.0.1', () => log('LISTEN'));
+JS
+node "$M/pool-mock.js" & mp=$!
+for _ in $(seq 1 30); do grep -q LISTEN "$M/pool-mock.log" 2>/dev/null && break; sleep 0.2; done
+s() { ANTHROPIC_BASE_URL=http://127.0.0.1:8099 timeout 120 claude -p hi </dev/null >"$M/out$1" 2>"$M/err$1"; echo $?; }
+p conf "$(grep '^CLAUDE_ACCOUNTS=' /etc/devlead/runner.conf)"
+p rc1 "$(s 1)"
+p rc2 "$(s 2)"
+p mock "$(grep '^REQ' "$M/pool-mock.log" | cut -d' ' -f2 | paste -sd, -)"
+p starts "$(awk -F'\t' '$3 == "start" {print $7}' /var/lib/devlead/sessions.tsv | paste -sd, -)"
+p mark "$(grep -v '^#' /var/lib/devlead/accounts.tsv | cut -f1,2,3,7 | tr '\t' '|')"
+p reset "$(cat "$M/pool-reset")"
+p err1 "$(grep -c 'the Claude account team rests until .* — its 5-hour limit; the next session uses ultra' "$M/err1")"
+p tokens "$(cat /var/lib/devlead/sessions.tsv /var/lib/devlead/accounts.tsv "$M"/err* | grep -c DUMMY)"
+p doctor "$(bash /home/devlead/.devlead/scripts/doctor.sh 2>/dev/null | grep -c '^WARN:   the Claude token of account team (DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-11-01) is 12 months old and has expired')"
+printf 'ultra\t%s\tseven_day\tt\ts\tr\treported\n' "$(( $(date +%s) + 86400 ))" >> /var/lib/devlead/accounts.tsv
+p rc3 "$(s 3)"
+p out3 "$(cat "$M/out3")"
+p refused "$(tail -n 1 /var/lib/devlead/sessions.tsv | cut -f3,7 | tr '\t' '|')"
+kill "$mp" 2>/dev/null
+POOL_EOF
+POOL_OUT="$(compose run --rm -T -e CLAUDE_CODE_OAUTH_TOKEN= -e DEVLEAD_CLAUDE_TOKEN_ISSUED= \
+  -e DEVLEAD_CLAUDE_ACCOUNT_1=team -e DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant-oat01-DUMMY-team -e DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2025-11-01 \
+  -e DEVLEAD_CLAUDE_ACCOUNT_2=ultra -e DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=sk-ant-oat01-DUMMY-ultra -e DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-11-01 \
+  devlead bash -c "$POOL_PROBE" 2>"$SCRATCH/pool.err")"
+pv() { sed -n "s/^$1=//p" <<<"$POOL_OUT" | head -n 1; }
+check "pool: runner.conf lists the accounts in priority order" "$(pv conf)" \
+  "CLAUDE_ACCOUNTS=team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN ultra=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN"
+check "pool: the first session, on team, ends on the 5-hour limit (exit 1)" "$(pv rc1)" "1"
+check "pool: the second session runs on ultra (exit 0)" "$(pv rc2)" "0"
+check "pool: the API saw team's token, then ultra's" "$(pv mock)" "team,ultra"
+check "pool: the ledger names the accounts" "$(pv starts)" "team,ultra"
+check "pool: team rests until the reset the API sent, as Claude Code 2.1.326 reported it" "$(pv mark)" "team|$(pv reset)|five_hour|reported"
+check "pool: the wrapper says so and names the next account" "$(pv err1)" "1"
+check "pool: no token in the ledger, the marks or the messages" "$(pv tokens)" "0"
+check "pool: doctor warns about team's token by name" "$(pv doctor)" "1"
+check "pool: every account resting: refused (75)" "$(pv rc3)" "75"
+check "pool: every account resting: stdout says claude-limited" "$(pv out3)" "STATUS: claude-limited"
+check "pool: every account resting: the ledger says limited" "$(pv refused)" "refused|limited"
+[[ -n "$POOL_OUT" ]] || { echo "pool probe stderr:"; tail -n 20 "$SCRATCH/pool.err"; }
+
 echo "=== the long-lived service: scheduler and runner (F2) ==="
 # Its own env file: no push channel (the failures below send `need`), a
 # morning job every minute (to watch supercronic run one), discovery off, a
