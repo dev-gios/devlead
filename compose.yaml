@@ -1,0 +1,51 @@
+# DevLead server (S20): one long-lived container, built locally from this
+# repository.
+#
+#   cp docker/devlead.env.example .env && chmod 600 .env    # then fill it in
+#   docker compose up -d --build
+#   docker compose ps                         # STATUS shows (healthy)
+#
+# Everything secret comes from .env, which stays out of git and out of the
+# image (.dockerignore). compose also reads DEVLEAD_UID and DEVLEAD_GID from it
+# and refuses to go on without them: the container must run as your user, and
+# a silent default could be someone else's. DEVLEAD_ENV_FILE and DEVLEAD_IMAGE
+# exist so the smoke test (make docker-test) can use dummy values and its own
+# image tag.
+name: devlead
+
+services:
+  devlead:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        DEVLEAD_UID: ${DEVLEAD_UID:?set DEVLEAD_UID in .env to the output of `id -u`}
+        DEVLEAD_GID: ${DEVLEAD_GID:?set DEVLEAD_GID in .env to the output of `id -g`}
+    image: ${DEVLEAD_IMAGE:-devlead-server:local}
+    restart: unless-stopped
+    env_file:
+      - path: ${DEVLEAD_ENV_FILE:-.env}
+        required: true
+    # The entrypoint applies the egress firewall as root, then drops every
+    # capability before it runs anything else (S8).
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+    healthcheck:
+      test: ["CMD", "/opt/devlead/docker/init-firewall.sh", "--check"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    # F3 (S13, S14): the volume with the clones of the enrolled repos and the
+    # mounts of the host's ~/.devlead state subdirectories go here.

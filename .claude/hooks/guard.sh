@@ -23,7 +23,11 @@
 #   - in an interactive DevLead session (devlead-session.sh check), and
 #   - in every unattended run: the launchers export DEVLEAD_GUARD=1, which the
 #     session cannot unset because a hook inherits the environment of the
-#     Claude Code process, not of the shell a tool call runs in.
+#     Claude Code process, not of the shell a tool call runs in, and
+#   - always, in the DevLead server image (docker/): there a root-owned marker,
+#     /etc/devlead/server-mode, turns it on whatever the environment says. A
+#     session can reach the environment of the next one through Claude Code's
+#     settings files, so in the image the guard does not take it on trust.
 # In any other Claude Code session it does nothing.
 #
 # The interactive case follows the session marker, so it ends when the session
@@ -61,7 +65,8 @@ _cwd=""
 
 # The session is judged by where the call runs (the payload's cwd), not by
 # where the hook process happens to have been started.
-if [[ "${DEVLEAD_GUARD:-}" != "1" ]]; then
+SERVER_MARKER=/etc/devlead/server-mode
+if [[ "${DEVLEAD_GUARD:-}" != "1" && ! -e "$SERVER_MARKER" ]]; then
   ( cd "$_cwd" 2>/dev/null && bash "$HOME/.devlead/scripts/devlead-session.sh" check ) >/dev/null 2>&1 || exit 0
 fi
 
@@ -134,11 +139,18 @@ _check_secret_path() {
 }
 
 # The files that configure these limits. Judged before `scope`, so the reason
-# names what the file is.
+# names what the file is. In the server image (docker/) DevLead's scripts and
+# hooks are installed in /opt/devlead — ~/.devlead/scripts and ~/.devlead/hooks
+# are links to it, and a path through them resolves there —, Claude Code's
+# managed settings and skills live in /etc/claude-code, and the server-mode
+# marker and git's global config in /etc/devlead.
 _check_self_config() {
   local abs
   abs="$(_abs "$1")"
   if _under "$abs" "$HOME/.devlead" \
+     || _under "$abs" /opt/devlead \
+     || _under "$abs" /etc/claude-code \
+     || _under "$abs" /etc/devlead \
      || [[ "$abs" == "$HOME"/.claude/settings*.json ]] \
      || _under "$abs" "$HOME/.claude/hooks" \
      || [[ "$abs" == "$_root"/.claude/settings*.json ]] \
@@ -540,8 +552,19 @@ if _runs "$_scan" "gh[[:space:]]+auth[[:space:]]+token${_END}" \
    || [[ "$_scan" =~ --show-token ]]; then
   _deny secrets "the command reads or changes stored credentials through gh"
 fi
+# git's credential helper hands out the stored token on request; in the server
+# image that helper is gh, so either form prints GH_TOKEN.
+if _runs "$_scan" "git[[:space:]]+${_ARGS}credential[[:space:]]+fill${_END}" \
+   || _runs "$_scan" "gh[[:space:]]+auth[[:space:]]+git-credential${_END}"; then
+  _deny secrets "the command asks a git credential helper for the stored token"
+fi
 if [[ "$_scan" =~ \$\{?(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN)($|[^A-Za-z0-9_]) ]]; then
   _deny secrets "the command reads the GitHub token from the environment"
+fi
+# The server image hands Claude Code its subscription token in the environment
+# (S12), so every session started there carries it.
+if [[ "$_scan" =~ \$\{?CLAUDE_CODE_OAUTH_TOKEN($|[^A-Za-z0-9_]) ]]; then
+  _deny secrets "the command reads the Claude token from the environment"
 fi
 if _runs "$_scan" "printenv${_END}" || _runs "$_scan" "(env|export[[:space:]]+-p|declare[[:space:]]+-x)[[:space:]]*(\$|[;&|)>])"; then
   _deny secrets "the command dumps the environment, credentials included"

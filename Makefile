@@ -1,4 +1,4 @@
-.PHONY: test
+.PHONY: test docker-test
 
 # Wired so gate-check.sh detects a test runner for this repo. Without a
 # Makefile, its detection chain (package.json -> Makefile -> go.mod ->
@@ -43,3 +43,10 @@ test:
 	bash test/unit-registry-separation.sh
 	bash test/smoke-outcomes.sh
 	bash test/smoke-pinned-release.sh
+
+# The DevLead server image (docker/, compose.yaml). NOT part of `test`: it
+# needs Docker and the network. Builds a throwaway image under its own compose
+# project with dummy secrets, checks the limits from inside a container, and
+# removes everything it created.
+docker-test:
+	bash test/docker-smoke.sh
