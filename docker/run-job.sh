@@ -51,6 +51,17 @@
 #      output format is left alone — are copied to
 #      ~/.devlead/audit/runs/<run id>/, and one JSON line is appended to
 #      ~/.devlead/audit/YYYY-MM.jsonl and printed to the container log.
+#   8b. The run's report (S23). A guarded session cannot write
+#      ~/.devlead/reports/<date>-execute.md (guard.sh: self-config), so the
+#      report the park and end-of-day notices point to would be missing. The
+#      job writes it instead, after the sessions: the content of the last
+#      Write call to exactly that path in the main transcript of the last
+#      session that made one. That content is the session's text, so it is
+#      only ever data: written as a file, never run or sourced; at most
+#      REPORT_MAX bytes, plain text (no control character but tab, newline
+#      and carriage return), under a name of that exact shape; refused when
+#      the reports directory or the report is a symbolic link; written to a
+#      temporary file in the same directory and renamed, under the job lock.
 #   9. A run that opened PRs sends one `need` pr-opened, its message the PR
 #      links; one whose report parked work units sends one `need` park, its
 #      message the issue numbers (S19). The push carries the message — so
@@ -82,7 +93,8 @@
 # left resting: kind the usage limit, five_hour, seven_day, ..., or auth for
 # a refused token; until the reset in UTC, or null until a restart),
 # session_ids, tool_uses {tool: count},
-# files_changed, prs_opened, parked {count, issues}, transcripts_kept,
+# files_changed, prs_opened, parked {count, issues}, report_kept (the name of
+# the report the job wrote for its sessions, or null), transcripts_kept,
 # outcome (ok, failed, timeout,
 # refused, paused, skipped, limited: a session refused because every Claude
 # account rests), notified, notify_codes, leftovers_killed,
@@ -135,6 +147,7 @@ STATE_DIR="$HOME/.devlead"
 AUDIT_DIR="$STATE_DIR/audit"
 CLAUDE_PROJECTS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
 TOKEN_STAMP="$STATE_DIR/run/token-warned"
+REPORT_MAX=262144
 LIMIT_STAMP="$STATE_DIR/run/limit-notified"
 
 # --- The jobs ------------------------------------------------------------------
@@ -425,6 +438,61 @@ _limit_notice() {
   printf '%s\n' "$key" > "$LIMIT_STAMP" 2>/dev/null || true
 }
 
+# --- The run's report (S23) ---------------------------------------------------------
+# _keep_report — writes the report the run's sessions could not (8b above);
+# sets REPORT_KEPT to its name. Reads only the kept main transcripts, in the
+# ledger's session order.
+REPORT_KEPT=""
+# The Write calls of a transcript to ~/.devlead/reports/<date>-execute.md,
+# the home directory spelled out or as ~/: [{name, content}, ... (open).
+_REPORT_WRITES='
+  [ inputs | fromjson? | objects | select(.type == "assistant") | .message.content[]? | objects
+    | select(.type == "tool_use" and .name == "Write")
+    | (.input.file_path // "") as $p | (.input.content // null) as $c
+    | select(($p | type) == "string" and ($c | type) == "string")
+    | ($p | if startswith($dir) then .[($dir | length):] elif startswith("~/.devlead/reports/") then .[19:] else "" end) as $n
+    | select($n | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}-execute\\.md$"))
+    | { name: $n, content: $c }'
+_keep_report() {
+  local sid t found="" name dir="$STATE_DIR/reports" tmp
+  REPORT_SID=""; REPORT_FOUND=""
+  while IFS= read -r sid; do
+    [[ "$sid" =~ ^[0-9a-f-]{36}$ ]] || continue
+    t="$RUN_DIR/$sid.jsonl"
+    [[ -f "$t" && ! -L "$t" ]] || continue
+    found="$(jq -R -n -c --arg dir "$HOME/.devlead/reports/" "$_REPORT_WRITES"'
+      | { name: .name, size: (.content | utf8bytelength),
+          plain: (.content | test("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]") | not) } ]
+      | last // empty' < "$t" 2>/dev/null)" && [[ -n "$found" ]] && REPORT_SID="$sid" && REPORT_FOUND="$found"
+  done < <(jq -r '.sessions[].id' <<<"$SESSIONS_JSON")
+  [[ -n "${REPORT_FOUND:-}" ]] || return 0
+  name="$(jq -r .name <<<"$REPORT_FOUND")"
+  [[ "$name" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-execute\.md$ ]] || return 0
+  if [[ "$(jq -r .plain <<<"$REPORT_FOUND")" != "true" ]]; then
+    echo "run-job: the report a session wrote ($name) holds control characters — not written to ~/.devlead/reports"
+    return 0
+  fi
+  if (( $(jq -r .size <<<"$REPORT_FOUND") > REPORT_MAX )); then
+    echo "run-job: the report a session wrote ($name) is larger than $REPORT_MAX bytes — not written to ~/.devlead/reports"
+    return 0
+  fi
+  if [[ ! -d "$dir" || -L "$dir" || -L "$dir/$name" ]]; then
+    echo "run-job: ~/.devlead/reports or $name in it is a symbolic link or missing — DevLead does not write through links in its state; the report stays in the run's transcript"
+    return 0
+  fi
+  tmp="$(mktemp "$dir/.$name.XXXXXX" 2>/dev/null)" || { echo "run-job: cannot write in ~/.devlead/reports — the report stays in the run's transcript"; return 0; }
+  # The same last Write, again by jq: its content goes to the file, as data.
+  if jq -R -n -j --arg dir "$HOME/.devlead/reports/" --arg want "$name" "$_REPORT_WRITES"'
+      | select(.name == $want) | .content ] | last // ""' < "$RUN_DIR/$REPORT_SID.jsonl" > "$tmp" 2>/dev/null \
+     && chmod 0644 "$tmp" && mv -f -T -- "$tmp" "$dir/$name"; then
+    REPORT_KEPT="$name"
+    echo "run-job: wrote ~/.devlead/reports/$name from the report the run's session could not write"
+  else
+    rm -f -- "$tmp"
+    echo "run-job: cannot write ~/.devlead/reports/$name — the report stays in the run's transcript"
+  fi
+}
+
 # --- The audit line ----------------------------------------------------------------
 _repos_json() {
   case "$1" in
@@ -498,7 +566,7 @@ _audit() { # _audit <outcome> <exit code> [skipped reason]
     --argjson codes "$(printf '%s\n' "${NOTIFY_CODES[@]}" | jq -R . | jq -s -c 'map(select(length > 0))')" \
     --argjson killed "${LEFTOVERS_KILLED:-0}" --argjson waited "${LOCK_WAIT:-0}" \
     --argjson lock_timed_out "${LOCK_TIMED_OUT:-false}" --argjson job_timed_out "${JOB_TIMED_OUT:-false}" \
-    --argjson transcripts "${TRANSCRIPTS_KEPT:-0}" --argjson intact "${AUDIT_INTACT:-true}" '
+    --argjson transcripts "${TRANSCRIPTS_KEPT:-0}" --argjson intact "${AUDIT_INTACT:-true}" --arg report "${REPORT_KEPT:-}" '
     { run_id: $run_id, trigger: $trigger, repos: $repos, started_at: $started, ended_at: $ended,
       exit_code: $rc,
       timed_out: ([$s.sessions[] | select(.timed_out)] | length > 0),
@@ -510,6 +578,7 @@ _audit() { # _audit <outcome> <exit code> [skipped reason]
       sessions: $s.sessions, limit_marks: $marks, session_ids: [$s.sessions[].id],
       tool_uses: $stats.tool_uses, files_changed: $stats.files_changed, prs_opened: $stats.prs_opened,
       parked: $stats.parked,
+      report_kept: (if $report == "" then null else $report end),
       transcripts_kept: $transcripts, outcome: $outcome,
       notified: ($codes | length > 0), notify_codes: $codes,
       leftovers_killed: $killed, lock_wait_seconds: $waited, lock_timed_out: $lock_timed_out,
@@ -752,6 +821,7 @@ shopt -u nullglob
 STATS_JSON="$(_transcript_stats "$RUN_DIR")"
 MARKS_JSON="$(_marks_json)"
 [[ -n "$MARKS_JSON" ]] || MARKS_JSON='[]'
+_keep_report
 
 AUDIT_INTACT=true
 if ! _still_there "$LEDGER" "$_fp_ledger" || ! _still_there "$_month_file" "$_fp_audit"; then
@@ -770,7 +840,7 @@ fi
 _parked="$(jq -r '.parked.count' <<<"$STATS_JSON" 2>/dev/null)"
 if [[ "$_parked" =~ ^[1-9][0-9]*$ ]]; then
   _issues="$(jq -r '.parked.issues | map("#\(.)") | join(" ")' <<<"$STATS_JSON" 2>/dev/null)"
-  _need park "$JOB: $_parked work unit(s) parked${_issues:+ ($_issues)} — the reasons are in ~/.devlead/reports/$(date +%F)-execute.md (run $RUN_ID)"
+  _need park "$JOB: $_parked work unit(s) parked${_issues:+ ($_issues)} — the reasons are in ~/.devlead/reports/${REPORT_KEPT:-$(date +%F)-execute.md} (run $RUN_ID)"
 fi
 
 # Every Claude account resting (S22): one notice per stretch.

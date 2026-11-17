@@ -178,7 +178,7 @@ Los comandos que actúan como el agente llevan `-u devlead`. `docker compose exe
 - La sesión que descubre el límite de una cuenta sí cuenta para el tope diario. Los trabajos de una sola iteración (`fleet` y la corrida de `poll`) no la repiten con la siguiente cuenta: esa pasada queda para la próxima corrida. El loop nocturno sí sigue con la siguiente cuenta en su próxima iteración.
 - Una sesión corre como el mismo usuario que escribe las marcas de las cuentas, así que podría alterarlas. Lo peor que logra es dejar descansando una cuenta, o devolver antes una que Claude va a rechazar otra vez.
 - Cada consulta de issues sincroniza todos los repos enrolados. Si uno falla, el aviso `job-failed` se repite en cada consulta hasta que se arregle.
-- Las corridas guiadas no pueden escribir el reporte `~/.devlead/reports/*-execute.md`, así que el aviso de PARK puede apuntar a un reporte que no existe. Los motivos quedan en la transcripción de la corrida.
+- Las sesiones guiadas no pueden escribir en `~/.devlead/reports/`. En el servidor, el trabajo escribe por ellas el reporte `AAAA-MM-DD-execute.md` que la sesión intentó escribir, como texto y hasta 256 KiB, y el aviso de PARK apunta a ese archivo. Si el reporte es más grande, trae caracteres de control o la ruta es un enlace simbólico, no se escribe y los motivos quedan en la transcripción de la corrida. Fuera del servidor, en las corridas de los timers del host, ese reporte sigue sin escribirse.
 
 ## Prueba de tres días
 

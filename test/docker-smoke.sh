@@ -332,8 +332,11 @@ http.createServer((req, res) => {
     const last = (j.messages || []).slice(-1)[0] || {};
     const results = Array.isArray(last.content) ? last.content.filter(c => c.type === 'tool_result') : [];
     if (results.length) { results.forEach(r => log('TOOL_RESULT ' + JSON.stringify(r.content))); return reply(res, j.stream, [{ type: 'text', text: 'done' }], 'end_turn'); }
-    if ((j.tools || []).some(t => t.name === 'Bash'))
-      return reply(res, j.stream, [{ type: 'tool_use', id: 'toolu_mock', name: 'Bash', input: { command: process.env.MOCK_CMD, description: 'probe' } }], 'tool_use');
+    if ((j.tools || []).some(t => t.name === 'Bash')) {
+      const calls = [{ type: 'tool_use', id: 'toolu_mock', name: 'Bash', input: { command: process.env.MOCK_CMD, description: 'probe' } }];
+      if (process.env.MOCK_WRITE) calls.push({ type: 'tool_use', id: 'toolu_write', name: 'Write', input: { file_path: process.env.MOCK_WRITE, content: process.env.MOCK_WRITE_CONTENT || '' } });
+      return reply(res, j.stream, calls, 'tool_use');
+    }
     reply(res, j.stream, [{ type: 'text', text: 'ok' }], 'end_turn');
   });
 }).listen(8099, '127.0.0.1', () => log('LISTEN'));
@@ -710,10 +713,13 @@ MOCK_ENV=(-e ANTHROPIC_BASE_URL=http://127.0.0.1:8099 -e ANTHROPIC_API_KEY=sk-an
 # live in ~/.cache, out of the /tmp the jobs clean up after themselves. Claude
 # Code refuses `sleep N; ...` in a Bash call, so the commands that must take a
 # while run `tail -f /dev/null` under `timeout`.
+# A third and fourth argument add a Write call of that content to that path
+# in the same turn (S23).
 mock() {
   dx sh -c "pkill -f '^node /home/devlead/.cache/smoke/mock.js' ; : > /home/devlead/.cache/smoke/mock-$1.log" >/dev/null 2>&1
   for _ in $(seq 1 25); do dx pgrep -f '^node /home/devlead/.cache/smoke/mock.js' >/dev/null 2>&1 || break; sleep 0.2; done
-  compose exec -d -u devlead -e "MOCK_LOG=/home/devlead/.cache/smoke/mock-$1.log" -e "MOCK_CMD=$2" devlead \
+  compose exec -d -u devlead -e "MOCK_LOG=/home/devlead/.cache/smoke/mock-$1.log" -e "MOCK_CMD=$2" \
+    -e "MOCK_WRITE=${3:-}" -e "MOCK_WRITE_CONTENT=${4:-}" devlead \
     node /home/devlead/.cache/smoke/mock.js
   for _ in $(seq 1 50); do dx grep -q LISTEN "/home/devlead/.cache/smoke/mock-$1.log" 2>/dev/null && return 0; sleep 0.2; done
   echo "mock $1 did not start" >&2
@@ -757,8 +763,12 @@ if compose up -d --wait --wait-timeout 180 >"$SCRATCH/up.log" 2>&1; then
   printf '%s\n' "$MOCK_JS" | dx sh -c 'cat > /home/devlead/.cache/smoke/mock.js'
 
   # 1. A forced job: one session, its audit line and transcript, and nothing
-  #    it left behind survives it.
-  mock leftovers 'bash -c "exec -a leftover-a tail -f /dev/null" >/dev/null 2>&1 & setsid bash -c "exec -a leftover-b tail -f /dev/null" >/dev/null 2>&1 & setsid env -i bash -c "exec -a leftover-c tail -f /dev/null >/dev/null 2>&1 &"; echo spawned'
+  #    it left behind survives it. The session also writes the run's report,
+  #    which guard.sh refuses (S23): the job writes it.
+  REPORT_NAME="$(TZ=America/Bogota date +%F)-execute.md"
+  REPORT_TEXT="# DevLead Execute — smoke | #1 | pr-created |"
+  mock leftovers 'bash -c "exec -a leftover-a tail -f /dev/null" >/dev/null 2>&1 & setsid bash -c "exec -a leftover-b tail -f /dev/null" >/dev/null 2>&1 & setsid env -i bash -c "exec -a leftover-c tail -f /dev/null >/dev/null 2>&1 &"; echo spawned' \
+    "/home/devlead/.devlead/reports/$REPORT_NAME" "$REPORT_TEXT"
   out="$(job fleet 2>&1)"; rc=$?
   check "a forced fleet job exits 0" "$rc" "0"
   contains "the job's audit line reaches the container log" "$out" 'devlead-audit {"run_id":'
@@ -774,6 +784,11 @@ if compose up -d --wait --wait-timeout 180 >"$SCRATCH/up.log" 2>&1; then
   check "no process the job left behind survives it (in its session, setsid, setsid env -i)" "$(dx pgrep -fc '^leftover-')" "0"
   check "audit: the leftovers were stopped" "$(jq -c '.leftovers_killed >= 3' <<<"$a")" "true"
   check "the job's private TMPDIR is gone" "$(dx sh -c 'ls -d /tmp/devlead-job.* 2>/dev/null | wc -l')" "0"
+  check "S23: guard.sh refused the session's report Write" \
+    "$(dx sh -c "grep -q 'DevLead limit \\[self-config\\]' /home/devlead/.devlead/audit/runs/$run_id/$sid.jsonl && echo refused" 2>/dev/null)" "refused"
+  check "S23: the job wrote that report, on the host, as the user" \
+    "$(cat "$HOST_STATE/reports/$REPORT_NAME" 2>/dev/null)|$(stat -c %u "$HOST_STATE/reports/$REPORT_NAME" 2>/dev/null)" "$REPORT_TEXT|$HOST_UID"
+  check "S23: the audit names it" "$(jq -r '.report_kept' <<<"$a")" "$REPORT_NAME"
 
   # 2. One session at a time: a session started while a job's session runs is
   #    refused; a job started meanwhile waits for the first job.
