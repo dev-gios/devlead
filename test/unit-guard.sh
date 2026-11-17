@@ -164,6 +164,14 @@ bash_blocked secrets 'cat ~/.devlead/notify.env'
 bash_blocked secrets 'openssl rsa -in certs/server.key -text'
 bash_blocked secrets 'cp config/service-account-prod.json /tmp/x'
 bash_blocked secrets 'gh auth token'
+# In the server image git's credential helper is gh, so these print GH_TOKEN.
+bash_blocked secrets 'git credential fill'
+bash_blocked secrets "printf 'protocol=https\nhost=github.com\n' | git credential fill"
+bash_blocked secrets 'echo url=https://github.com | git -C . credential fill'
+bash_blocked secrets 'gh auth git-credential get'
+# Previous behaviour: git's network commands still run.
+bash_allowed 'git fetch origin'
+bash_allowed 'git pull --ff-only origin feat/work'
 bash_blocked secrets 'gh secret set API_KEY'
 bash_blocked secrets 'printenv'
 bash_blocked secrets 'env'
@@ -287,6 +295,9 @@ bash_blocked self-config 'echo "{}" > /etc/claude-code/managed-settings.json'
 bash_blocked self-config 'rm /opt/devlead/scripts/merge.sh'
 bash_blocked self-config 'cp /tmp/evil.sh /opt/devlead/scripts/merge.sh'
 bash_blocked self-config 'mkdir -p /etc/claude-code/managed-settings.d'
+blocked self-config 'Write the server-mode marker'   Write file_path /etc/devlead/server-mode
+bash_blocked self-config 'rm -f /etc/devlead/server-mode'
+bash_blocked self-config "printf '[core]\\n' > /etc/devlead/gitconfig"
 # In the image ~/.devlead/scripts and ~/.devlead/hooks are links to
 # /opt/devlead: a path through them is judged by where it lands.
 _saved_home="$HOME"
@@ -400,6 +411,17 @@ if [[ $rc -eq 0 && ! -s "$ERR" ]]; then _ok "no DevLead session and no DEVLEAD_G
 else _fail "no DevLead session and no DEVLEAD_GUARD: nothing is blocked" "exit=$rc"; fi
 printf '%s' "$_payload" | DEVLEAD_GUARD=0 bash "$GUARD" 2>"$ERR"; rc=$?
 if [[ $rc -eq 0 ]]; then _ok "DEVLEAD_GUARD=0 is not an on switch"; else _fail "DEVLEAD_GUARD=0 is not an on switch" "exit=$rc"; fi
+# The server image's marker (/etc/devlead/server-mode) keeps the guard on
+# whatever the environment says; docker-smoke.sh pins that. Without it — any
+# host — the guard is as inert as before.
+if [[ -e /etc/devlead/server-mode ]]; then
+  echo "SKIP  host behaviour without the server marker: this machine has /etc/devlead/server-mode"
+else
+  _payload='{"tool_name":"Bash","tool_input":{"command":"printenv GH_TOKEN"},"cwd":"'"$WORK"'"}'
+  printf '%s' "$_payload" | DEVLEAD_GUARD=0 bash "$GUARD" 2>"$ERR"; rc=$?
+  if [[ $rc -eq 0 && ! -s "$ERR" ]]; then _ok "no server marker: DEVLEAD_GUARD=0 outside a session still leaves the guard inert"
+  else _fail "no server marker: DEVLEAD_GUARD=0 outside a session still leaves the guard inert" "exit=$rc"; fi
+fi
 
 echo "=== active in an interactive DevLead session ==="
 mkdir -p "$HOME/.devlead/scripts"
