@@ -985,4 +985,14 @@ _main_menu() {
   done
 }
 
+# `devlead enroll` (enroll.sh) asks the envelope questions once for a whole
+# folder of repos. It does not carry a menu of its own: it runs THIS editor,
+# behind the same TTY gate, on a draft envelope in a scratch repo, and sets
+# DEVLEAD_CONFIG_ENVELOPE_ONLY=1 so only the envelope section opens. Every
+# write still goes through _commit_change and `envelope.sh show`.
+if [[ "${DEVLEAD_CONFIG_ENVELOPE_ONLY:-0}" == "1" ]]; then
+  _envelope_menu
+  exit $?
+fi
+
 _main_menu

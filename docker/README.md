@@ -71,6 +71,24 @@ Crea un token *fine-grained* en GitHub → Settings → Developer settings → F
 - **Borrado automático de ramas:** activa *Settings → General → Automatically delete head branches*. El servidor no borra ramas, así que sin esto las ramas mergeadas quedan en GitHub y las tareas apiladas sobre ellas terminan en PARK.
 - **Envelope:** commitea `.devlead/envelope.yml` en la rama por defecto. El servidor lee el envelope, `CLAUDE.md` y `.claude/` desde origin. Sin envelope en esa rama, el repo cuenta como no enrolado.
 
+#### Enrolar una carpeta entera
+
+Si tus repos viven en una misma carpeta (por ejemplo `~/Work/Ivolution`), un solo comando, desde tu terminal, deja el envelope en todos. Si tu `devlead` todavía no lo conoce, corre antes `devlead upgrade` desde este repo actualizado:
+
+```bash
+devlead enroll ~/Work/Ivolution --dry-run   # muestra el plan; no empuja nada
+devlead enroll ~/Work/Ivolution
+```
+
+1. Recorre los repos git que están directamente dentro de la carpeta y dice, por cada directorio, qué hará o por qué lo deja fuera: no es un repo, es un worktree enlazado, no tiene `origin` en GitHub, o ya tiene `.devlead/envelope.yml` en su rama por defecto (ese no se toca).
+2. Hace las preguntas del envelope **una sola vez**, con el mismo editor de `devlead config`. Arrancan de los valores seguros del scaffold: `merge.mode: never` (solo PRs en borrador), `budget.max_issues: 3` y `enabled: false`. Para que el servidor trabaje en esos repos, pon `enabled` en `true`.
+3. Valida las respuestas contra cada repo con `envelope.sh`. Un repo que no las admite queda rechazado con la razón exacta y los demás siguen; por ejemplo, el repo cuya rama por defecto es la `base.integration_branch` que elegiste.
+4. Muestra el plan y pide confirmación antes de empujar nada.
+5. Por cada repo crea la rama `devlead/enroll` desde la rama por defecto de origin, con un commit que solo agrega `.devlead/envelope.yml`, la empuja y abre un PR hacia la rama por defecto. Nunca toca tus copias de trabajo: ni la rama actual, ni el índice, ni los stash, ni lo que no commiteaste.
+6. Al final imprime los enlaces de los PRs y las líneas `DEVLEAD_WORKSPACE=` y `DEVLEAD_REPOS=` listas para pegar en el `.env` del paso 5.
+
+Un repo cuenta como enrolado para el servidor solo cuando mergeas su PR. Usa tu sesión de `gh`; ningún token aparece en la salida. Igual que `devlead config`, se niega a correr sin terminal; además se niega dentro de una sesión de Claude Code y en una corrida desatendida, y `guard.sh` lo bloquea en cualquier sesión de DevLead: el envelope lo escribes solo tú (`.claude/GOVERNANCE.md` §A3).
+
 ### 4. Estado compartido con tu `/devlead`
 
 El contenedor monta solo estas carpetas de tu `~/.devlead`. Nunca monta `gh-token`, `notify.env` ni `loop.env`. Créalas una vez:
@@ -102,7 +120,7 @@ chmod 600 .env
 | `GH_TOKEN` | El token del paso 2 |
 | `TZ` | Tu zona horaria, por ejemplo `America/Bogota` |
 
-Las rutas de `DEVLEAD_REPOS` son las de tus repos en esta máquina. El servidor mantiene su propio clon de cada uno en la misma ruta dentro del contenedor, así que tus copias de trabajo nunca se tocan.
+`devlead enroll` imprime `DEVLEAD_WORKSPACE` y `DEVLEAD_REPOS` ya armados (paso 3). Las rutas de `DEVLEAD_REPOS` son las de tus repos en esta máquina. El servidor mantiene su propio clon de cada uno en la misma ruta dentro del contenedor, así que tus copias de trabajo nunca se tocan.
 
 Opcionales:
 - **Notificaciones:** `DEVLEAD_NTFY_URL` y `DEVLEAD_NTFY_TOKEN`. Con `DEVLEAD_NOTIFY_DETAIL=1`, el push lleva enlaces y números de issue.
