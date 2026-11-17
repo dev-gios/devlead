@@ -127,6 +127,18 @@
 #     session is the job of guard.sh, the firewall and the narrow tokens.
 set -uo pipefail
 
+# The Claude account pool's tokens (S21, A1) live in root's
+# /etc/devlead/claude-tokens, for the claude wrapper only. A job started with
+# them in its environment (a `docker compose exec` carries the env file)
+# starts again without them: every process of the job runs as the session's
+# uid, and its environment is readable at /proc/<pid>/environ.
+_strip=()
+for _v in $(compgen -e); do
+  [[ "$_v" == DEVLEAD_CLAUDE_ACCOUNT_*TOKEN* ]] && _strip+=(-u "$_v")
+done
+(( ${#_strip[@]} == 0 )) || exec env "${_strip[@]}" bash "${BASH_SOURCE[0]}" "$@"
+unset _strip _v
+
 # --- Fixed paths (test/unit-run-job.sh rewrites these in a copy) ---------------
 RUNNER_CONF=/etc/devlead/runner.conf
 LEDGER=/var/lib/devlead/sessions.tsv
@@ -444,7 +456,7 @@ _limit_notice() {
 # ledger's session order.
 REPORT_KEPT=""
 # The Write calls of a transcript to ~/.devlead/reports/<date>-execute.md,
-# the home directory spelled out or as ~/: [{name, content}, ... (open).
+# the home directory spelled out or as ~/: [{name, content}, ...].
 _REPORT_WRITES='
   [ inputs | fromjson? | objects | select(.type == "assistant") | .message.content[]? | objects
     | select(.type == "tool_use" and .name == "Write")

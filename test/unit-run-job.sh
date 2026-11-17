@@ -567,6 +567,25 @@ run fleet
 check "audit: a ledger account that is not a name is recorded as null" "$(field '[.sessions[] | .account]')" '[null]'
 
 # ===========================================================================
+# A1: the job never keeps a pool token in its environment (a `docker
+# compose exec` carries the env file's); the names and dates stay for doctor
+# ===========================================================================
+fresh
+behaviour <<'EOF'
+compgen -e | grep '^DEVLEAD_CLAUDE_ACCOUNT_' | sort | paste -sd, - > "${SANDBOX_LOG%/*}/job-env"
+n=0; p=$$
+for _ in 1 2 3 4 5 6; do
+  grep -qa 'DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=' "/proc/$p/environ" 2>/dev/null && n=$((n + 1))
+  p="$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null)"; [[ -n "$p" && "$p" -gt 1 ]] || break
+done
+echo "$n" > "${SANDBOX_LOG%/*}/job-env-ancestors"
+EOF
+run fleet DEVLEAD_CLAUDE_ACCOUNT_1=team DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant-oat01-DUMMY-job DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-01
+check "A1: the job's processes get the names and dates, not the token" "$(cat "$SANDBOX/job-env")" "DEVLEAD_CLAUDE_ACCOUNT_1,DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED"
+check "A1: no process from the job up holds the token in its environment" "$(cat "$SANDBOX/job-env-ancestors")" "0"
+check "A1: the run itself is unchanged" "$(field '[.outcome, .exit_code]')" '["ok",0]'
+
+# ===========================================================================
 # Usage limits (S22): the marks a run's sessions left, and one notice when
 # every account rests
 # ===========================================================================
@@ -773,6 +792,8 @@ check "S19: a run that opened and parked nothing sends neither" "$(field '[.noti
 # ===========================================================================
 REPORTS="$HOME/.devlead/reports"
 mkdir -p "$REPORTS"
+# The run's own date (A5): the report name the run may write. TZ is UTC here.
+TODAY="$(TZ=UTC date +%F)"
 # report_session <sid> <file_path> <content>... — a transcript whose session
 # called Write on each path with its content, in order (pairs).
 report_session() {
@@ -790,33 +811,33 @@ report_session() {
 }
 RSID=77777777-7777-4777-8777-777777777771
 RSID2=77777777-7777-4777-8777-777777777772
-REPORT_TEXT=$'# DevLead Execute — 2026-11-17\n| Issue | Resultado |\n|---|---|\n| #15 | parked-gate-check: run $(touch '"$SANDBOX"$'/pwned) `touch '"$SANDBOX"$'/pwned2` |\n| #7 | escalated-secrets |\n\ntab\there — ñ\r\n'
+REPORT_TEXT=$'# DevLead Execute — today\n| Issue | Resultado |\n|---|---|\n| #15 | parked-gate-check: run $(touch '"$SANDBOX"$'/pwned) `touch '"$SANDBOX"$'/pwned2` |\n| #7 | escalated-secrets |\n\ntab\there — ñ\r\n'
 fresh; rm -f "$REPORTS"/* "$SANDBOX/pwned" "$SANDBOX/pwned2"
-report_session "$RSID" "$HOME/.devlead/reports/2026-11-16-execute.md" "an earlier draft" \
-  "$HOME/.devlead/reports/2026-11-17-execute.md" "$REPORT_TEXT"
+report_session "$RSID" "$HOME/.devlead/reports/$TODAY-execute.md" "an earlier draft" \
+  "$HOME/.devlead/reports/$TODAY-execute.md" "$REPORT_TEXT"
 behaviour <<<"session $RSID"
 run fleet
 RUN_ID="$(jq -r .run_id <<<"$LAST")"
 check "S23: the report the session could not write exists, byte for byte" \
-  "$(cmp -s <(printf '%s' "$REPORT_TEXT") "$REPORTS/2026-11-17-execute.md" && echo same || echo differs)" "same"
-check "S23: only the last report Write is kept" "$(ls "$REPORTS")" "2026-11-17-execute.md"
+  "$(cmp -s <(printf '%s' "$REPORT_TEXT") "$REPORTS/$TODAY-execute.md" && echo same || echo differs)" "same"
+check "S23: only the last report Write is kept" "$(ls "$REPORTS")" "$TODAY-execute.md"
 check "S23: its text is never run" "$([[ -e "$SANDBOX/pwned" || -e "$SANDBOX/pwned2" ]] && echo ran || echo data)" "data"
-check "S23: the audit names it" "$(field .report_kept)" '"2026-11-17-execute.md"'
+check "S23: the audit names it" "$(field .report_kept)" "\"$TODAY-execute.md\""
 check "S23: the PARK notice points to it" "$(awk -F'\t' '$3 == "park" {print $6}' "$INBOX")" \
-  "fleet: 2 work unit(s) parked (#7 #15) — the reasons are in ~/.devlead/reports/2026-11-17-execute.md (run $RUN_ID)"
-check "S23: written 0644, no temporary file left" "$(stat -c %a "$REPORTS/2026-11-17-execute.md") $(find "$REPORTS" -name '.*' | wc -l | tr -d ' ')" "644 0"
-contains "S23: the job says it wrote it" "$OUT" "wrote ~/.devlead/reports/2026-11-17-execute.md from the report the run's session could not write"
+  "fleet: 2 work unit(s) parked (#7 #15) — the reasons are in ~/.devlead/reports/$TODAY-execute.md (run $RUN_ID)"
+check "S23: written 0644, no temporary file left" "$(stat -c %a "$REPORTS/$TODAY-execute.md") $(find "$REPORTS" -name '.*' | wc -l | tr -d ' ')" "644 0"
+contains "S23: the job says it wrote it" "$OUT" "wrote ~/.devlead/reports/$TODAY-execute.md from the report the run's session could not write"
 
 fresh; rm -f "$REPORTS"/*
-report_session "$RSID" "$HOME/.devlead/reports/2026-11-17-execute.md" "first session"
+report_session "$RSID" "$HOME/.devlead/reports/$TODAY-execute.md" "first session"
 # shellcheck disable=SC2088 # the literal ~/ a session may write, not an expansion
-report_session "$RSID2" "~/.devlead/reports/2026-11-17-execute.md" "second session, path with ~"
+report_session "$RSID2" "~/.devlead/reports/$TODAY-execute.md" "second session, path with ~"
 behaviour <<EOF
 session $RSID
 session $RSID2
 EOF
 run fleet
-check "S23: the last session that wrote one wins, ~/ spelled out or not" "$(cat "$REPORTS/2026-11-17-execute.md")" "second session, path with ~"
+check "S23: the last session that wrote one wins, ~/ spelled out or not" "$(cat "$REPORTS/$TODAY-execute.md")" "second session, path with ~"
 
 refused_report() { # refused_report <label> <expected line in the output>
   check "$1: nothing written" "$(find "$REPORTS" -mindepth 1 -not -name keep | wc -l | tr -d ' ')" "0"
@@ -824,39 +845,39 @@ refused_report() { # refused_report <label> <expected line in the output>
   [[ -n "${2:-}" ]] && contains "$1: the job says why" "$OUT" "$2"
 }
 fresh; rm -f "$REPORTS"/*
-report_session "$RSID" "/work/repo-a/reports/2026-11-17-execute.md" "a repo file of that name" \
-  "$HOME/.devlead/reports/2026-11-17.md" "the morning digest's name" \
-  "$HOME/.devlead/reports/../reports/2026-11-17-execute.md" "a path with .." \
-  "$HOME/.devlead/reports/sub/2026-11-17-execute.md" "a subdirectory"
+report_session "$RSID" "/work/repo-a/reports/$TODAY-execute.md" "a repo file of that name" \
+  "$HOME/.devlead/reports/$TODAY.md" "the morning digest's name" \
+  "$HOME/.devlead/reports/../reports/$TODAY-execute.md" "a path with .." \
+  "$HOME/.devlead/reports/sub/$TODAY-execute.md" "a subdirectory"
 behaviour <<<"session $RSID"
 run fleet
 refused_report "S23: Writes to any other path"
 fresh; rm -f "$REPORTS"/*
 # Built from a file: one argument that long is past the kernel's limit.
 head -c 300000 /dev/zero | tr '\0' 'x' > "$SANDBOX/big-report"
-jq -nc --arg p "$HOME/.devlead/reports/2026-11-17-execute.md" --rawfile c "$SANDBOX/big-report" \
+jq -nc --arg p "$HOME/.devlead/reports/$TODAY-execute.md" --rawfile c "$SANDBOX/big-report" \
   '{type: "assistant", message: {content: [{type: "tool_use", id: "w1", name: "Write", input: {file_path: $p, content: $c}}]}}' \
   > "$CLAUDE_CONFIG_DIR/projects/-home-x/$RSID.jsonl"
 behaviour <<<"session $RSID"
 run fleet
 refused_report "S23: a report over the size bound" "is larger than 262144 bytes — not written"
 fresh; rm -f "$REPORTS"/*
-report_session "$RSID" "$HOME/.devlead/reports/2026-11-17-execute.md" $'escape \e[2J and a bell \a'
+report_session "$RSID" "$HOME/.devlead/reports/$TODAY-execute.md" $'escape \e[2J and a bell \a'
 behaviour <<<"session $RSID"
 run fleet
 refused_report "S23: a report with control characters" "holds control characters — not written"
 fresh; rm -f "$REPORTS"/*
 echo "outside" > "$SANDBOX/link-target"
-ln -s "$SANDBOX/link-target" "$REPORTS/2026-11-17-execute.md"
-report_session "$RSID" "$HOME/.devlead/reports/2026-11-17-execute.md" "through a link"
+ln -s "$SANDBOX/link-target" "$REPORTS/$TODAY-execute.md"
+report_session "$RSID" "$HOME/.devlead/reports/$TODAY-execute.md" "through a link"
 behaviour <<<"session $RSID"
 run fleet
-check "S23: a report that is a planted link: not written through" "$(cat "$SANDBOX/link-target") $([[ -L "$REPORTS/2026-11-17-execute.md" ]] && echo link-kept)" "outside link-kept"
+check "S23: a report that is a planted link: not written through" "$(cat "$SANDBOX/link-target") $([[ -L "$REPORTS/$TODAY-execute.md" ]] && echo link-kept)" "outside link-kept"
 contains "S23: a planted link: the job says why" "$OUT" "is a symbolic link or missing — DevLead does not write through links"
-rm -f "$REPORTS/2026-11-17-execute.md"
+rm -f "$REPORTS/$TODAY-execute.md"
 mv "$REPORTS" "$REPORTS.real"; mkdir -p "$SANDBOX/elsewhere"; ln -s "$SANDBOX/elsewhere" "$REPORTS"
 fresh
-report_session "$RSID" "$HOME/.devlead/reports/2026-11-17-execute.md" "through a linked directory"
+report_session "$RSID" "$HOME/.devlead/reports/$TODAY-execute.md" "through a linked directory"
 behaviour <<<"session $RSID"
 run fleet
 check "S23: a reports directory that is a link: not written through" "$(ls -A "$SANDBOX/elsewhere" | wc -l | tr -d ' ')" "0"

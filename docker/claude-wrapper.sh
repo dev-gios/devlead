@@ -37,10 +37,19 @@
 # single-token setup, a pool of one named "default"). Every session runs with
 # one account: the wrapper takes the highest-priority one, and the session's
 # environment gets that account's token as CLAUDE_CODE_OAUTH_TOKEN and no
-# other — every DEVLEAD_CLAUDE_ACCOUNT_*TOKEN* variable is removed from it.
-# Without CLAUDE_ACCOUNTS (no token in the env file) CLAUDE_CODE_OAUTH_TOKEN is
-# left as the caller gave it. A token never reaches the ledger, a message or a
-# log: only the account's name does.
+# other. A pool's tokens are read from /etc/devlead/claude-tokens, which root
+# writes at start (root's, group-readable by the user, nobody else); the
+# entrypoint takes them out of the environment, so the scheduler, the jobs
+# and the launchers never carry them. A caller that still has them (a
+# `docker compose exec` carries the env file) makes the wrapper start again
+# without them first, so no process of the session's ancestry holds a token
+# it does not use: every process of the user's runs as the session's uid, and
+# its environment is readable at /proc/<pid>/environ — guard.sh is the only
+# net there, not a sandbox. Every DEVLEAD_CLAUDE_ACCOUNT_* variable (names and
+# dates too) is removed from the session's environment. Without
+# CLAUDE_ACCOUNTS (no token in the env file) CLAUDE_CODE_OAUTH_TOKEN is left as
+# the caller gave it. A token never reaches the ledger, a message or a log:
+# only the account's name does.
 #
 # Usage limits (S22). The highest-priority account is the first one that is
 # not resting. When a session ends with an error (not at its time limit), the
@@ -97,6 +106,15 @@
 # DevLead's launchers start.
 set -uo pipefail
 
+# A pool token in this process's environment would stay readable at
+# /proc/<pid>/environ for the whole session: start again without them.
+_strip=()
+for _v in $(compgen -e); do
+  [[ "$_v" == DEVLEAD_CLAUDE_ACCOUNT_*TOKEN* ]] && _strip+=(-u "$_v")
+done
+(( ${#_strip[@]} == 0 )) || exec env "${_strip[@]}" "${BASH_SOURCE[0]}" "$@"
+unset _strip _v
+
 # --- Fixed paths (test/unit-claude-wrapper.sh rewrites these in a copy) -------
 REAL_CLAUDE=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
 RUNNER_CONF=/etc/devlead/runner.conf
@@ -104,6 +122,7 @@ LEDGER=/var/lib/devlead/sessions.tsv
 SESSION_LOCK=/var/lib/devlead/session.lock
 PAUSE_FILE=/home/devlead/.devlead/PAUSE
 ACCOUNTS_FILE=/var/lib/devlead/accounts.tsv
+TOKENS_FILE=/etc/devlead/claude-tokens
 CONF_OWNER_UID=0
 # ------------------------------------------------------------------------------
 # An account whose usage limit Claude reported without a reset time rests this
@@ -261,11 +280,21 @@ if (( ${#_names[@]} > 0 )); then
     _refuse limited "every Claude account is resting ($(_resting_list)) — no session starts until $_when"
   fi
   _account="${_names[$_sel]}"
-  _token="${!_vars[$_sel]:-}"
+  if [[ "${_vars[$_sel]}" == CLAUDE_CODE_OAUTH_TOKEN ]]; then
+    _token="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  else
+    _notokens="cannot read the Claude account tokens $TOKENS_FILE (root writes it when the container starts) — no session can start"
+    [[ -f "$TOKENS_FILE" && ! -L "$TOKENS_FILE" && -r "$TOKENS_FILE" ]] || _refuse noconf "$_notokens"
+    [[ "$(stat -c %u "$TOKENS_FILE" 2>/dev/null)" == "$CONF_OWNER_UID" ]] || _refuse noconf "$_notokens"
+    _mode="$(stat -c %a "$TOKENS_FILE" 2>/dev/null)"
+    [[ "$_mode" =~ ^[0-7]{3,4}$ ]] && (( (8#$_mode & 8#022) == 0 )) || _refuse noconf "$_notokens"
+    _token="$(sed -n "s/^${_vars[$_sel]}=//p" "$TOKENS_FILE" 2>/dev/null | tail -n 1)"
+    [[ "$_token" =~ ^[A-Za-z0-9._~+/=-]{1,1024}$ ]] || _refuse noconf "$_notokens"
+  fi
 fi
-# The session sees one token at most, its account's.
+# The session sees one token at most, its account's, and nothing of the pool.
 for _v in $(compgen -e); do
-  [[ "$_v" == DEVLEAD_CLAUDE_ACCOUNT_*TOKEN* ]] && unset "$_v"
+  [[ "$_v" == DEVLEAD_CLAUDE_ACCOUNT_* ]] && unset "$_v"
 done
 if (( ${#_names[@]} > 0 )); then
   unset CLAUDE_CODE_OAUTH_TOKEN

@@ -28,6 +28,10 @@ contains() {
   if [[ "$2" == *"$3"* ]]; then echo "PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1))
   else echo "FAIL  $1"; echo "        expected substring: [$3]"; echo "        actual: [$2]"; FAIL_COUNT=$((FAIL_COUNT + 1)); fi
 }
+lacks() {
+  if [[ "$2" != *"$3"* ]]; then echo "PASS  $1"; PASS_COUNT=$((PASS_COUNT + 1))
+  else echo "FAIL  $1"; echo "        unexpected substring: [$3]"; echo "        actual: [$2]"; FAIL_COUNT=$((FAIL_COUNT + 1)); fi
+}
 
 FAKE_DIR="$SANDBOX/fake"
 FAKE_LOG="$SANDBOX/fake.log"
@@ -37,6 +41,7 @@ LEDGER="$SANDBOX/state/sessions.tsv"
 LOCK="$SANDBOX/state/session.lock"
 PAUSE="$SANDBOX/PAUSE"
 MARKS="$SANDBOX/state/accounts.tsv"
+TOKENS="$SANDBOX/claude-tokens"
 WRAPPER="$SANDBOX/claude"
 export CLAUDE_CONFIG_DIR="$SANDBOX/claude-config"
 export FAKE_DIR FAKE_LOG FAKE_ENV_LOG
@@ -52,9 +57,16 @@ cat > "$SANDBOX/real-claude" <<'EOF'
 #!/usr/bin/env bash
 { printf 'ARGS'; for a in "$@"; do printf ' %s' "$a"; done
   printf '\tRUN=%s\tFD9=%s\n' "${DEVLEAD_RUN_ID:-}" "$([[ -e /proc/$$/fd/9 ]] && echo open || echo closed)"; } >> "$FAKE_LOG"
-# The Claude token it was given and the pool variables it can still see.
-printf 'OAUTH=%s\tPOOL=%s\n' "${CLAUDE_CODE_OAUTH_TOKEN-unset}" \
-  "$(compgen -e | grep '^DEVLEAD_CLAUDE_ACCOUNT_' | sort | paste -sd, -)" >> "$FAKE_ENV_LOG"
+# The Claude token it was given, the pool variables it can still see, and
+# how many of its two ancestors (timeout, the wrapper) still carry a pool
+# token in their environment — readable through /proc at the same uid.
+anc=0; p=$PPID
+for _ in 1 2; do
+  grep -qaE 'DEVLEAD_CLAUDE_ACCOUNT_[0-9]+_TOKEN=' "/proc/$p/environ" 2>/dev/null && anc=$((anc + 1))
+  p="$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null)"; [[ -n "$p" ]] || break
+done
+printf 'OAUTH=%s\tPOOL=%s\tANCESTORS=%s\n' "${CLAUDE_CODE_OAUTH_TOKEN-unset}" \
+  "$(compgen -e | grep '^DEVLEAD_CLAUDE_ACCOUNT_' | sort | paste -sd, -)" "$anc" >> "$FAKE_ENV_LOG"
 [[ -f "$FAKE_DIR/spawn" ]] && { sleep 6 >/dev/null 2>&1 & }
 [[ -f "$FAKE_DIR/stubborn" ]] && trap '' TERM
 [[ -f "$FAKE_DIR/sleep" ]] && sleep "$(cat "$FAKE_DIR/sleep")"
@@ -64,6 +76,8 @@ printf 'OAUTH=%s\tPOOL=%s\n' "${CLAUDE_CODE_OAUTH_TOKEN-unset}" \
 acct="${CLAUDE_CODE_OAUTH_TOKEN##*-}"
 sid=""; prev=""
 for a in "$@"; do [[ "$prev" == "--session-id" ]] && sid="$a"; prev="$a"; done
+# A scenario script that decides, per account and per call, what this session does.
+[[ -f "$FAKE_DIR/hook" ]] && . "$FAKE_DIR/hook"
 for f in "$FAKE_DIR/transcript.$acct" "$FAKE_DIR/transcript"; do
   if [[ -f "$f" && -n "$sid" ]]; then
     mkdir -p "$CLAUDE_CONFIG_DIR/projects/-work-repo"
@@ -81,7 +95,7 @@ chmod +x "$SANDBOX/real-claude"
 # found — a renamed constant must fail here, not test the image's paths.
 cp "$SRC" "$WRAPPER"
 for kv in "REAL_CLAUDE=$SANDBOX/real-claude" "RUNNER_CONF=$CONF" "LEDGER=$LEDGER" \
-          "SESSION_LOCK=$LOCK" "PAUSE_FILE=$PAUSE" "ACCOUNTS_FILE=$MARKS" "CONF_OWNER_UID=$(id -u)"; do
+          "SESSION_LOCK=$LOCK" "PAUSE_FILE=$PAUSE" "ACCOUNTS_FILE=$MARKS" "TOKENS_FILE=$TOKENS" "CONF_OWNER_UID=$(id -u)"; do
   key="${kv%%=*}"
   check "the wrapper has the fixed path $key" "$(grep -c "^$key=" "$WRAPPER")" "1"
   sed -i "s|^$key=.*|$kv|" "$WRAPPER"
@@ -102,7 +116,12 @@ conf() { # conf [KEY=value...] — the defaults with these overrides
   [[ -n "$accounts" ]] && printf 'CLAUDE_ACCOUNTS=%s\n' "$accounts" >> "$CONF"
   chmod 0644 "$CONF"
 }
-reset() { : > "$LEDGER"; : > "$FAKE_LOG"; : > "$FAKE_ENV_LOG"; : > "$MARKS"; rm -f "$FAKE_DIR"/* "$PAUSE"; rm -rf "$CLAUDE_CONFIG_DIR"; conf "$@"; }
+# The pool's tokens, as root writes them at start: root's (here the test
+# user, the configured owner), 0640.
+TEAM_TOKEN=sk-ant-oat01-DUMMY-team
+ULTRA_TOKEN=sk-ant-oat01-DUMMY-ultra
+tokens() { rm -f "$TOKENS"; printf 'DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=%s\nDEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=%s\n' "$TEAM_TOKEN" "$ULTRA_TOKEN" > "$TOKENS"; chmod 0640 "$TOKENS"; }
+reset() { : > "$LEDGER"; : > "$FAKE_LOG"; : > "$FAKE_ENV_LOG"; : > "$MARKS"; rm -f "$FAKE_DIR"/* "$PAUSE"; rm -rf "$CLAUDE_CONFIG_DIR"; tokens; conf "$@"; }
 # w <args...> — run the wrapper; OUT holds stderr+stdout, RC the exit code.
 w() { OUT="$("$WRAPPER" "$@" </dev/null 2>&1)"; RC=$?; }
 calls() { if [[ -s "$FAKE_LOG" ]]; then wc -l < "$FAKE_LOG" | tr -d ' '; else echo 0; fi; }
@@ -305,11 +324,12 @@ check "an exit 137 before the limit is not a timeout" "$(awk -F'\t' '$3 == "end"
 # Claude accounts (S21): one account per session, its token and no other
 # ===========================================================================
 POOL="team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN ultra=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN"
-TEAM_TOKEN=sk-ant-oat01-DUMMY-team
-ULTRA_TOKEN=sk-ant-oat01-DUMMY-ultra
-POOL_ENV=(DEVLEAD_CLAUDE_ACCOUNT_1=team "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=$TEAM_TOKEN" DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-01
-          DEVLEAD_CLAUDE_ACCOUNT_2=ultra "DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=$ULTRA_TOKEN" DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-10-15)
-# pw <args...> — the wrapper with the pool in its environment, as the jobs run it.
+# The jobs' environment keeps the names and the dates; a `docker compose
+# exec` from the operator still carries the env file's tokens too (here with
+# values that differ from root's file, to tell them apart).
+POOL_ENV=(DEVLEAD_CLAUDE_ACCOUNT_1=team "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant-oat01-ENV-envteam" DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-01
+          DEVLEAD_CLAUDE_ACCOUNT_2=ultra "DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=sk-ant-oat01-ENV-envultra" DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-10-15)
+# pw <args...> — the wrapper with the pool in its environment.
 pw() { OUT="$(env "${POOL_ENV[@]}" "$WRAPPER" "$@" </dev/null 2>&1)"; RC=$?; }
 start_account() { awk -F'\t' '$3 == "start" {print $7}' "$LEDGER" | paste -sd, -; }
 
@@ -317,9 +337,9 @@ reset ACCOUNTS="$POOL"
 pw -p hi
 check "pool: the session runs" "$RC" "0"
 check "pool: the first account in priority order is used" "$(start_account)" "team"
-check "pool: its token reaches the session as CLAUDE_CODE_OAUTH_TOKEN" "$(cut -f1 "$FAKE_ENV_LOG")" "OAUTH=$TEAM_TOKEN"
-check "pool: no token variable of the pool reaches the session" "$(cut -f2 "$FAKE_ENV_LOG")" \
-  "POOL=DEVLEAD_CLAUDE_ACCOUNT_1,DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED,DEVLEAD_CLAUDE_ACCOUNT_2,DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED"
+check "pool: its token, from root's file, reaches the session as CLAUDE_CODE_OAUTH_TOKEN" "$(cut -f1 "$FAKE_ENV_LOG")" "OAUTH=$TEAM_TOKEN"
+check "pool (A2): no variable of the pool reaches the session — no token, name or date" "$(cut -f2 "$FAKE_ENV_LOG")" "POOL="
+check "pool (A1): neither the wrapper nor timeout keeps a pool token in its environment" "$(cut -f3 "$FAKE_ENV_LOG")" "ANCESTORS=0"
 check "pool: the ledger names the account, never the token" "$(grep -c 'DUMMY' "$LEDGER")" "0"
 lacks "pool: the wrapper prints no token" "$OUT" "DUMMY"
 
@@ -334,9 +354,21 @@ check "pool: a token the caller set is replaced by the account's" "$(cut -f1 "$F
 check "pool: a stray pool token variable does not reach the session" "$(cut -f2 "$FAKE_ENV_LOG" | grep -c '_7_TOKEN')" "0"
 
 reset ACCOUNTS="$POOL"
-env -u DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN="$ULTRA_TOKEN" "$WRAPPER" -p hi </dev/null >/dev/null 2>&1
-check "pool: an account whose token the caller removed gets no token (the caller's own auth, as before)" \
-  "$(start_account) $(cut -f1 "$FAKE_ENV_LOG")" "team OAUTH=unset"
+"$WRAPPER" -p hi </dev/null >/dev/null 2>&1
+check "pool: the token comes from root's file, whatever the caller's environment holds" \
+  "$(start_account) $(cut -f1 "$FAKE_ENV_LOG")" "team OAUTH=$TEAM_TOKEN"
+# Root's token file must be trustworthy, like runner.conf.
+tokens_refused() { # tokens_refused <label>
+  pw -p hi
+  check "$1: refused as noconf, nothing started" "$RC $(calls) $(awk -F'\t' '{print $7}' "$LEDGER")" "75 0 noconf"
+  contains "$1: says the tokens cannot be read" "$OUT" "cannot read the Claude account tokens"
+  lacks "$1: prints no token" "$OUT" "DUMMY"
+}
+reset ACCOUNTS="$POOL"; rm -f "$TOKENS"; tokens_refused "no token file"
+reset ACCOUNTS="$POOL"; chmod 0660 "$TOKENS"; tokens_refused "a token file its group can write"
+reset ACCOUNTS="$POOL"; mv "$TOKENS" "$TOKENS.real"; ln -s "$TOKENS.real" "$TOKENS"; tokens_refused "a token file that is a link"; rm -f "$TOKENS.real"
+reset ACCOUNTS="$POOL"; sed -i '/ACCOUNT_1_TOKEN/d' "$TOKENS"; tokens_refused "an account missing from the token file"
+reset ACCOUNTS="$POOL"; printf 'DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant DUMMY bad\n' > "$TOKENS"; tokens_refused "a token that is not one"
 
 for bad_item in "team" "team=GH_TOKEN" "Team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN" "team=DEVLEAD_CLAUDE_ACCOUNT_0_TOKEN"; do
   reset ACCOUNTS="$bad_item"

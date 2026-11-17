@@ -661,6 +661,12 @@ node "$M/pool-mock.js" & mp=$!
 for _ in $(seq 1 30); do grep -q LISTEN "$M/pool-mock.log" 2>/dev/null && break; sleep 0.2; done
 s() { ANTHROPIC_BASE_URL=http://127.0.0.1:8099 timeout 120 claude -p hi </dev/null >"$M/out$1" 2>"$M/err$1"; echo $?; }
 p conf "$(grep '^CLAUDE_ACCOUNTS=' /etc/devlead/runner.conf)"
+# A1: the tokens live in root's file, readable by the user's group only; no
+# process the user can read the environment of carries one.
+p tokens_meta "$(stat -c '%U %a' /etc/devlead/claude-tokens) $([[ "$(stat -c %g /etc/devlead/claude-tokens)" == "$(id -g)" ]] && echo group || echo other)"
+p tokens_write "$( (echo x >> /etc/devlead/claude-tokens) 2>/dev/null && echo yes || echo no)"
+p tokens_env "$(grep -laE 'DEVLEAD_CLAUDE_ACCOUNT_[0-9]+_TOKEN=' /proc/[0-9]*/environ 2>/dev/null | wc -l)"
+p names_env "$(compgen -e | grep -c '^DEVLEAD_CLAUDE_ACCOUNT_[0-9]$')"
 p rc1 "$(s 1)"
 p rc2 "$(s 2)"
 p mock "$(grep '^REQ' "$M/pool-mock.log" | cut -d' ' -f2 | awk '!seen[$0]++' | paste -sd, -)"
@@ -683,6 +689,10 @@ POOL_OUT="$(compose run --rm -T -e CLAUDE_CODE_OAUTH_TOKEN= -e DEVLEAD_CLAUDE_TO
 pv() { sed -n "s/^$1=//p" <<<"$POOL_OUT" | head -n 1; }
 check "pool: runner.conf lists the accounts in priority order" "$(pv conf)" \
   "CLAUDE_ACCOUNTS=team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN ultra=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN"
+check "pool (A1): the tokens are in root's file, 0640, the user's group" "$(pv tokens_meta)" "root 640 group"
+check "pool (A1): the user cannot change the token file" "$(pv tokens_write)" "no"
+check "pool (A1): no process the user can read holds a pool token in its environment" "$(pv tokens_env)" "0"
+check "pool (A1): the names stay for doctor" "$(pv names_env)" "2"
 check "pool: the first session, on team, ends on the 5-hour limit (exit 1)" "$(pv rc1)" "1"
 check "pool: the second session runs on ultra (exit 0)" "$(pv rc2)" "0"
 check "pool: the API saw team's token first, then ultra's" "$(pv mock)" "team,ultra"

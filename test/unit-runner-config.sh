@@ -134,6 +134,7 @@ bad() { # bad <label> <expected message> VAR=value...
   check "$label: writes no runner.conf" "$([[ -e $OUT/runner.conf ]] && echo written || echo none)" "none"
   check "$label: writes no repos" "$([[ -e $OUT/repos ]] && echo written || echo none)" "none"
   check "$label: writes no git identity" "$([[ -e $OUT/git-identity ]] && echo written || echo none)" "none"
+  check "$label: writes no claude-tokens" "$([[ -e $OUT/claude-tokens ]] && echo written || echo none)" "none"
 }
 bad "bad loop schedule" "DEVLEAD_CRON_LOOP='61 22 * * *' is not a valid schedule" 'DEVLEAD_CRON_LOOP=61 22 * * *'
 bad "bad fleet schedule" "DEVLEAD_CRON_FLEET='@daily' is not a valid schedule" 'DEVLEAD_CRON_FLEET=@daily'
@@ -308,8 +309,11 @@ check "pool: runner.conf names the accounts and their token variables, in the en
   "$(grep '^CLAUDE_ACCOUNTS=' "$OUT/runner.conf")" \
   "CLAUDE_ACCOUNTS=team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN ultra=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN"
 contains "pool: the start log names them in priority order" "$out" "2 Claude account(s), in priority order: team ultra"
-lacks "pool: no token in runner.conf" "$(cat "$OUT"/*)" "dummy-value"
+lacks "pool: no token in runner.conf or the other public files" "$(cat "$OUT/runner.conf" "$OUT/crontab" "$OUT/repos" "$OUT/git-identity")" "dummy-value"
 lacks "pool: no token in the output" "$out" "dummy-value"
+check "pool (A1): the tokens go to claude-tokens, by variable, in priority order" "$(cat "$OUT/claude-tokens" 2>/dev/null)" \
+  "$(printf 'DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=%s\nDEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=%s' "$T1" "$T2")"
+check "pool (A1): claude-tokens is written 0600 (the entrypoint opens it to the user's group)" "$(stat -c %a "$OUT/claude-tokens" 2>/dev/null)" "600"
 OUT="$SANDBOX/pool-order"
 render "$OUT" DEVLEAD_CLAUDE_ACCOUNT_1=ultra "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=$T2" DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-10-15 \
   DEVLEAD_CLAUDE_ACCOUNT_2=team "DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=$T1" DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-11-01 >/dev/null
@@ -324,6 +328,7 @@ check "single token: render exits 0" "$rc" "0"
 check "single token: one account, default, its token in CLAUDE_CODE_OAUTH_TOKEN" \
   "$(grep '^CLAUDE_ACCOUNTS=' "$OUT/runner.conf")" "CLAUDE_ACCOUNTS=default=CLAUDE_CODE_OAUTH_TOKEN"
 check "single token: the start log is what it was" "$(grep -c 'Claude account' <<<"$out")" "0"
+check "single token: no claude-tokens file (the token stays where it was)" "$([[ -e "$OUT/claude-tokens" ]] && echo written || echo none)" "none"
 lacks "single token: no token in runner.conf" "$(cat "$OUT"/*)" "dummy-value"
 OUT="$SANDBOX/single-empty-pool"
 render "$OUT" "CLAUDE_CODE_OAUTH_TOKEN=$T1" DEVLEAD_CLAUDE_ACCOUNT_1= DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN= DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED= >/dev/null; rc=$?
@@ -332,6 +337,11 @@ check "single token with the pool's variables left empty (the template): accepte
 OUT="$SANDBOX/no-token"
 render "$OUT" >/dev/null
 check "no token: no account line" "$(grep -c '^CLAUDE_ACCOUNTS=' "$OUT/runner.conf")" "0"
+# A pool removed from the env file leaves no tokens behind.
+OUT="$SANDBOX/pool-then-none"
+render "$OUT" "${POOL[@]}" >/dev/null
+env "${UNSET[@]}" bash "$CFG" render "$OUT" >/dev/null 2>&1
+check "a render without the pool removes an earlier claude-tokens" "$([[ -e "$OUT/claude-tokens" ]] && echo left || echo removed)" "removed"
 
 # Invalid pools stop the start, named, never echoed.
 pool_bad() { # pool_bad <label> <expected message> <value that must not appear> VAR=value...

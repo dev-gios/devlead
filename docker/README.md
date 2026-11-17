@@ -55,7 +55,7 @@ DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=sk-ant-oat01-...
 DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-11-17
 ```
 
-El orden es tuyo: el número 1 es la cuenta que se usa primero. Cada sesión usa la cuenta de mayor prioridad que esté disponible y recibe solo el token de esa cuenta. El registro de sesiones y la auditoría nombran la cuenta, nunca el token. Con un pool, deja vacíos `CLAUDE_CODE_OAUTH_TOKEN` y `DEVLEAD_CLAUDE_TOKEN_ISSUED`: las dos formas no se mezclan, y si una cuenta está incompleta o mal escrita el contenedor no arranca y el log nombra la variable.
+El orden es tuyo: el número 1 es la cuenta que se usa primero. Cada sesión usa la cuenta de mayor prioridad que esté disponible y recibe solo el token de esa cuenta, sin ninguna otra variable del pool. Al arrancar, el contenedor pasa los tokens a `/etc/devlead/claude-tokens` (de root, legible solo por tu grupo) y los saca del entorno, así que ni el planificador ni los trabajos los llevan; solo el wrapper de `claude` los lee. El registro de sesiones y la auditoría nombran la cuenta, nunca el token. Con un pool, deja vacíos `CLAUDE_CODE_OAUTH_TOKEN` y `DEVLEAD_CLAUDE_TOKEN_ISSUED`: las dos formas no se mezclan, y si una cuenta está incompleta o mal escrita el contenedor no arranca y el log nombra la variable.
 
 ### 2. Token de GitHub
 
@@ -177,6 +177,7 @@ Los comandos que actúan como el agente llevan `-u devlead`. `docker compose exe
 - El límite `irreversible` de `guard.sh` compara texto. No es un sandbox, y el token de GitHub sigue pudiendo cerrar issues. La protección de rama del paso 3 es la red de respaldo.
 - La sesión que descubre el límite de una cuenta sí cuenta para el tope diario. Los trabajos de una sola iteración (`fleet` y la corrida de `poll`) no la repiten con la siguiente cuenta: esa pasada queda para la próxima corrida. El loop nocturno sí sigue con la siguiente cuenta en su próxima iteración.
 - Una sesión corre como el mismo usuario que escribe las marcas de las cuentas, así que podría alterarlas. Lo peor que logra es dejar descansando una cuenta, o devolver antes una que Claude va a rechazar otra vez.
+- Con el mismo usuario no hay aislamiento real: una sesión podría leer el archivo de tokens o el entorno de otro proceso del usuario. `guard.sh` lo bloquea por texto (rutas `/proc/.../environ`, `ps e`, búsquedas recursivas sobre `/`, `/etc` o `/proc`, el archivo de tokens), pero es la red, no un sandbox. Un `docker compose exec` lleva el `.env` completo en su entorno; el wrapper y `run-job.sh` arrancan de nuevo sin los tokens del pool antes de hacer nada.
 - Cada consulta de issues sincroniza todos los repos enrolados. Si uno falla, el aviso `job-failed` se repite en cada consulta hasta que se arregle.
 - Las sesiones guiadas no pueden escribir en `~/.devlead/reports/`. En el servidor, el trabajo escribe por ellas el reporte `AAAA-MM-DD-execute.md` que la sesión intentó escribir, como texto y hasta 256 KiB, y el aviso de PARK apunta a ese archivo. Si el reporte es más grande, trae caracteres de control o la ruta es un enlace simbólico, no se escribe y los motivos quedan en la transcripción de la corrida. Fuera del servidor, en las corridas de los timers del host, ese reporte sigue sin escribirse.
 

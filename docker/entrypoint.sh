@@ -79,6 +79,21 @@ _uid="$(id -u "$DEVLEAD_USER")"
 _gid="$(id -g "$DEVLEAD_USER")"
 [[ "$_uid" -ne 0 && "$_gid" -ne 0 ]] || die "the $DEVLEAD_USER user must not be root"
 
+# The Claude account pool's tokens (S21, A1): runner-config.sh wrote them to
+# /etc/devlead/claude-tokens. Root's, readable by the user's group, so the
+# claude wrapper can take one per session; then out of the environment, so
+# the scheduler, the jobs and the launchers — every process a session could
+# read the environment of, at the same uid — never carry them. The names and
+# issue dates stay: doctor.sh reads them.
+if [[ -f /etc/devlead/claude-tokens ]]; then
+  chown "root:$_gid" /etc/devlead/claude-tokens && chmod 0640 /etc/devlead/claude-tokens \
+    || die "cannot prepare the Claude account tokens"
+fi
+for _v in $(compgen -e); do
+  [[ "$_v" == DEVLEAD_CLAUDE_ACCOUNT_*TOKEN* ]] && unset "$_v"
+done
+unset _v
+
 # notify.sh reads its push settings from a 600 file owned by the user who runs
 # it, never from the environment. Written on every start, so a value removed
 # from .env does not linger from an earlier one.

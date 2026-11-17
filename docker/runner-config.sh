@@ -75,9 +75,12 @@
 #                                  one account named "default"; the two setups
 #                                  do not mix. runner.conf gets the names and
 #                                  the variables that hold their tokens
-#                                  (CLAUDE_ACCOUNTS), never a token: the
-#                                  tokens stay in the environment, where the
-#                                  claude wrapper picks one per session
+#                                  (CLAUDE_ACCOUNTS), never a token. The
+#                                  tokens go to <dir>/claude-tokens, mode 0600
+#                                  (VAR=token lines); the entrypoint opens it
+#                                  to the user's group and takes the tokens out
+#                                  of the environment, so only the claude
+#                                  wrapper reads them, one per session
 #
 # The paths of DEVLEAD_REPOS are the repos' paths on the host: each clone sits
 # at that same path in the container, so the state the host's /devlead keys
@@ -237,7 +240,7 @@ TOKEN_RE='^[A-Za-z0-9._~+/=-]{1,1024}$'
 _accounts() {
   local v n i max=0 name token issued j tv iv bad=false
   local -A used=()
-  ACCOUNTS=""; ACCOUNT_NAMES=()
+  ACCOUNTS=""; ACCOUNT_NAMES=(); ACCOUNT_TOKENS=()
   while IFS= read -r v; do
     [[ -n "${!v:-}" ]] || continue
     if [[ "$v" =~ ^DEVLEAD_CLAUDE_ACCOUNT_([1-9])(_TOKEN|_ISSUED)?$ ]]; then
@@ -282,9 +285,10 @@ _accounts() {
       errors+=("${v}_ISSUED must be the day you ran claude setup-token for that account, as YYYY-MM-DD"); bad=true
     fi
     ACCOUNT_NAMES+=("$name")
+    ACCOUNT_TOKENS+=("${v}_TOKEN=$token")
     ACCOUNTS+="${ACCOUNTS:+ }$name=${v}_TOKEN"
   done
-  $bad && { ACCOUNTS=""; ACCOUNT_NAMES=(); }
+  $bad && { ACCOUNTS=""; ACCOUNT_NAMES=(); ACCOUNT_TOKENS=(); }
   unset token
   return 0
 }
@@ -532,12 +536,24 @@ _render() {
     }
   fi
   chmod 0644 "$tmp_cron" "$tmp_conf" "$tmp_repos" "$tmp_ident"
+  # The pool's tokens (A1): 0600 from the start, never on a command line.
+  local tmp_tokens=""
+  if [[ ${#ACCOUNT_TOKENS[@]} -gt 0 ]]; then
+    tmp_tokens="$(umask 077 && mktemp "$dir/claude-tokens.new.XXXXXX")" \
+      && printf '%s\n' "${ACCOUNT_TOKENS[@]}" > "$tmp_tokens" && chmod 0600 "$tmp_tokens" || {
+      rm -f "$tmp_cron" "$tmp_conf" "$tmp_repos" "$tmp_ident" "$tmp_tokens"
+      echo "runner-config: ERROR: cannot write $dir/claude-tokens" >&2
+      return 1
+    }
+  fi
   mv -f "$tmp_cron" "$dir/crontab" && mv -f "$tmp_conf" "$dir/runner.conf" && mv -f "$tmp_repos" "$dir/repos" \
-    && mv -f "$tmp_ident" "$dir/git-identity" || {
-    rm -f "$tmp_cron" "$tmp_conf" "$tmp_repos" "$tmp_ident"
+    && mv -f "$tmp_ident" "$dir/git-identity" \
+    && if [[ -n "$tmp_tokens" ]]; then mv -f "$tmp_tokens" "$dir/claude-tokens"; else rm -f "$dir/claude-tokens"; fi || {
+    rm -f "$tmp_cron" "$tmp_conf" "$tmp_repos" "$tmp_ident" "$tmp_tokens"
     echo "runner-config: ERROR: cannot write $dir/crontab, $dir/runner.conf, $dir/repos and $dir/git-identity" >&2
     return 1
   }
+  ACCOUNT_TOKENS=()
   echo "runner-config: schedule and limits written to $dir (TZ=$tz, $max sessions a day, $timeout per session)"
   echo "runner-config: ${#REPO_PATHS[@]} enrolled repo(s) written to $dir/repos"
   if [[ ${#ACCOUNT_NAMES[@]} -gt 0 ]]; then
