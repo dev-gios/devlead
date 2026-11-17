@@ -204,6 +204,7 @@ El perfil interactivo. Reemplaza al antiguo perfil `manual`, que pedía confirma
 - **Catástrofe (scope):** REPO ACTUAL únicamente. `NOT_A_GIT_REPO` o `gh auth` perdido MID-REPO → PARK repo actual + marcar STATUS + continuar outer loop. El run NO se detiene.
 - **Mid-run notify:** no mid-run — reporte en archivo al final
 - **Cómo satisface A1:** el trigger `/sweep-execute` con los `#N` ES la autorización para todos los repos e issues declarados.
+- **En el servidor, el trabajo `poll` (S4):** `poll-issues.sh` invoca este perfil, vía `sweep-loop.sh`, con issues que salieron del `INCLUDED` de `envelope.sh plan` y que todavía no le había pasado a ninguna corrida, menos las que el usuario salteó hoy en la agenda. Ahí la lista no la escribe el usuario: la autorizó la policy del envelope, como en plan-driven (§inv6-governance). El poll nunca agrega una issue que el plan no haya incluido.
 - **Chequeo narrow-not-widen:** catástrofe estrecha vs. batch — en batch, catástrofe = stop global; en sweep, catástrofe = stop de ESE REPO, el run continúa. Más estrecho, no más amplio.
 
 ### §sweep-plan-driven-profile
