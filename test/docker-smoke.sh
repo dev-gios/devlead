@@ -644,6 +644,10 @@ session() { compose exec -T -u devlead "${MOCK_ENV[@]}" devlead env -u CLAUDE_CO
 audit() { dx sh -c 'cat "$HOME/.devlead/audit/$(date +%Y-%m).jsonl"' 2>/dev/null | jq -c -s "map(select(.trigger == \"fleet\")) | $1"; }
 starts() { dx sh -c "grep -c \"\$(printf '\\tstart\\t')\" /var/lib/devlead/sessions.tsv" 2>/dev/null; }
 
+# The probe's sessions are in the ledger volume, which outlives a container
+# (L18): the service starts on fresh volumes, so its daily cap counts only its
+# own sessions.
+compose down --volumes --remove-orphans >/dev/null 2>&1
 if compose up -d --wait --wait-timeout 180 >"$SCRATCH/up.log" 2>&1; then
   cid="$(compose ps -q devlead)"
   check "the service is healthy" "$(docker inspect -f '{{.State.Health.Status}}' "$cid" 2>/dev/null)" "healthy"
