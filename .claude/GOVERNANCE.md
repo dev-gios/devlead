@@ -93,7 +93,7 @@ DevLead trabaja por su cuenta. Lo que NO puede hacer no depende de una frase en 
 | `merge-door` | Mergear un PR por cualquier vía que no sea `merge.sh` (que lee el envelope — §A3) |
 | `irreversible` | Solo en el servidor (Docker), donde nadie mira (S2): cerrar, borrar, transferir o comentar una issue; comentar, revisar o cerrar un PR en nombre del usuario; pasar un PR de borrador a listo (el borrador lo decide `open-pr.sh`, S3); borrar una rama en GitHub (también por `gh api`). Con o sin opciones de `gh` antes del verbo (`gh issue -R o/r close`) |
 | `database` | Todo lo que apunte a una base de datos que no esté en esta máquina, incluida una dirección tomada de una variable |
-| `secrets` | Leer o escribir un archivo de credenciales fuera de los lugares permitidos; volcar el entorno; `gh auth token` |
+| `secrets` | Leer o escribir un archivo de credenciales fuera de los lugares permitidos; volcar el entorno; `gh auth token`; leer el entorno de otro proceso (`/proc/<pid>/environ` en cualquier grafía o patrón, `ps` con la opción `e` o el formato `environ`, una búsqueda recursiva sobre `/`, `/etc` o `/proc`); en el servidor, las variables del pool de cuentas de Claude y su archivo de tokens |
 | `scope` | Escribir un archivo fuera del repositorio en el que se inició la sesión |
 | `self-config` | Cambiar los archivos que configuran estos límites: `~/.devlead/`, los settings de Claude Code y el `envelope.yml` del repo (§A3: el envelope lo escribe el usuario) |
 
