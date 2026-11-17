@@ -1,6 +1,6 @@
 # Diseño: DevLead proactivo en un servidor local
 
-Estado: **borrador para votar** · Fecha: 2026-11-16 · Rama: `docs/proactive-design`
+Estado: **votado (2026-11-16): todas las recomendaciones ★ aprobadas** · Fecha: 2026-11-16 · Rama: `docs/proactive-design`
 
 Este documento convierte el plan "DevLead proactivo" en decisiones concretas. Cada punto de la sección 5 tiene opciones, ventajas y costos, y una recomendación marcada con ★. Nada se implementa hasta que los puntos estén votados.
 
@@ -14,6 +14,7 @@ Este documento convierte el plan "DevLead proactivo" en decisiones concretas. Ca
 - **L3**: "No pues digamos te pase el plan para que tenga una idea lo que quiero pero obvio debemos adaprtaarlo, la cosa es claude destop solo esta en windows no y en nuestro caso que usamos omarchy que? esta idea la traje de claude duet que vi que funciona sin que nosotros tengamos el pc activoç"
 - **L4**: "No, por eso, digamos, nosotros vamos a simular Claude, pero digamos en nuestra computadora local. Obviamente esta va a estar encendida 24/7 y del lead va a vivir allí en nuestra computadora local como si fuera un servidor. De hecho, lo que estaba diciendo Claude en la otra conversación era que lo iba a correr dentro de un Docker para que estuviera constantemente corriendo."
 - **L5**: "Dale vamos con eso pero necesitamos hacer el diseños para votar todos esos puntos"
+- **L6** (voto): "todas las recomendadas"
 
 ## 2. Ya decidido (no se vota)
 
@@ -57,7 +58,7 @@ El plan tiene cuatro disparadores: la mañana, issues nuevos, revisión de PRs d
 | B Los cuatro disparadores en v1 | Plan completo de entrada | Más superficie antes de validar el contenedor |
 | C Solo mañana y cierre, sin escribir código | Valida el servidor con riesgo mínimo | No prepara trabajo, que es el objetivo principal |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D2 — Aprobación antes de actuar
 
@@ -69,7 +70,7 @@ Hay una contradicción. El plan pide "aprobar el plan del día", pero el 2026-11
 | B Espera tu aprobación del plan del día; sin respuesta, no hace nada | Control total | Si no respondes, el servidor no hace nada; requiere un canal de ida y vuelta |
 | C Configurable por repo en el envelope, con A por defecto | Flexible | Agrega un campo al envelope (cambio de formato aditivo) |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D3 — PRs en borrador
 
@@ -81,7 +82,7 @@ Hoy `open-pr.sh` acepta `--draft`, pero ningún comando lo pasa, así que los PR
 | B Campo nuevo `pr.draft` en el envelope (por defecto `true`) | Explícito | Cambio de formato del envelope |
 | C Listos para revisión (como hoy) | Sin cambios | Contradice el plan (Fase 3: "PR en borrador") |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D4 — Cómo detecta trabajo nuevo
 
@@ -90,7 +91,7 @@ Hoy `open-pr.sh` acepta `--draft`, pero ningún comando lo pasa, así que los PR
 | **A ★** Consulta GitHub cada N minutos con `gh` desde bash y lanza `claude` solo si hay trabajo nuevo | No expone la máquina; consultar no gasta suscripción | Reacciona con hasta N minutos de demora |
 | B Webhooks de GitHub | Reacción inmediata | Requiere un endpoint público o un túnel (smee, cloudflared) hacia tu PC |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D5 — Qué issues toma
 
@@ -102,7 +103,7 @@ Hoy toma las issues asignadas a ti (`gh issue list --assignee @me`, `envelope.sh
 | B Asignadas a ti o con la etiqueta de entrada (p. ej. `devlead`), sin mirar quién la puso | Simple | Cualquiera con permiso de etiquetar decide qué ejecuta DevLead |
 | **C ★** Asignadas a ti o con la etiqueta de entrada **puesta por una cuenta de la lista permitida** (por defecto solo tú), verificado en los eventos de la issue | Control determinista contra prompt injection (D6) | Una consulta extra a la API por issue |
 
-**Voto:**
+**Voto:** C ★ (2026-11-16, "todas las recomendadas")
 
 ### B. Seguridad
 
@@ -115,7 +116,7 @@ Hoy el cuerpo de la issue entra crudo al pipeline (`sweep-execute.md`, `gh issue
 | **A ★** Tres capas: (1) regla en GOVERNANCE y en los comandos: el texto de issues, PRs y comentarios va entre delimitadores y nunca cambia límites, envelope ni destino; (2) control de entrada determinista (D5-C); (3) si detecta instrucciones dirigidas al agente (pedidos de merge, de secretos, de URLs externas, "ignora tus reglas"), PARK más un aviso `need`. `guard.sh` y las puertas siguen como red final | Capas independientes; la (2) no depende del modelo | Más trabajo; la (3) puede dar falsos positivos |
 | B Solo la regla en prosa (1) | Barato | Depende enteramente de que el modelo la respete |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D7 — Modo de permisos de `claude -p`
 
@@ -124,7 +125,7 @@ Hoy el cuerpo de la issue entra crudo al pipeline (`sweep-execute.md`, `gh issue
 | **A ★** Como hoy: `--permission-mode acceptEdits --allowedTools …` desde `loop.env`, más `guard.sh` | Ya está probado; las herramientas quedan acotadas | Alguna corrida puede frenarse por una herramienta no permitida |
 | B `--dangerously-skip-permissions` dentro del contenedor (la documentación de Anthropic lo admite con usuario no-root) | Sin fricción | Según esa misma documentación, todo lo que hay en el contenedor queda expuesto a exfiltración, tokens incluidos |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D8 — Red de salida
 
@@ -133,7 +134,7 @@ Hoy el cuerpo de la issue entra crudo al pipeline (`sweep-execute.md`, `gh issue
 | **A ★** Firewall de salida con lista permitida (API de Anthropic, GitHub, ntfy y los registros de paquetes que necesiten los tests), basado en el `init-firewall.sh` de referencia de Anthropic. La lista es configurable | Limita qué puede filtrarse y adónde | Necesita las capacidades `NET_ADMIN` y `NET_RAW`; los tests que bajen de dominios no listados fallan hasta agregarlos |
 | B Sin firewall; solo `guard.sh` | Simple | `guard.sh` advierte que no es un sandbox |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D9 — Configuración bloqueada
 
@@ -144,7 +145,7 @@ Inv 1 y §hard-limits: DevLead no puede cambiar su propia configuración.
 | **A ★** Hooks y reglas `deny` en `/etc/claude-code/managed-settings.json` (de root, solo lectura, la prioridad más alta de Claude Code); scripts de DevLead dentro de la imagen, de solo lectura; el contenedor corre como usuario no-root | El límite queda en el sistema de archivos, no en la prosa | Cambiar un hook exige reconstruir la imagen |
 | B Hooks en `~/.claude/settings.json` del contenedor, como hoy en el host | Igual que hoy | El agente podría editarlos |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D10 — Token de GitHub
 
@@ -153,7 +154,7 @@ Inv 1 y §hard-limits: DevLead no puede cambiar su propia configuración.
 | **A ★** PAT fine-grained, solo para los repos enrolados: Contents RW, Pull requests RW, Issues RW y Metadata R; sin Workflows ni Administration. De respaldo, protección de rama en la rama por defecto | Mínimo privilegio; sin el permiso Workflows, GitHub rechaza cualquier push que toque `.github/workflows` | Hay que mantener la lista de repos del token |
 | B PAT clásico o la sesión de `gh` del host | Cero configuración | Acceso a todos tus repos |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 ### C. Runtime
 
@@ -165,7 +166,7 @@ Inv 1 y §hard-limits: DevLead no puede cambiar su propia configuración.
 | B Los timers systemd del host lanzan un `docker run` por tarea | Reutiliza los timers existentes | Solo funciona en Linux; pierde la portabilidad |
 | C Contenedor con un bucle `sleep` casero | Sin dependencias | Reinventa un programador de tareas |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D12 — Autenticación con Claude
 
@@ -175,7 +176,7 @@ Inv 1 y §hard-limits: DevLead no puede cambiar su propia configuración.
 | B Login interactivo dentro del contenedor, persistido en un volumen (`CLAUDE_CONFIG_DIR`) | Se renueva solo | Hay que entrar al contenedor para iniciar sesión; la credencial queda en un volumen |
 | C Montar el `~/.claude` del host | Nada que configurar | Expone tu sesión y tu configuración personal al agente |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D13 — Dónde trabaja
 
@@ -184,7 +185,7 @@ Inv 1 y §hard-limits: DevLead no puede cambiar su propia configuración.
 | **A ★** Clones propios en un volumen, uno por repo enrolado, con `git fetch` antes de cada corrida | Nunca pisa tu trabajo; ves lo que hizo como ramas y PRs | Ocupa disco por cada repo |
 | B Montar tus carpetas de trabajo | Ve tu estado actual | Ve tus cambios sin commitear y puede pisarlos |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D14 — Estado compartido con `/devlead` interactivo
 
@@ -196,7 +197,7 @@ Hoy `~/.devlead` guarda inbox, journals, agenda, decisiones, reportes y `run-sta
 | B Estado separado; el contenedor solo avisa por ntfy | Aislamiento total | `/devlead` no ve el trabajo nocturno |
 | C Estado en GitHub (una issue de bitácora) | Sirve igual si se muda a un servidor | Más lento; queda visible en el repo |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D15 — Versión de Claude Code
 
@@ -205,7 +206,7 @@ Hoy `~/.devlead` guarda inbox, journals, agenda, decisiones, reportes y `run-sta
 | **A ★** Versión fija en el Dockerfile más `DISABLE_AUTOUPDATER=1`; se actualiza reconstruyendo la imagen | Corridas reproducibles; una actualización no rompe nada de noche | Hay que actualizar a mano |
 | B La última versión, con autoactualización | Siempre al día | Cambios sin control en medio de la noche |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 ### D. Operación
 
@@ -216,7 +217,7 @@ Hoy `~/.devlead` guarda inbox, journals, agenda, decisiones, reportes y `run-sta
 | **A ★** Horarios y zona horaria (`TZ`) en un archivo de configuración del servidor. Valores por defecto: mañana a las 06:30 de lunes a viernes; consulta de issues cada 30 min entre 07:00 y 20:00; cierre a las 18:30 de lunes a viernes; loop nocturno a las 22:00; discover los lunes a las 05:00 | Nada fijo en el código (plan §3.3) | Un archivo más que validar |
 | B Horarios fijos en la imagen, como hoy en `OnCalendar=` | Simple | Hay que reconstruir la imagen para cambiar una hora |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D17 — Topes
 
@@ -227,7 +228,7 @@ Hoy no hay bloqueo entre corridas, ni tope diario, ni timeout (`TimeoutStartSec=
 | **A ★** Una sola corrida de `claude` a la vez (bloqueo global con `flock`); máximo 8 corridas por día; 60 min por corrida; `budget.max_issues: 3` por corrida (ya existe); pausa global con el archivo `~/.devlead/PAUSE`. Todo configurable | Uso moderado, como piden los términos de la suscripción ("ordinary, individual usage") | Un día con mucho trabajo puede quedar a medias |
 | B Solo los topes actuales (iteraciones y estancamiento) | Sin cambios | Sin límite diario ni de tiempo |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D18 — Log de auditoría
 
@@ -238,7 +239,7 @@ Hoy la salida de `claude` va a journald y la copia temporal se borra al terminar
 | **A ★** Por corrida, una línea JSONL en `~/.devlead/audit/AAAA-MM.jsonl` (id de corrida, disparador, repo, inicio y fin, código de salida, `session_id`, herramientas usadas, archivos cambiados, PRs abiertos, resultado, aviso enviado), más el transcript completo (`--output-format stream-json`) en `audit/runs/<id>.jsonl`, guardado 30 días. Nunca se registran variables de entorno | Responde "qué hizo y por qué" sin reconstruir nada | Ocupa disco; los transcripts pueden contener código del repo |
 | B Solo la línea de resumen | Liviano | Sin detalle para investigar un problema |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D19 — Avisos
 
@@ -247,7 +248,7 @@ Hoy la salida de `claude` va a journald y la copia temporal se borra al terminar
 | **A ★** ntfy, como ya existe. Plan de la mañana y cierre del día con nivel `agenda`; PR abierto, PARK, fallo y token por vencer con nivel `need`. Con el topic protegido por token, el aviso incluye el link del PR (`DEVLEAD_NOTIFY_DETAIL=1`) | Ya está construido y probado en código | Un solo canal |
 | B Agregar Telegram o Slack | Más opciones para otros usuarios | Un segundo backend que mantener |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 #### D20 — Empaquetado
 
@@ -256,7 +257,7 @@ Hoy la salida de `claude` va a journald y la copia temporal se borra al terminar
 | **A ★** `docker compose` construido en local desde este repo (`docker compose up -d --build`), con `.env.example`. Publicar la imagen en GHCR después; el plugin queda opcional y solo para el modo interactivo. El producto no lleva "Claude" ni "Anthropic" en el nombre (términos de Anthropic) | Sin infraestructura nueva en v1 | Cada usuario construye la imagen |
 | B Publicar la imagen en GHCR desde v1 | Instalación más rápida | Agrega publicación y versionado antes de validar |
 
-**Voto:**
+**Voto:** A ★ (2026-11-16, "todas las recomendadas")
 
 ---
 
