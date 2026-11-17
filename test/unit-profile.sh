@@ -403,6 +403,42 @@ contains "the command shows new profile entries whether or not reviews changed" 
 contains "the command never adds to the profile without showing it" "$(cat "$CMD")" "nunca agregues al perfil sin mostrarlo"
 check "the profile section is defined once" "$(grep -c '^### Lo que aprendí de vos' "$CMD")" "1"
 
+echo "=== one writer at a time (S14) ==="
+# A writer holds the profile directory's lock while it reads and changes it.
+flock "$DEVLEAD_PROFILE_DIR" sleep 2 & holder=$!
+sleep 0.3
+t0="$(date +%s%N)"
+out="$(bash "$P" add style tests "Espera al otro proceso antes de escribir el perfil")"
+waited_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+wait "$holder"
+check "add waits while another DevLead process holds the lock" "$([[ $waited_ms -ge 1500 ]] && echo waited || echo "did not wait (${waited_ms}ms)")" "waited"
+check "and then adds it" "$(field "$out" STATUS)" "added"
+lock_id="$(field "$out" ID)"
+mkdir -p "$SANDBOX/stuck"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/stuck/flock"; chmod +x "$SANDBOX/stuck/flock"
+snap() { cat "$DEVLEAD_PROFILE_DIR"/*.tsv | sha256sum; }
+before="$(snap)"
+out="$(PATH="$SANDBOX/stuck:$PATH" bash "$P" remove "$lock_id" 2>&1)"; rc=$?
+check "a lock never released: remove fails" "$rc" "1"
+contains "a lock never released: says so" "$out" "another DevLead process kept $DEVLEAD_PROFILE_DIR locked"
+check "a lock never released: the profile is unchanged" "$(snap)" "$before"
+# Previous behaviour: without flock (not util-linux) it works as before.
+mkdir -p "$SANDBOX/noflock"; cp -s /usr/bin/* "$SANDBOX/noflock/" 2>/dev/null; rm -f "$SANDBOX/noflock/flock"
+out="$(PATH="$SANDBOX/noflock" "$BASH" "$P" remove "$lock_id")"
+check "without flock: remove works as before" "$(field "$out" STATUS) $(awk -F'\t' -v id="$lock_id" '$1 == id {print $4}' "$DEVLEAD_PROFILE_DIR/profile.tsv")" "removed removed"
+
+echo "=== no write through a link planted in the state (A3) ==="
+OUTSIDE="$SANDBOX/outside.txt"; printf 'outside\n' > "$OUTSIDE"
+mv "$DEVLEAD_PROFILE_DIR/profile.tsv" "$SANDBOX/profile.real"; ln -s "$OUTSIDE" "$DEVLEAD_PROFILE_DIR/profile.tsv"
+out="$(bash "$P" add style tests "Una entrada que iria a un link plantado" 2>&1)"; rc=$?
+check "a profile that is a link: add refuses" "$rc" "1"
+contains "a profile that is a link: says why" "$out" "$DEVLEAD_PROFILE_DIR/profile.tsv is a symbolic link"
+out="$(bash "$P" show 2>&1)"; rc=$?
+check "a profile that is a link: show (which touches the files) refuses" "$rc" "1"
+check "a profile that is a link: the target is untouched, the link stays" "$(cat "$OUTSIDE") $(readlink "$DEVLEAD_PROFILE_DIR/profile.tsv")" "outside $OUTSIDE"
+rm -f "$DEVLEAD_PROFILE_DIR/profile.tsv"; mv "$SANDBOX/profile.real" "$DEVLEAD_PROFILE_DIR/profile.tsv"
+out="$(bash "$P" add style tests "Sin links la entrada se agrega como antes")"
+check "without links: add works as before" "$(field "$out" STATUS)" "added"
+
 echo "=== nothing else reads the profile ==="
 for f in .devlead/scripts/open-pr.sh .devlead/scripts/merge.sh .devlead/scripts/envelope.sh \
          .devlead/scripts/forbidden-check.sh .claude/hooks/gate-check.sh .claude/hooks/guard.sh; do

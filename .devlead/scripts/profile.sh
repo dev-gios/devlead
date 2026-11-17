@@ -50,6 +50,11 @@
 #   ~/.devlead/profile/inbox.tsv    <id> TAB <date> TAB <repo path> TAB <new|digested> TAB <text>
 #   ~/.devlead/profile/profile.tsv  <id> TAB <added> TAB <confirmed> TAB <active|removed> TAB <kind> TAB <source> TAB <text>
 #
+# One writer at a time (S14): every command that touches these files holds an
+# exclusive flock on ~/.devlead/profile while it reads and changes them, and
+# waits up to LOCK_WAIT_SECS for another DevLead process to finish. Without
+# flock (not util-linux) it runs unlocked, as before.
+#
 # Environment:
 #   DEVLEAD_PROFILE_DIR             state directory (default ~/.devlead/profile)
 #   DEVLEAD_TRANSCRIPTS_DIR         conversations (default ~/.claude/projects)
@@ -81,6 +86,7 @@ MESSAGE_MIN_CHARS=20       # shorter than this says nothing about style
 ENTRY_MIN_CHARS=10
 ENTRY_MAX_CHARS=200
 INBOX_MAX_ROWS=3000        # pending backlog; the oldest rows fall off
+LOCK_WAIT_SECS=30
 
 for _n in "$MAX_CHARS" "$TTL_DAYS" "$CAPTURE_BYTES"; do
   if ! [[ "$_n" =~ ^[1-9][0-9]{0,11}$ ]]; then
@@ -91,11 +97,43 @@ done
 
 _flat() { printf '%s' "$1" | tr '\t\r\n' '   ' | sed 's/  */ /g; s/^ *//; s/ *$//'; }
 
+# _no_links <path>... — never write through a symbolic link in the state
+# (A3). The DevLead server's sessions write in these directories too (S14):
+# a link one of them planted would send this write — or what a rewrite reads
+# — somewhere else. The command refuses before it changes anything.
+_no_links() {
+  local p
+  for p in "$@"; do
+    if [[ -L "$p" ]]; then
+      echo "profile: $p is a symbolic link — DevLead does not write through links in its state; nothing changed" >&2
+      return 1
+    fi
+  done
+}
+_state_links() { _no_links "$SEEN" "$INBOX" "$PROFILE"; }
+
+# _lock_state — hold the profile directory's lock until this script exits.
+_LOCKED=0
+_lock_state() {
+  [[ $_LOCKED -eq 1 ]] && return 0
+  _state_links || return 1
+  [[ -d "$PROFILE_DIR" ]] || return 0
+  command -v flock >/dev/null 2>&1 || return 0
+  { exec {_LOCK_FD}<"$PROFILE_DIR"; } 2>/dev/null || return 0
+  if ! flock -w "$LOCK_WAIT_SECS" "$_LOCK_FD"; then
+    echo "profile: another DevLead process kept $PROFILE_DIR locked for ${LOCK_WAIT_SECS}s — nothing changed, try again" >&2
+    return 1
+  fi
+  _LOCKED=1
+}
+
 _ensure_state() {
+  _state_links || return 1
   if ! mkdir -p "$PROFILE_DIR" 2>/dev/null; then
     echo "profile: cannot create $PROFILE_DIR" >&2
     return 1
   fi
+  _lock_state || return 1
   touch "$SEEN" "$INBOX" "$PROFILE" 2>/dev/null || { echo "profile: cannot write in $PROFILE_DIR" >&2; return 1; }
 }
 

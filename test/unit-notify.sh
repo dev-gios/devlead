@@ -174,6 +174,67 @@ check "ack: entries are archived, not deleted" "$(wc -l < "$DEVLEAD_NOTIFY_DIR/i
 send bogus some-code "m"
 check "unknown level: nothing recorded" "$(bash "$NOTIFY" list)" "STATUS: empty"
 
+# One writer at a time (S14): the host's /devlead and the DevLead server
+# share the inbox; a writer holds the lock of inbox.tsv itself, the one file
+# both sides see (it is never replaced, so the lock is the same file's).
+INB="$DEVLEAD_NOTIFY_DIR/inbox.tsv"
+: > "$INB"
+flock "$INB" sleep 2 & holder=$!
+sleep 0.3
+t0="$(date +%s%N)"
+send info lock-wait "waits"
+waited_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+check "send waits while another DevLead process holds the inbox lock" "$([[ $waited_ms -ge 1500 ]] && echo waited || echo "did not wait (${waited_ms}ms)")" "waited"
+wait "$holder"
+check "and then writes the entry" "$(cut -f3 "$INB")" "lock-wait"
+inode="$(stat -c %i "$INB")"
+flock "$INB" sleep 2 & holder=$!
+sleep 0.3
+t0="$(date +%s%N)"
+out="$(bash "$NOTIFY" ack)"
+waited_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+wait "$holder"
+check "ack waits while another DevLead process holds the inbox lock" "$([[ $waited_ms -ge 1500 ]] && echo waited || echo "did not wait (${waited_ms}ms)")" "waited"
+contains "and then archives" "$out" "STATUS: acked"
+check "ack truncates in place: same inode" "$(stat -c %i "$INB")" "$inode"
+mkdir -p "$SANDBOX/stuck"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/stuck/flock"; chmod +x "$SANDBOX/stuck/flock"
+out="$(PATH="$SANDBOX/stuck:$FAKEBIN:$PATH" bash "$NOTIFY" send need stuck "never written" 2>&1)"; rc=$?
+check "a lock never released: send still exits 0" "$rc" "0"
+contains "a lock never released: send says it could not write" "$out" "notify: could not write $INB — [need] stuck: never written"
+check "a lock never released: nothing written" "$(wc -c < "$INB" | tr -d ' ')" "0"
+send info pending-one "x"
+out="$(PATH="$SANDBOX/stuck:$PATH" bash "$NOTIFY" ack 2>&1)"; rc=$?
+check "a lock never released: ack fails, keeps the entry" "$rc $(wc -l < "$INB" | tr -d ' ')" "1 1"
+contains "a lock never released: ack says error" "$out" "STATUS: error"
+# Previous behaviour: without flock (not util-linux) send and ack work as before.
+mkdir -p "$SANDBOX/noflock"; cp -s /usr/bin/* "$SANDBOX/noflock/" 2>/dev/null; rm -f "$SANDBOX/noflock/flock"
+PATH="$SANDBOX/noflock" "$BASH" "$NOTIFY" send info no-flock "as before"
+check "without flock: send writes as before" "$(tail -n 1 "$INB" | cut -f2,3,4,6)" "$(printf 'info\tno-flock\tnone\tas before')"
+out="$(PATH="$SANDBOX/noflock" "$BASH" "$NOTIFY" ack)"
+check "without flock: ack works as before" "$out" "$(printf 'STATUS: acked\nCOUNT: 2')"
+
+# No write through a link planted in the state (A3): send and ack refuse,
+# change nothing and push nothing.
+OUTSIDE="$SANDBOX/outside.txt"; printf 'outside\n' > "$OUTSIDE"
+mv "$INB" "$SANDBOX/inbox.real"; ln -s "$OUTSIDE" "$INB"
+: > "$CURL_LOG"
+out="$(PATH="$FAKEBIN:$PATH" bash "$NOTIFY" send need linked "never written" 2>&1)"; rc=$?
+check "an inbox that is a link: send still exits 0" "$rc" "0"
+contains "an inbox that is a link: says why" "$out" "$INB is a symbolic link"
+check "an inbox that is a link: nothing pushed" "$(wc -l < "$CURL_LOG" | tr -d ' ')" "0"
+out="$(bash "$NOTIFY" ack 2>&1)"; rc=$?
+check "an inbox that is a link: ack refuses" "$rc" "1"
+check "an inbox that is a link: the target is untouched, nothing archived from it" \
+  "$(cat "$OUTSIDE") $(grep -c outside "$DEVLEAD_NOTIFY_DIR/inbox.read.tsv")" "outside 0"
+rm -f "$INB"; mv "$SANDBOX/inbox.real" "$INB"
+send info after-links "x"
+mv "$DEVLEAD_NOTIFY_DIR/inbox.read.tsv" "$SANDBOX/archive.real"; ln -s "$OUTSIDE" "$DEVLEAD_NOTIFY_DIR/inbox.read.tsv"
+out="$(bash "$NOTIFY" ack 2>&1)"; rc=$?
+check "an archive that is a link: ack refuses, the inbox keeps its entry" "$rc $(wc -l < "$INB" | tr -d ' ') $(cat "$OUTSIDE")" "1 1 outside"
+rm -f "$DEVLEAD_NOTIFY_DIR/inbox.read.tsv"; mv "$SANDBOX/archive.real" "$DEVLEAD_NOTIFY_DIR/inbox.read.tsv"
+out="$(bash "$NOTIFY" ack)"
+check "without links: ack works as before" "$out" "$(printf 'STATUS: acked\nCOUNT: 1')"
+
 bash "$NOTIFY" 2>/dev/null
 check "no subcommand: exit 1" "$?" "1"
 

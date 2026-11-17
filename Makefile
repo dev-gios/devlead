@@ -39,6 +39,7 @@ test:
 	bash test/unit-runner-config.sh
 	bash test/unit-claude-wrapper.sh
 	bash test/unit-run-job.sh
+	bash test/unit-sync-repos.sh
 	bash test/unit-config-menu.sh
 	bash test/unit-sweep-report.sh
 	bash test/unit-sweep-loop.sh

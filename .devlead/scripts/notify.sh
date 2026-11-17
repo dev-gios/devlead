@@ -35,6 +35,13 @@
 # Inbox format (~/.devlead/inbox.tsv, append-only, one entry per line):
 #   <utc timestamp> TAB <level> TAB <code> TAB <push outcome> TAB <repo> TAB <message>
 #
+# One writer at a time: the host's /devlead and the DevLead server share the
+# inbox (S14). `send` and `ack` hold an exclusive flock on inbox.tsv itself —
+# never replaced, only appended to and truncated in place, so the lock holds
+# on the same file wherever it is mounted — while they write, and wait up to
+# LOCK_WAIT_SECS for another DevLead process to finish. Without flock (not
+# util-linux) they run unlocked, as before.
+#
 # Environment:
 #   DEVLEAD_NOTIFY_DIR   state root holding inbox.tsv, inbox.read.tsv and
 #                        notify.env (default: ~/.devlead). Tests point it at a
@@ -47,6 +54,7 @@ INBOX="$STATE_DIR/inbox.tsv"
 ARCHIVE="$STATE_DIR/inbox.read.tsv"
 CONFIG="$STATE_DIR/notify.env"
 PUSH_TIMEOUT_SECS=10
+LOCK_WAIT_SECS=30
 
 # _flat <text> — one line, no tabs: the inbox is line- and tab-delimited.
 _flat() { printf '%s' "$1" | tr '\t\r\n' '   '; }
@@ -88,10 +96,42 @@ _push() {
   if curl "${args[@]}" "$url" 2>/dev/null; then echo "sent"; else echo "failed"; fi
 }
 
+# _no_links <path>... — never write through a symbolic link in the state
+# (A3). The DevLead server's sessions write in these directories too (S14):
+# a link one of them planted would send this write — or what a rewrite reads
+# — somewhere else. The command refuses before it changes anything.
+_no_links() {
+  local p
+  for p in "$@"; do
+    if [[ -L "$p" ]]; then
+      echo "notify: $p is a symbolic link — DevLead does not write through links in its state; nothing changed" >&2
+      return 1
+    fi
+  done
+}
+
+# _lock_inbox <open mode: < or >> > — hold the inbox's lock until this
+# script exits. `>>` creates the file, as the append that follows would.
+_lock_inbox() {
+  command -v flock >/dev/null 2>&1 || return 0
+  if [[ "$1" == ">>" ]]; then
+    { exec {_LOCK_FD}>>"$INBOX"; } 2>/dev/null || return 0
+  else
+    { exec {_LOCK_FD}<"$INBOX"; } 2>/dev/null || return 0
+  fi
+  flock -w "$LOCK_WAIT_SECS" "$_LOCK_FD" && return 0
+  echo "notify: another DevLead process kept $INBOX locked for ${LOCK_WAIT_SECS}s" >&2
+  return 1
+}
+
 _send() {
   local level="${1:-}" code="${2:-}" message="${3:-}" repo outcome
   if [[ "$level" != "need" && "$level" != "agenda" && "$level" != "info" ]] || [[ -z "$code" ]]; then
     echo "notify: usage: notify.sh send <need|agenda|info> <code> <message>" >&2
+    return 0
+  fi
+  if ! _no_links "$INBOX" "$ARCHIVE"; then
+    echo "notify: nothing written or pushed — [$level] $(_flat "$code"): $(_flat "$message")" >&2
     return 0
   fi
   code="$(_flat "$code")"
@@ -102,7 +142,7 @@ _send() {
   outcome="none"
   [[ "$level" != "info" ]] && outcome="$(_push "$level" "$code" "${repo##*/}" "$message")"
 
-  if ! mkdir -p "$STATE_DIR" 2>/dev/null \
+  if ! mkdir -p "$STATE_DIR" 2>/dev/null || ! _lock_inbox '>>' \
      || ! printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$level" "$code" \
           "$outcome" "$repo" "$message" >> "$INBOX" 2>/dev/null; then
     echo "notify: could not write $INBOX — [$level] $code: $message" >&2
@@ -129,6 +169,13 @@ _list() {
 }
 
 _ack() {
+  _no_links "$INBOX" "$ARCHIVE" || { echo "STATUS: error"; return 1; }
+  if [[ ! -s "$INBOX" ]]; then
+    echo "STATUS: empty"
+    return 0
+  fi
+  _lock_inbox '<' || { echo "STATUS: error"; return 1; }
+  # Another ack may have emptied it while this one waited.
   if [[ ! -s "$INBOX" ]]; then
     echo "STATUS: empty"
     return 0

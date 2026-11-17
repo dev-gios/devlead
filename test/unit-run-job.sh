@@ -53,13 +53,17 @@ PAUSE="$SANDBOX/PAUSE"
 RUNJOB="$SANDBOX/run-job.sh"
 export LEDGER TMPROOT
 mkdir -p "$SCRIPTS" "$SANDBOX/state" "$TMPROOT" "$HOME/.devlead/run" "$CLAUDE_CONFIG_DIR/projects/-home-x"
-: > "$LEDGER"; : > "$SANDBOX/state/job.lock"; : > "$SANDBOX/state/session.lock"
-printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30\n' > "$CONF"
+printf '%s\n' "# DevLead session ledger (root writes this line at container start)" > "$LEDGER"
+: > "$SANDBOX/state/job.lock"; : > "$SANDBOX/state/session.lock"
+HEADER="# DevLead session ledger (root writes this line at container start)"
+printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30\nJOB_TIMEOUT=60m\nJOB_KILL_AFTER=30s\nJOB_LOCK_WAIT=60m\n' > "$CONF"
+# setconf <KEY> <value> — one limit of runner.conf, as root would render it.
+setconf() { sed -i "s|^$1=.*|$1=$2|" "$CONF"; }
 chmod 0644 "$CONF"
 
 cp "$SRC" "$RUNJOB"
 for kv in "RUNNER_CONF=$CONF" "LEDGER=$LEDGER" "JOB_LOCK=$SANDBOX/state/job.lock" "SESSION_LOCK=$SANDBOX/state/session.lock" "PAUSE_FILE=$PAUSE" \
-          "SCRIPTS_DIR=$SCRIPTS" "TMP_ROOT=$TMPROOT" "ORPHAN_PARENT=-1" "CONF_OWNER_UID=$(id -u)"; do
+          "SCRIPTS_DIR=$SCRIPTS" "SYNC_REPOS=$SANDBOX/sync-repos.sh" "TMP_ROOT=$TMPROOT" "ORPHAN_PARENT=-1" "CONF_OWNER_UID=$(id -u)"; do
   key="${kv%%=*}"
   check "run-job.sh has the fixed path $key" "$(grep -c "^$key=" "$RUNJOB")" "1"
   sed -i "s|^$key=.*|$kv|" "$RUNJOB"
@@ -88,6 +92,22 @@ echo "STATUS: ok"
 exit 0
 EOF
 export SANDBOX_LOG="$SANDBOX/jobs.log" SANDBOX_BEHAVIOUR="$SANDBOX/behaviour" SANDBOX_WARN="$SANDBOX/warn"
+# The repo sync (docker/sync-repos.sh, tested on its own in unit-sync-repos.sh):
+# a stub that logs its call and reports every repo synced, or the failure
+# written in $SANDBOX/sync-fail. --all stands for the two enrolled repos.
+cat > "$SANDBOX/sync-repos.sh" <<'EOF'
+#!/usr/bin/env bash
+held=no; flock -n "$SESSION_LOCK" true 2>/dev/null || held=yes
+printf 'SYNC\tARGS=%s\tSESSION_LOCK_HELD=%s\tSTART=%s\n' "$*" "$held" "$(date +%s.%N)" >> "$SANDBOX_LOG"
+echo "stub sync says hello" >&2
+repos=("$@"); [[ "${1:-}" == "--all" ]] && repos=(/work/repo-a /work/repo-b)
+for r in "${repos[@]}"; do
+  if [[ -f "$SANDBOX_SYNC_FAIL" ]]; then printf 'FAILED\t%s\t%s\n' "$r" "$(cat "$SANDBOX_SYNC_FAIL")"; exit 1; fi
+  printf 'SYNCED\t%s\tmain\t%s\n' "$r" "0123456789abcdef0123456789abcdef01234567"
+done
+EOF
+chmod +x "$SANDBOX/sync-repos.sh"
+export SANDBOX_SYNC_FAIL="$SANDBOX/sync-fail" SESSION_LOCK="$SANDBOX/state/session.lock"
 
 # session <sid> [end detail] [rc] — what the wrapper writes for one session of
 # this run; used inside behaviours.
@@ -111,7 +131,9 @@ run() {
   LAST="$(tail -n 1 "$(MONTH_FILE)" 2>/dev/null)"
 }
 field() { jq -c "$1" <<<"$LAST" 2>/dev/null; }
-fresh() { rm -f "$SANDBOX/behaviour" "$SANDBOX/warn" "$PAUSE" "$INBOX" "$(MONTH_FILE)" "$HOME/.devlead/run/token-warned"; : > "$LEDGER"; }
+fresh() { rm -f "$SANDBOX/behaviour" "$SANDBOX/warn" "$SANDBOX_SYNC_FAIL" "$PAUSE" "$INBOX" "$(MONTH_FILE)" "$HOME/.devlead/run/token-warned"; printf '%s\n' "$HEADER" > "$LEDGER"; }
+joblog() { grep -v '^SYNC' "$SANDBOX_LOG"; }
+synclog() { grep '^SYNC' "$SANDBOX_LOG"; }
 need_codes() { if [[ -f "$INBOX" ]]; then awk -F'\t' '$2 == "need" {print $3}' "$INBOX" | paste -sd, -; fi; }
 
 printf '%s\n' "/work/repo-a" "# a comment" "" "/work/repo-b" > "$HOME/.devlead/autonomous-repos"
@@ -162,7 +184,7 @@ check "the transcript count" "$(field .transcripts_kept)" "1"
 contains "the job's output is kept" "$(cat "$HOME/.devlead/audit/runs/$RUN_ID/output.log" 2>/dev/null)" "stub sweep-loop.sh says hello"
 contains "the job's output reaches the container log" "$OUT" "stub sweep-loop.sh says hello"
 contains "the audit line reaches the container log" "$OUT" "devlead-audit {\"run_id\":\"$RUN_ID\""
-log="$(head -n 1 "$SANDBOX_LOG")"
+log="$(joblog | head -n 1)"
 contains "the job runs the table's command" "$log" $'sweep-loop.sh\tARGS=--max-iterations 1 -- --fleet'
 contains "from ~/.devlead" "$log" "CWD=$HOME/.devlead"
 contains "tagged with the run id" "$log" "RUN=$RUN_ID"
@@ -180,7 +202,7 @@ check "nothing in the inbox" "$(need_codes)" ""
 # ===========================================================================
 fresh
 run morning
-check "morning: runs sweep.sh with no arguments" "$(cut -f1,2 "$SANDBOX_LOG" | head -n 1)" $'sweep.sh\tARGS='
+check "morning: runs sweep.sh with no arguments" "$(joblog | cut -f1,2 | head -n 1)" $'sweep.sh\tARGS='
 fresh
 run loop
 check "loop without ~/.devlead/plan.local.yml: exit 0" "$RC" "0"
@@ -189,17 +211,61 @@ check "loop without its plan: audited as skipped" "$(field '[.outcome, .skipped,
 touch "$HOME/.devlead/plan.local.yml"
 fresh
 run loop DEVLEAD_LOOP_REPO=/work/repo-a
-contains "loop with its plan: sweep-loop.sh --plan ~/.devlead/plan.local.yml" "$(head -n 1 "$SANDBOX_LOG")" "ARGS=--plan $HOME/.devlead/plan.local.yml"
+contains "loop with its plan: sweep-loop.sh --plan ~/.devlead/plan.local.yml" "$(joblog | head -n 1)" "ARGS=--plan $HOME/.devlead/plan.local.yml"
 check "loop: repos is DEVLEAD_LOOP_REPO" "$(field .repos)" '["/work/repo-a"]'
 rm -f "$HOME/.devlead/plan.local.yml"
 fresh
 run discover
-contains "discover: discover-fleet.sh" "$(head -n 1 "$SANDBOX_LOG")" $'discover-fleet.sh\tARGS='
+contains "discover: discover-fleet.sh" "$(joblog | head -n 1)" $'discover-fleet.sh\tARGS='
 fresh
 run nosuchjob
 check "an unknown job: exit 2" "$RC" "2"
 contains "an unknown job: usage" "$OUT" "usage: run-job.sh"
 check "an unknown job: no audit line" "$([[ -s "$(MONTH_FILE)" ]] && echo written || echo none)" "none"
+
+# ===========================================================================
+# The clones are synced from origin before the job, never during a session
+# (S13)
+# ===========================================================================
+fresh
+run fleet
+check "fleet: every enrolled repo is synced (--all)" "$(synclog | cut -f2)" "ARGS=--all"
+check "fleet: the sync holds the session lock" "$(synclog | cut -f3)" "SESSION_LOCK_HELD=yes"
+check "fleet: the sync runs before the job" "$(head -n 1 "$SANDBOX_LOG" | cut -f1)" "SYNC"
+check "fleet: the synced clones are audited" "$(field '[.synced[] | [.repo, .branch]]')" '[["/work/repo-a","main"],["/work/repo-b","main"]]'
+check "fleet: no sync error" "$(field .sync_error)" "null"
+contains "the sync's messages reach the run's log" "$(cat "$HOME/.devlead/audit/runs/$(jq -r .run_id <<<"$LAST")/output.log")" "stub sync says hello"
+lacks "the sync's report lines stay out of the log" "$OUT" $'SYNCED\t'
+for j in morning discover; do
+  fresh; run "$j"
+  check "$j: every enrolled repo is synced" "$(synclog | cut -f2)" "ARGS=--all"
+done
+touch "$HOME/.devlead/plan.local.yml"
+fresh; run loop DEVLEAD_LOOP_REPO=/work/repo-a
+check "loop: only DEVLEAD_LOOP_REPO is synced" "$(synclog | cut -f2)" "ARGS=/work/repo-a"
+fresh; run loop
+check "loop without DEVLEAD_LOOP_REPO: nothing to sync" "$(synclog | wc -l | tr -d ' ')" "0"
+contains "loop without DEVLEAD_LOOP_REPO: the job still runs (as in F2)" "$(joblog | head -n 1)" "sweep-loop.sh"
+rm -f "$HOME/.devlead/plan.local.yml"
+
+fresh
+echo "fetch failed" > "$SANDBOX_SYNC_FAIL"
+run fleet
+check "sync failed: run-job exits 1" "$RC" "1"
+check "sync failed: the job does not run" "$(joblog | wc -l | tr -d ' ')" "0"
+check "sync failed: audited" "$(field '[.outcome, .exit_code, .sync_error, .notify_codes]')" '["failed",1,"/work/repo-a: fetch failed",["job-failed"]]'
+check "sync failed: need job-failed, with the reason and no path" "$(cut -f6 "$INBOX")" \
+  "fleet: not run — its repos could not be synced from origin: fetch failed (run $(jq -r .run_id <<<"$LAST"))"
+
+fresh
+flock -o "$SANDBOX/state/session.lock" sleep 5 & holder=$!
+sleep 0.3
+run fleet
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+check "a session running by hand: no sync" "$(synclog | wc -l | tr -d ' ')" "0"
+check "a session running by hand: the job does not run" "$(joblog | wc -l | tr -d ' ')" "0"
+check "a session running by hand: audited, job-failed" "$(field '[.outcome, .sync_error, .notify_codes]')" \
+  '["failed","a claude session is running in the container",["job-failed"]]'
 
 # ===========================================================================
 # Failures send one `need` each (S19)
@@ -218,6 +284,7 @@ run fleet
 check "timeout: outcome timeout, flagged, notified" "$(field '[.outcome, .timed_out, .notify_codes]')" '["timeout",true,["job-timeout"]]'
 check "timeout: run-job exits 1 even though the job exited 0" "$RC" "1"
 check "timeout: the session is marked" "$(field '.sessions[0].timed_out')" "true"
+check "timeout: a session's limit, not the job's (as in F2)" "$(field '[.job_timed_out, .lock_timed_out]')" "[false,false]"
 contains "timeout: the message names the limit" "$(cut -f6 "$INBOX")" "fleet: a claude session ran past the 60m limit and was stopped"
 
 fresh
@@ -244,6 +311,82 @@ behaviour <<<'kill -9 $$'
 run fleet
 check "a crash (killed by a signal) is a failure" "$(field '[.outcome, .exit_code]')" '["failed",137]'
 check "a crash sends job-failed" "$(need_codes)" "job-failed"
+
+fresh
+behaviour <<<'refused nolock'
+run fleet
+contains "nolock refusal: the message says the lock could not be opened" "$(cut -f6 "$INBOX")" "the session lock could not be opened"
+check "nolock refusal: recorded as such, job-refused" "$(field '[.refusals, .notify_codes]')" '[["nolock"],["job-refused"]]'
+
+# ===========================================================================
+# A job holds the job lock for JOB_TIMEOUT at most; a job waits for the lock
+# for JOB_LOCK_WAIT at most (L18)
+# ===========================================================================
+fresh
+setconf JOB_TIMEOUT 2s; setconf JOB_KILL_AFTER 1s
+behaviour <<<'( exec -a "sleep-$TAG-hung" sleep 30 ) & wait'
+t0="$(date +%s)"
+run fleet
+elapsed=$(( $(date +%s) - t0 ))
+check "a hung job is stopped at the job limit" "$([[ $elapsed -lt 10 ]] && echo stopped || echo "ran ${elapsed}s")" "stopped"
+check "a hung job: run-job exits with timeout's 124" "$RC" "124"
+check "a hung job: audited as a job timeout" "$(field '[.outcome, .job_timed_out, .timed_out, .notify_codes]')" '["timeout",true,false,["job-timeout"]]'
+check "a hung job: need job-timeout names the limit" "$(cut -f6 "$INBOX")" "fleet: ran past the 2s job limit and was stopped (run $(jq -r .run_id <<<"$LAST"))"
+check "a hung job: nothing of it survives" "$(pgrep -fc "sleep-$TAG-hung" || true)" "0"
+fresh
+behaviour <<<'trap "" TERM; ( exec -a "sleep-$TAG-stubborn" sleep 30 ) & while :; do sleep 0.2; done'
+t0="$(date +%s)"
+run fleet
+elapsed=$(( $(date +%s) - t0 ))
+check "a job that ignores TERM is killed after JOB_KILL_AFTER" "$([[ $elapsed -lt 10 ]] && echo killed || echo "ran ${elapsed}s")" "killed"
+check "a job that ignores TERM: a job timeout" "$(field '[.outcome, .job_timed_out]')" '["timeout",true]'
+fresh
+printf '#!/bin/sh\nexec sleep 30\n' > "$SANDBOX/sync-hang.sh"; chmod +x "$SANDBOX/sync-hang.sh"
+cp "$SANDBOX/sync-repos.sh" "$SANDBOX/sync-repos.keep"; cp "$SANDBOX/sync-hang.sh" "$SANDBOX/sync-repos.sh"
+t0="$(date +%s)"
+run fleet
+elapsed=$(( $(date +%s) - t0 ))
+cp "$SANDBOX/sync-repos.keep" "$SANDBOX/sync-repos.sh"
+check "a hung sync is stopped at the job limit" "$([[ $elapsed -lt 10 ]] && echo stopped || echo "ran ${elapsed}s")" "stopped"
+check "a hung sync: the job does not run" "$(joblog | wc -l | tr -d ' ')" "0"
+check "a hung sync: a job timeout, with the reason" "$(field '[.outcome, .job_timed_out, .sync_error, .notify_codes]')" \
+  '["timeout",true,"the sync ran past the job'"'"'s time limit",["job-timeout"]]'
+setconf JOB_TIMEOUT 60m; setconf JOB_KILL_AFTER 30s
+
+fresh
+setconf JOB_LOCK_WAIT 1s
+flock -o "$SANDBOX/state/job.lock" sleep 5 & holder=$!
+sleep 0.3
+t0="$(date +%s)"
+run fleet
+elapsed=$(( $(date +%s) - t0 ))
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+check "a job lock held past JOB_LOCK_WAIT: run-job gives up" "$([[ $elapsed -lt 4 ]] && echo "gave up" || echo "waited ${elapsed}s")" "gave up"
+check "a job lock held past JOB_LOCK_WAIT: exit 1" "$RC" "1"
+check "a job lock held past JOB_LOCK_WAIT: nothing ran, nothing synced" "$(wc -l < "$SANDBOX_LOG" | tr -d ' ')" "0"
+check "a job lock held past JOB_LOCK_WAIT: audited" "$(field '[.outcome, .lock_timed_out, .job_timed_out, .notify_codes]')" '["timeout",true,false,["job-timeout"]]'
+check "a job lock held past JOB_LOCK_WAIT: need job-timeout says why" "$(cut -f6 "$INBOX")" \
+  "fleet: not run — another job held the job lock for more than 1s (run $(jq -r .run_id <<<"$LAST"))"
+setconf JOB_LOCK_WAIT 60m
+
+# ===========================================================================
+# A ledger emptied before the run: today's count is unknown, nothing runs
+# (R3-empty-ledger-tamper)
+# ===========================================================================
+fresh
+: > "$LEDGER"
+run fleet
+check "an emptied ledger: run-job exits 1" "$RC" "1"
+check "an emptied ledger: nothing ran, nothing synced" "$(wc -l < "$SANDBOX_LOG" | tr -d ' ')" "0"
+check "an emptied ledger: audited as tampered" "$(field '[.outcome, .audit_intact, .notify_codes]')" '["failed",false,["audit-tampered"]]'
+contains "an emptied ledger: need audit-tampered says why" "$(cut -f6 "$INBOX")" "the session ledger was emptied since the container started"
+fresh
+printf '%s\t2026-01-01T00:00:00Z\tstart\tx\t-\t-\t-\n' "$(date +%F)" > "$LEDGER"
+run fleet
+check "a ledger without root's header: refused the same way" "$(field '[.outcome, .audit_intact]')" '["failed",false]'
+fresh
+run fleet
+check "a ledger with its header: runs as before" "$(field '[.outcome, .audit_intact]')" '["ok",true]'
 
 # ===========================================================================
 # Never as root: `unshare -r` makes the caller UID 0 in a user namespace.
@@ -318,10 +461,12 @@ check "a run with leftovers still ends ok" "$(field .outcome)" '"ok"'
 # /tmp files: while the session lock is held, only the job's own TMPDIR goes.
 fresh
 behaviour <<<'mkdir -p "$TMPROOT/made-during-a-session"'
-flock "$SANDBOX/state/session.lock" sleep 6 &
+flock -o "$SANDBOX/state/session.lock" sleep 6 &   # -o: killing flock frees the lock
 holder=$!
 sleep 0.3
-run fleet
+touch "$HOME/.devlead/plan.local.yml"
+run loop
+rm -f "$HOME/.devlead/plan.local.yml"
 check "a session running elsewhere: what appeared in the tmp root stays" \
   "$([[ -d "$TMPROOT/made-during-a-session" ]] && echo kept || echo removed)" "kept"
 check "a session running elsewhere: the job's TMPDIR still goes" \

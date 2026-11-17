@@ -347,6 +347,55 @@ for _f in .devlead/scripts/open-pr.sh .devlead/scripts/merge.sh .devlead/scripts
     "$(grep -c -E 'learn\.sh|/learn/|DEVLEAD_LEARN_DIR|prefs\.tsv' "$REPO_ROOT/$_f")" "0"
 done
 
+# ---------------------------------------------------------------------------
+# One writer at a time (S14): the host's /devlead and the DevLead server share
+# this state; a writer holds the state directory's lock.
+# ---------------------------------------------------------------------------
+LDIR="$DEVLEAD_LEARN_DIR/$KEY"
+flock "$LDIR" sleep 2 & holder=$!
+sleep 0.3
+t0="$(date +%s%N)"
+out="$(learn pref-add "user" "Lock test: wait for the other writer")"
+waited_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+wait "$holder"
+check "pref-add waits while another DevLead process holds the lock" "$([[ $waited_ms -ge 1500 ]] && echo waited || echo "did not wait (${waited_ms}ms)")" "waited"
+contains "and then adds it" "$out" "STATUS: added"
+lock_id="$(sed -n 's/^ID: //p' <<<"$out")"
+mkdir -p "$SANDBOX/stuck"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/stuck/flock"; chmod +x "$SANDBOX/stuck/flock"
+cp "$PREFS" "$SANDBOX/prefs.before"
+for cmd in "pref-add user Another-one" "pref-remove $lock_id" "pref-shown"; do
+  # shellcheck disable=SC2086 # the words of $cmd are the arguments
+  out="$(PATH="$SANDBOX/stuck:$FAKEBIN:$PATH" bash "$LEARN" $cmd 2>&1)"; rc=$?
+  check "a lock never released: ${cmd%% *} fails" "$rc" "1"
+  contains "a lock never released: ${cmd%% *} says so" "$out" "another DevLead process kept $LDIR locked"
+done
+check "a lock never released: the preferences are unchanged" "$(cmp -s "$SANDBOX/prefs.before" "$PREFS" && echo same || echo changed)" "same"
+# Previous behaviour: without flock (not util-linux) it works as before.
+mkdir -p "$SANDBOX/noflock"; cp -s /usr/bin/* "$SANDBOX/noflock/" 2>/dev/null; rm -f "$SANDBOX/noflock/flock"
+out="$(PATH="$SANDBOX/noflock" "$BASH" "$LEARN" pref-remove "$lock_id")"
+check "without flock: pref-remove works as before" "$out $(awk -F'\t' -v id="$lock_id" '$1 == id {print $3}' "$PREFS")" \
+  "$(printf 'STATUS: removed\nID: %s removed' "$lock_id")"
+
+# No write through a link planted in the state (A3): the server's sessions can
+# write in this directory (S14); the command refuses and changes nothing.
+OUTSIDE="$SANDBOX/outside.txt"; printf 'outside\n' > "$OUTSIDE"
+mv "$PREFS" "$SANDBOX/prefs.real"; ln -s "$OUTSIDE" "$PREFS"
+for cmd in "pref-add user Linked" "pref-shown"; do
+  # shellcheck disable=SC2086 # the words of $cmd are the arguments
+  out="$(PATH="$FAKEBIN:$PATH" bash "$LEARN" $cmd 2>&1)"; rc=$?
+  check "preferences that are a link: ${cmd%% *} refuses" "$rc" "1"
+  contains "preferences that are a link: ${cmd%% *} says why" "$out" "$PREFS is a symbolic link"
+done
+check "preferences that are a link: the target is untouched, the link stays" "$(cat "$OUTSIDE") $(readlink "$PREFS")" "outside $OUTSIDE"
+rm -f "$PREFS"; mv "$SANDBOX/prefs.real" "$PREFS"
+mv "$LDIR" "$SANDBOX/ldir.real"; mkdir -p "$SANDBOX/linked"; ln -s "$SANDBOX/linked" "$LDIR"
+out="$(learn pref-add user "Into a linked directory" 2>&1)"; rc=$?
+check "the repository's state directory as a link: pref-add refuses" "$rc" "1"
+check "the state directory as a link: nothing written where it points" "$(ls -A "$SANDBOX/linked" | wc -l | tr -d ' ')" "0"
+rm -f "$LDIR"; mv "$SANDBOX/ldir.real" "$LDIR"
+out="$(learn pref-add user "No links here")"
+contains "without links: pref-add works as before" "$out" "STATUS: added"
+
 # ===========================================================================
 # wiring — the commands read preferences; unattended ones never write them
 # ===========================================================================

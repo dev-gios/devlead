@@ -96,7 +96,7 @@ COPY .devlead/bin/devlead /opt/devlead/bin/devlead
 COPY .claude/hooks/ /opt/devlead/hooks/
 COPY .claude/commands/ /opt/devlead/commands/
 COPY docker/entrypoint.sh docker/init-firewall.sh docker/claude-wrapper.sh \
-     docker/runner-config.sh docker/run-job.sh /opt/devlead/docker/
+     docker/runner-config.sh docker/run-job.sh docker/sync-repos.sh /opt/devlead/docker/
 # Hooks, deny rules and the bypass lock (S9): Claude Code's highest-precedence
 # settings, readable by the session (a file it cannot read is ignored) and
 # writable by root only.
@@ -111,11 +111,15 @@ COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
 #                           guard.sh on whatever the environment says.
 #                           gitconfig: git's only config file besides each
 #                           repo's own (GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM).
+#                           It includes git-identity, the commits' author,
+#                           written at start from DEVLEAD_GIT_NAME and
+#                           DEVLEAD_GIT_EMAIL.
 #                           install-stamp: the source revision and the SHA-256
 #                           of every installed file (doctor.sh checks it).
-#                           crontab and runner.conf: the schedule and the
-#                           session limits, written by the entrypoint at start
-#                           from the env file (docker/runner-config.sh)
+#                           crontab, runner.conf and repos: the schedule, the
+#                           session limits and the enrolled repos, written by
+#                           the entrypoint at start from the env file
+#                           (docker/runner-config.sh)
 #   /var/lib/devlead        root:root 0755, made by the entrypoint: the
 #                           session ledger (the user's, so the claude wrapper
 #                           can record sessions, but it cannot be removed or
@@ -149,14 +153,26 @@ COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
 #                           are the user's; notify.env is written at start.
 #                           audit/ holds the run log (S18). Only root can
 #                           create or remove ~/.devlead/PAUSE, the global
-#                           pause (S17).
-#                           F3 (S14) mounts the host's state over them.
+#                           pause (S17), or autonomous-repos, the fleet list
+#                           the entrypoint writes from DEVLEAD_REPOS (S13).
+#                           compose mounts the host's state over them (S14):
+#                           agenda, audit, decisions, journals, learn
+#                           (read-only), outcomes, reports, run-state and the
+#                           two inbox files. profile/ and run/ stay the
+#                           container's; nothing else of the host's ~/.devlead
+#                           (gh-token, notify.env, loop.env) is mounted.
+#   DEVLEAD_WORKSPACE       the clones volume (S13), at the host path that
+#                           holds the enrolled repos: each clone sits at its
+#                           repo's host path. Root owns it and every directory
+#                           above a clone; docker/sync-repos.sh resets each
+#                           clone to origin's default branch before a job
 RUN set -eux; \
     install -d -m 0755 -o root -g root /etc/devlead; \
     printf '%s\n' 'DevLead server image: guard.sh is always on (see .claude/hooks/guard.sh).' \
       > /etc/devlead/server-mode; \
     git config --file /etc/devlead/gitconfig credential.https://github.com.helper ''; \
     git config --file /etc/devlead/gitconfig --add credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'; \
+    git config --file /etc/devlead/gitconfig include.path /etc/devlead/git-identity; \
     chown -R root:root /opt/devlead /etc/claude-code /etc/devlead; \
     real_claude=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe; \
     [ "$(readlink -f /usr/local/bin/claude)" = "$real_claude" ]; \

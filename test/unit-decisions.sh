@@ -139,6 +139,60 @@ for f in arranquemos.md devlead.md sweep-execute.md; do
   check "$f has balanced code fences" "$(( $(grep -c '^[[:space:]]*```' "$CMDS/$f") % 2 ))" "0"
 done
 
+echo "=== one writer at a time (S14) ==="
+# The host's /devlead and the DevLead server write this log; a writer holds
+# the state directory's lock while it reads and rewrites the file.
+DIR="$DEVLEAD_DECISIONS_DIR/$(printf '%s' "$(cd "$A" && git rev-parse --show-toplevel)" | sha256sum | cut -c1-20)"
+rows_before="$(wc -l < "$DIR/log.tsv")"
+flock "$DIR" sleep 2 & holder=$!
+sleep 0.3
+t0="$(date +%s%N)"
+out="$(a record "lock" "espero al otro" "otro proceso de DevLead tiene el lock")"
+waited_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+wait "$holder"
+check "record waits while another DevLead process holds the lock" "$([[ $waited_ms -ge 1500 ]] && echo waited || echo "did not wait (${waited_ms}ms)")" "waited"
+check "and then records" "$(field "$out" STATUS) $(wc -l < "$DIR/log.tsv")" "recorded $((rows_before + 1))"
+# A lock that is never released: the write gives up and changes nothing.
+mkdir -p "$SANDBOX/stuck"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/stuck/flock"; chmod +x "$SANDBOX/stuck/flock"
+cp "$DIR/log.tsv" "$SANDBOX/log.before"
+out="$(cd "$A" && PATH="$SANDBOX/stuck:$PATH" bash "$D" record "lock" "nunca" "el lock no se libera" 2>&1)"; rc=$?
+check "a lock never released: record fails" "$rc" "1"
+contains "a lock never released: says so" "$out" "another DevLead process kept $DIR locked"
+check "a lock never released: the log is unchanged" "$(cmp -s "$SANDBOX/log.before" "$DIR/log.tsv" && echo same || echo changed)" "same"
+# Previous behaviour: without flock (not util-linux) it records as before.
+mkdir -p "$SANDBOX/noflock"; cp -s /usr/bin/* "$SANDBOX/noflock/" 2>/dev/null; rm -f "$SANDBOX/noflock/flock"
+out="$(cd "$A" && PATH="$SANDBOX/noflock" "$BASH" "$D" record "sin flock" "registro igual" "flock no está instalado")"
+check "without flock: records as before" "$(field "$out" STATUS) $(tail -n 1 "$DIR/log.tsv" | cut -f3-8)" \
+  "$(printf 'recorded new\tsin flock\tregistro igual\tflock no está instalado\t\t-')"
+
+echo "=== no write through a link planted in the state (A3) ==="
+# The server's sessions can write in these directories (S14). A link one of
+# them plants must never send a host write, or what a rewrite reads, anywhere
+# else: the command refuses and changes nothing.
+OUTSIDE="$SANDBOX/outside.txt"; printf 'outside\n' > "$OUTSIDE"
+mv "$DIR/log.tsv" "$SANDBOX/log.real"; ln -s "$OUTSIDE" "$DIR/log.tsv"
+out="$(a record "t" "w" "y" 2>&1)"; rc=$?
+check "a log that is a link: record refuses" "$rc" "1"
+contains "a log that is a link: says why" "$out" "$DIR/log.tsv is a symbolic link"
+out="$(a shown 2>&1)"; rc=$?
+check "a log that is a link: shown refuses" "$rc" "1"
+check "a log that is a link: the target is untouched" "$(cat "$OUTSIDE")" "outside"
+check "a log that is a link: still the planted link (no copy of the target)" "$(readlink "$DIR/log.tsv")" "$OUTSIDE"
+rm "$DIR/log.tsv"; mv "$SANDBOX/log.real" "$DIR/log.tsv"
+mv "$DIR/repo" "$SANDBOX/repo.real"; ln -s "$SANDBOX/made-outside" "$DIR/repo"
+out="$(a record "t" "w" "y" 2>&1)"; rc=$?
+check "a dangling link as the repo file: refused, nothing created outside" "$rc $([[ -e "$SANDBOX/made-outside" ]] && echo created || echo none)" "1 none"
+rm "$DIR/repo"; mv "$SANDBOX/repo.real" "$DIR/repo"
+mv "$DIR" "$SANDBOX/dir.real"; mkdir -p "$SANDBOX/elsewhere"; ln -s "$SANDBOX/elsewhere" "$DIR"
+out="$(a record "t" "w" "y" 2>&1)"; rc=$?
+check "the repository's state directory as a link: refused" "$rc" "1"
+contains "the state directory as a link: says why" "$out" "$DIR is a symbolic link"
+check "the state directory as a link: nothing written where it points" "$(ls -A "$SANDBOX/elsewhere" | wc -l | tr -d ' ')" "0"
+rm "$DIR"; mv "$SANDBOX/dir.real" "$DIR"
+rows_before="$(wc -l < "$DIR/log.tsv")"
+out="$(a record "sin links" "registro igual" "no hay links")"
+check "without links: records as before" "$(field "$out" STATUS) $(wc -l < "$DIR/log.tsv")" "recorded $((rows_before + 1))"
+
 echo "=== it is only a record ==="
 for f in .devlead/scripts/open-pr.sh .devlead/scripts/merge.sh .devlead/scripts/envelope.sh \
          .devlead/scripts/forbidden-check.sh .claude/hooks/gate-check.sh .claude/hooks/guard.sh; do

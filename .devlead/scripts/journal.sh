@@ -33,6 +33,20 @@ _key="${_root//\//_}"
 CURRENT="$JOURNAL_DIR/${_key}.md"
 HISTORY="$JOURNAL_DIR/${_key}.history.md"
 
+# _no_links <path>... — never write through a symbolic link in the state
+# (A3). The DevLead server's sessions write in these directories too (S14):
+# a link one of them planted would send this write — or what a rewrite reads
+# — somewhere else. The command refuses before it changes anything.
+_no_links() {
+  local p
+  for p in "$@"; do
+    if [[ -L "$p" ]]; then
+      echo "journal: $p is a symbolic link — DevLead does not write through links in its state; nothing saved" >&2
+      return 1
+    fi
+  done
+}
+
 _save() {
   local entry tmp
   entry="$(cat)"
@@ -40,6 +54,7 @@ _save() {
     echo "journal: empty entry on stdin — nothing saved" >&2
     return 1
   fi
+  _no_links "$CURRENT" "$HISTORY" || return 1
   if ! mkdir -p "$JOURNAL_DIR" 2>/dev/null; then
     echo "journal: cannot create $JOURNAL_DIR" >&2
     return 1

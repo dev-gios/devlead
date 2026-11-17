@@ -35,7 +35,8 @@ lacks() {
 # shell gets no vote.
 SETTINGS=(TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER
           DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT DEVLEAD_AUDIT_RETENTION_DAYS
-          DEVLEAD_CLAUDE_BIN)
+          DEVLEAD_CLAUDE_BIN DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_STATE_DIR
+          DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL DEVLEAD_JOB_TIMEOUT DEVLEAD_JOB_LOCK_WAIT)
 UNSET=()
 for _v in "${SETTINGS[@]}"; do UNSET+=(-u "$_v"); done
 
@@ -71,8 +72,10 @@ contains "default discover: Monday 05:00" "$crontab" "0 5 * * 1 $RUN_JOB discove
 contains "transcripts are pruned daily" "$crontab" "$RUN_JOB --prune"
 check "the crontab has exactly five schedule lines" "$(grep -cv '^#' <<<"$crontab")" "5"
 check "default limits" "$(grep -v '^#' <<<"$conf")" \
-  "$(printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30')"
-check "both files are 0644" "$(stat -c %a "$OUT/crontab" "$OUT/runner.conf" | paste -sd' ' -)" "644 644"
+  "$(printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30\nJOB_TIMEOUT=4h\nJOB_KILL_AFTER=30s\nJOB_LOCK_WAIT=4h\nWORKSPACE=')"
+check "default: no repo enrolled" "$(grep -cv '^#' "$OUT/repos")" "0"
+check "default: no git identity" "$(git config --file "$OUT/git-identity" --list | wc -l | tr -d ' ')" "0"
+check "the four files are 0644" "$(stat -c %a "$OUT/crontab" "$OUT/runner.conf" "$OUT/repos" "$OUT/git-identity" | paste -sd' ' -)" "644 644 644 644"
 check "no temporary file is left behind" "$(find "$OUT" -name '*.new*' | wc -l)" "0"
 
 # ===========================================================================
@@ -93,6 +96,10 @@ contains "TZ is recorded" "$conf" "TZ=America/Bogota"
 contains "the daily cap is recorded" "$conf" "MAX_SESSIONS_PER_DAY=3"
 contains "the timeout is recorded" "$conf" "SESSION_TIMEOUT=90s"
 contains "the retention is recorded" "$conf" "AUDIT_RETENTION_DAYS=7"
+OUT="$SANDBOX/job-limits"
+render "$OUT" DEVLEAD_SESSION_TIMEOUT=20m DEVLEAD_JOB_TIMEOUT=20m DEVLEAD_JOB_LOCK_WAIT=45s >/dev/null; rc=$?
+check "job limits: render exits 0" "$rc" "0"
+check "job limits: recorded" "$(grep -E '^JOB_(TIMEOUT|LOCK_WAIT)=' "$OUT/runner.conf" | paste -sd, -)" "JOB_TIMEOUT=20m,JOB_LOCK_WAIT=45s"
 OUT="$SANDBOX/empty"
 render "$OUT" DEVLEAD_CRON_LOOP= TZ= >/dev/null
 contains "an empty value means the default" "$(cat "$OUT/crontab")" "0 22 * * * $RUN_JOB loop"
@@ -122,6 +129,8 @@ bad() { # bad <label> <expected message> VAR=value...
   contains "$label: says why" "$out" "$msg"
   check "$label: writes no crontab" "$([[ -e $OUT/crontab ]] && echo written || echo none)" "none"
   check "$label: writes no runner.conf" "$([[ -e $OUT/runner.conf ]] && echo written || echo none)" "none"
+  check "$label: writes no repos" "$([[ -e $OUT/repos ]] && echo written || echo none)" "none"
+  check "$label: writes no git identity" "$([[ -e $OUT/git-identity ]] && echo written || echo none)" "none"
 }
 bad "bad loop schedule" "DEVLEAD_CRON_LOOP='61 22 * * *' is not a valid schedule" 'DEVLEAD_CRON_LOOP=61 22 * * *'
 bad "bad fleet schedule" "DEVLEAD_CRON_FLEET='@daily' is not a valid schedule" 'DEVLEAD_CRON_FLEET=@daily'
@@ -133,6 +142,14 @@ bad "timeout without a unit" "DEVLEAD_SESSION_TIMEOUT='60' needs a unit" DEVLEAD
 bad "timeout zero" "DEVLEAD_SESSION_TIMEOUT='0m' needs a unit" DEVLEAD_SESSION_TIMEOUT=0m
 bad "timeout over a day" "DEVLEAD_SESSION_TIMEOUT='25h' needs a unit" DEVLEAD_SESSION_TIMEOUT=25h
 bad "retention zero" "DEVLEAD_AUDIT_RETENTION_DAYS='0' must be a whole number from 1 to 3650" DEVLEAD_AUDIT_RETENTION_DAYS=0
+bad "job timeout without a unit" "DEVLEAD_JOB_TIMEOUT needs a unit and a value up to 24h" DEVLEAD_JOB_TIMEOUT=240
+nothing_echoed() { lacks "$1: the value is not echoed" "$out" "$2"; }
+bad "job timeout over a day" "DEVLEAD_JOB_TIMEOUT needs a unit" DEVLEAD_JOB_TIMEOUT=25h
+bad "job timeout below the session's" "DEVLEAD_JOB_TIMEOUT is shorter than DEVLEAD_SESSION_TIMEOUT" DEVLEAD_JOB_TIMEOUT=30m
+bad "job timeout below a custom session timeout" "DEVLEAD_JOB_TIMEOUT is shorter than DEVLEAD_SESSION_TIMEOUT" DEVLEAD_SESSION_TIMEOUT=2h DEVLEAD_JOB_TIMEOUT=90m
+bad "lock wait zero" "DEVLEAD_JOB_LOCK_WAIT needs a unit and a value from 1s to 24h" DEVLEAD_JOB_LOCK_WAIT=0s
+bad "lock wait not a duration" "DEVLEAD_JOB_LOCK_WAIT needs a unit" DEVLEAD_JOB_LOCK_WAIT=forever
+nothing_echoed "lock wait not a duration" "forever"
 bad "claude binary other than the wrapper (F1 follow-up b)" \
   "DEVLEAD_CLAUDE_BIN='/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe' is not the claude wrapper" \
   DEVLEAD_CLAUDE_BIN=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
@@ -149,6 +166,8 @@ bad "tab in the daily cap" "DEVLEAD_MAX_SESSIONS_PER_DAY $CTRL" $'DEVLEAD_MAX_SE
 bad "carriage return in the timeout" "DEVLEAD_SESSION_TIMEOUT $CTRL" $'DEVLEAD_SESSION_TIMEOUT=60m\r'
 bad "newline in the retention" "DEVLEAD_AUDIT_RETENTION_DAYS $CTRL" $'DEVLEAD_AUDIT_RETENTION_DAYS=30\n'
 bad "newline in DEVLEAD_CLAUDE_BIN" "DEVLEAD_CLAUDE_BIN $CTRL" $'DEVLEAD_CLAUDE_BIN=claude\nx'
+bad "newline in the job timeout" "DEVLEAD_JOB_TIMEOUT $CTRL" $'DEVLEAD_JOB_TIMEOUT=4h\n'
+bad "newline in the lock wait" "DEVLEAD_JOB_LOCK_WAIT $CTRL" $'DEVLEAD_JOB_LOCK_WAIT=4h\r'
 check "check-cron: a newline makes it invalid" "$(cron_ok $'0 22 * * *\n* * * * * id')" "invalid"
 check "check-cron: a carriage return makes it invalid" "$(cron_ok $'0 22 * * *\r')" "invalid"
 
@@ -156,6 +175,92 @@ OUT="$SANDBOX/many"
 out="$(render "$OUT" 'DEVLEAD_CRON_LOOP=61 22 * * *' TZ=Nowhere/City)"
 contains "several errors: all of them are named (loop)" "$out" "DEVLEAD_CRON_LOOP"
 contains "several errors: all of them are named (TZ)" "$out" "TZ='Nowhere/City'"
+
+# ===========================================================================
+# Enrolled repos (S13): each clone at its host path, inside the workspace
+# ===========================================================================
+WS=/home/me/Work
+OUT="$SANDBOX/repos"
+ID=(DEVLEAD_GIT_NAME=Dev\ Lead DEVLEAD_GIT_EMAIL=devlead@example.com)
+out="$(render "$OUT" DEVLEAD_WORKSPACE="$WS/" "DEVLEAD_REPOS= $WS/app=acme/app , $WS/clients/x/site=Acme-Co/site.git,," \
+  DEVLEAD_LOOP_REPO="$WS/app" "${ID[@]}")"; rc=$?
+check "repos: render exits 0" "$rc" "0"
+check "repos: one line per repo, host path TAB owner/repo (.git dropped)" "$(grep -v '^#' "$OUT/repos")" \
+  "$(printf '%s\tacme/app\n%s\tAcme-Co/site' "$WS/app" "$WS/clients/x/site")"
+contains "repos: the workspace is recorded, without the trailing slash" "$(cat "$OUT/runner.conf")" "WORKSPACE=$WS"
+contains "repos: says how many" "$out" "2 enrolled repo(s) written to $OUT/repos"
+OUT="$SANDBOX/repos-none"
+render "$OUT" DEVLEAD_WORKSPACE="$WS" >/dev/null; rc=$?
+check "a workspace with no repo: accepted, an empty list" "$rc $(grep -cv '^#' "$OUT/repos")" "0 0"
+
+nothing_echoed() { # nothing_echoed <label> <value that must not appear>
+  lacks "$1: the value is not echoed" "$out" "$2"
+}
+bad "a repo without a workspace" "DEVLEAD_REPOS entry 1: DEVLEAD_WORKSPACE is not set" "DEVLEAD_REPOS=$WS/app=acme/app"
+bad "a repo outside the workspace" "DEVLEAD_REPOS entry 2: the path is not inside DEVLEAD_WORKSPACE" \
+  DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=$WS/app=acme/app,/home/me/Secret/x=acme/x"
+nothing_echoed "a repo outside the workspace" "/home/me/Secret/x"
+bad "the workspace itself as a repo" "DEVLEAD_REPOS entry 1: the path is not inside DEVLEAD_WORKSPACE" \
+  DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=$WS=acme/app"
+bad "a sibling with the workspace as prefix" "DEVLEAD_REPOS entry 1: the path is not inside DEVLEAD_WORKSPACE" \
+  DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=${WS}2/app=acme/app"
+bad "a relative path" "DEVLEAD_REPOS entry 1: the path must be absolute" DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=Work/app=acme/app"
+bad "a .. in the path" "DEVLEAD_REPOS entry 1: the path must be absolute" DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=$WS/../../etc=acme/app"
+bad "a space in the path" "DEVLEAD_REPOS entry 1: the path must be absolute" DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=$WS/my app=acme/app"
+bad "no owner/repo" "DEVLEAD_REPOS entry 1 is not <host path>=<owner>/<repo>" DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=$WS/app"
+bad "not a GitHub name" "DEVLEAD_REPOS entry 1: <owner>/<repo> is not the name of a GitHub repository" \
+  DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=$WS/app=https://evil.example/x"
+nothing_echoed "not a GitHub name" "evil.example"
+bad "a repo named .." "DEVLEAD_REPOS entry 1: <owner>/<repo> is not the name" DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=$WS/app=acme/.."
+bad "two repos at one path" "DEVLEAD_REPOS entries 1 and 2: one clone would be the other or sit inside it" \
+  DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=$WS/app=acme/app,$WS/app=acme/other"
+bad "a repo inside another one's clone" "DEVLEAD_REPOS entries 1 and 2: one clone would be the other or sit inside it" \
+  DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=$WS/app=acme/app,$WS/app/vendor/lib=acme/lib"
+bad "the root as workspace" "DEVLEAD_WORKSPACE must be an absolute path" DEVLEAD_WORKSPACE=/
+for w in /etc /opt/devlead /home /home/devlead /home/devlead/Work /tmp/x /var/lib /usr/local/src; do
+  bad "workspace $w" "DEVLEAD_WORKSPACE overlaps" DEVLEAD_WORKSPACE="$w"
+done
+bad "a relative workspace" "DEVLEAD_WORKSPACE must be an absolute path" DEVLEAD_WORKSPACE=Work
+bad "a loop repo that is not enrolled" "DEVLEAD_LOOP_REPO must be one of the paths in DEVLEAD_REPOS" \
+  DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=$WS/app=acme/app" DEVLEAD_LOOP_REPO="$WS/other"
+nothing_echoed "a loop repo that is not enrolled" "$WS/other"
+bad "a loop repo with no repo enrolled" "DEVLEAD_LOOP_REPO must be one of the paths" DEVLEAD_LOOP_REPO=/home/me/Work/app
+bad "newline in DEVLEAD_REPOS" "DEVLEAD_REPOS $CTRL" DEVLEAD_WORKSPACE="$WS" $'DEVLEAD_REPOS=/home/me/Work/a=acme/a\nx'
+bad "newline in DEVLEAD_WORKSPACE" "DEVLEAD_WORKSPACE $CTRL" $'DEVLEAD_WORKSPACE=/home/me/Work\n'
+bad "newline in DEVLEAD_LOOP_REPO" "DEVLEAD_LOOP_REPO $CTRL" $'DEVLEAD_LOOP_REPO=/home/me/Work/a\n'
+
+# ===========================================================================
+# The host's state and the git identity (S14)
+# ===========================================================================
+OUT="$SANDBOX/ident"
+out="$(render "$OUT" DEVLEAD_STATE_DIR=/home/me/.devlead/ 'DEVLEAD_GIT_NAME=  Ana "the bot" O\Neil ' DEVLEAD_GIT_EMAIL=ana+bot@users.noreply.github.com)"; rc=$?
+check "identity: render exits 0" "$rc" "0"
+check "identity: the name, as text" "$(git config --file "$OUT/git-identity" user.name)" 'Ana "the bot" O\Neil'
+check "identity: the email" "$(git config --file "$OUT/git-identity" user.email)" "ana+bot@users.noreply.github.com"
+check "identity: nothing else in the file" "$(git config --file "$OUT/git-identity" --list | cut -d= -f1 | paste -sd, -)" "user.name,user.email"
+bad "a name without an email" "DEVLEAD_GIT_NAME and DEVLEAD_GIT_EMAIL go together" DEVLEAD_GIT_NAME=Ana
+bad "an email without a name" "DEVLEAD_GIT_NAME and DEVLEAD_GIT_EMAIL go together" DEVLEAD_GIT_EMAIL=a@example.com
+bad "repos without an identity" "DEVLEAD_GIT_NAME and DEVLEAD_GIT_EMAIL are required once DEVLEAD_REPOS lists a repo" \
+  DEVLEAD_WORKSPACE="$WS" "DEVLEAD_REPOS=$WS/app=acme/app"
+bad "an email that is not one" "DEVLEAD_GIT_EMAIL must be an email address" DEVLEAD_GIT_NAME=Ana "DEVLEAD_GIT_EMAIL=ana at example"
+nothing_echoed "an email that is not one" "ana at example"
+bad "a name with angle brackets" "DEVLEAD_GIT_NAME must be a name of at most 100 characters, without < or >" \
+  "DEVLEAD_GIT_NAME=Ana <evil@x>" DEVLEAD_GIT_EMAIL=a@example.com
+bad "a name too long" "DEVLEAD_GIT_NAME must be a name of at most 100" "DEVLEAD_GIT_NAME=$(printf 'a%.0s' {1..101})" DEVLEAD_GIT_EMAIL=a@example.com
+bad "newline in the name (a config line of its own)" "DEVLEAD_GIT_NAME $CTRL" $'DEVLEAD_GIT_NAME=Ana\n[core]\n\tfsmonitor = touch /tmp/x' DEVLEAD_GIT_EMAIL=a@example.com
+nothing_echoed "newline in the name" "fsmonitor"
+bad "a relative state dir" "DEVLEAD_STATE_DIR must be the absolute path of your ~/.devlead" DEVLEAD_STATE_DIR=.devlead
+bad "a state dir with .." "DEVLEAD_STATE_DIR must be the absolute path" DEVLEAD_STATE_DIR=/home/me/../../etc
+bad "newline in the state dir" "DEVLEAD_STATE_DIR $CTRL" $'DEVLEAD_STATE_DIR=/home/me/.devlead\n'
+
+# Previous behaviour: with none of the F3 settings, the crontab and the F2
+# limits are exactly what they were.
+OUT="$SANDBOX/f2"
+render "$OUT" >/dev/null
+check "without F3 settings: the crontab is the F2 one" "$(grep -v '^#' "$OUT/crontab")" \
+  "$(printf '30 6 * * 1-5 %s morning\n0 22 * * * %s loop\n30 22 * * * %s fleet\n0 5 * * 1 %s discover\n17 4 * * * %s --prune' "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB")"
+check "without F3 settings: the F2 limits keep their values" "$(grep -E '^(TZ|MAX_SESSIONS_PER_DAY|SESSION_TIMEOUT|SESSION_KILL_AFTER|AUDIT_RETENTION_DAYS)=' "$OUT/runner.conf")" \
+  "$(printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30')"
 
 for ok in claude /usr/local/bin/claude ""; do
   OUT="$SANDBOX/bin-ok"

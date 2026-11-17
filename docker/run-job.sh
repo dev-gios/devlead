@@ -22,37 +22,56 @@
 #   3. A job whose condition file is missing is skipped, like systemd's
 #      ConditionPathExists=.
 #   4. One job at a time: a job that finds another one running waits for it,
-#      as devlead-fleet.service waits for devlead-loop.service (After=).
-#   5. The job runs from ~/.devlead with a private TMPDIR, in a session of its
+#      as devlead-fleet.service waits for devlead-loop.service (After=), but
+#      for JOB_LOCK_WAIT at most (DEVLEAD_JOB_LOCK_WAIT, default 4h); past it
+#      the job does not run. A ledger that is empty, or lost the header root
+#      writes at container start, was emptied by someone: today's session
+#      count is unknown, so the job does not run either (audit-tampered).
+#   5. The clones the job works on are brought to origin's default branch
+#      (S13, docker/sync-repos.sh): every enrolled repo for morning, fleet and
+#      discover, DEVLEAD_LOOP_REPO for loop. It holds the session lock — no
+#      claude session may be working in a clone it resets — and a job whose
+#      repos cannot all be synced does not run.
+#      From here the job holds the job lock for JOB_TIMEOUT at most
+#      (DEVLEAD_JOB_TIMEOUT, default 4h): the sync and the job's command run
+#      under that limit, then TERM, and KILL JOB_KILL_AFTER later. A step that
+#      hangs — a gh call, a fetch — never keeps the next job waiting for good.
+#   6. The job runs from ~/.devlead with a private TMPDIR, in a session of its
 #      own, every process of it tagged DEVLEAD_RUN_ID=<run id>. Its output goes
 #      to the container log and to the run's output.log.
-#   6. Afterwards every process it left behind is stopped (TERM, then KILL):
+#   7. Afterwards every process it left behind is stopped (TERM, then KILL):
 #      its descendants, any process carrying its run id, and any orphan that
 #      appeared during the run (one the container's init adopted). Its TMPDIR
 #      and whatever it created at the top of /tmp are removed. Nothing a job
 #      starts or writes there carries over to the next one. The /tmp sweep is
 #      done holding the session lock, and skipped while a claude session runs
 #      (one the operator started by hand): its files there are its own.
-#   7. The claude sessions it started are read from the wrapper's ledger. Their
+#   8. The claude sessions it started are read from the wrapper's ledger. Their
 #      transcripts — Claude Code's own, found by session id; the launchers'
 #      output format is left alone — are copied to
 #      ~/.devlead/audit/runs/<run id>/, and one JSON line is appended to
 #      ~/.devlead/audit/YYYY-MM.jsonl and printed to the container log.
-#   8. A failed run sends one `need` (GOVERNANCE.md §escalation-channel):
-#      job-failed (non-zero exit, a crash, a refused start), job-timeout (a
-#      session stopped at its time limit), job-refused (a session refused by
-#      the daily cap or because another was running). doctor.sh's Claude token
+#   9. A failed run sends one `need` (GOVERNANCE.md §escalation-channel):
+#      job-failed (non-zero exit, a crash, a refused start, repos that could
+#      not be synced), job-timeout (a session or the whole job stopped at its
+#      time limit, or a job that waited past JOB_LOCK_WAIT), job-refused (a
+#      session refused by the daily cap, because another was running, or
+#      because its lock could not be opened). doctor.sh's Claude token
 #      warning becomes a `need` token-expiring, once a day; like every notice it
 #      carries no environment value (not even the token's issue date).
 #
 # The audit line: run_id, trigger, repos, started_at, ended_at, exit_code,
 # timed_out, cap_refused (a session refused by the daily cap), refusals (the
-# reason of every refused session: cap, busy, paused, noconf, noledger, root),
-# paused, skipped (the reason, or null), sessions
+# reason of every refused session: cap, busy, nolock, paused, noconf, noledger,
+# root),
+# paused, skipped (the reason, or null), synced [{repo, branch, commit}] (the
+# clones as the job found them), sync_error (the repo and the reason, or
+# null), sessions
 # [{id, exit_code, timed_out}], session_ids, tool_uses {tool: count},
 # files_changed, prs_opened, transcripts_kept, outcome (ok, failed, timeout,
 # refused, paused, skipped), notified, notify_codes, leftovers_killed,
-# lock_wait_seconds, audit_intact. Files changed are those the sessions'
+# lock_wait_seconds, lock_timed_out (gave up waiting for the job lock),
+# job_timed_out (stopped at JOB_TIMEOUT), audit_intact. Files changed are those the sessions'
 # Write, Edit, MultiEdit and NotebookEdit calls name — a file a shell command
 # changes is not seen. PRs opened are the pull request URLs printed by an
 # open-pr.sh or gh pr create call. No environment variable is ever recorded,
@@ -67,9 +86,11 @@
 #     false, `need` audit-tampered). Every audit line is also in the container
 #     log, which Docker keeps outside the container, out of any session's
 #     reach.
-#   - The ledger (/var/lib/devlead/sessions.tsv) cannot be removed or replaced
-#     — root owns the directory — but it can be truncated, which would reset
-#     the day's count; the same check reports it. A session could also run
+#   - The ledger (/var/lib/devlead/sessions.tsv, a volume: it outlives the
+#     container) cannot be removed or replaced — root owns the directory — but
+#     it can be truncated, which would reset the day's count. Truncated during
+#     a run, the same check reports it; emptied before one, the run refuses
+#     to start (above). A session could also run
 #     the real Claude Code binary directly, outside the wrapper. So the caps
 #     bound what the scheduler and the launchers start; containing a hostile
 #     session is the job of guard.sh, the firewall and the narrow tokens.
@@ -78,10 +99,12 @@ set -uo pipefail
 # --- Fixed paths (test/unit-run-job.sh rewrites these in a copy) ---------------
 RUNNER_CONF=/etc/devlead/runner.conf
 LEDGER=/var/lib/devlead/sessions.tsv
+LEDGER_HEADER="# DevLead session ledger"
 JOB_LOCK=/var/lib/devlead/job.lock
 SESSION_LOCK=/var/lib/devlead/session.lock
 PAUSE_FILE=/home/devlead/.devlead/PAUSE
 SCRIPTS_DIR=/opt/devlead/scripts
+SYNC_REPOS=/opt/devlead/docker/sync-repos.sh
 WRAPPER=/usr/local/bin/claude
 TMP_ROOT=/tmp
 ORPHAN_PARENT=1
@@ -133,10 +156,34 @@ _load_conf() {
   CONF_MAX="$(_conf_get MAX_SESSIONS_PER_DAY)"
   CONF_TIMEOUT="$(_conf_get SESSION_TIMEOUT)"
   CONF_RETENTION="$(_conf_get AUDIT_RETENTION_DAYS)"
+  CONF_JOB_TIMEOUT="$(_conf_get JOB_TIMEOUT)"
+  CONF_JOB_KILL_AFTER="$(_conf_get JOB_KILL_AFTER)"
+  CONF_LOCK_WAIT="$(_conf_get JOB_LOCK_WAIT)"
   [[ "$CONF_TZ" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]] || return 1
   [[ "$CONF_MAX" =~ ^[0-9]{1,4}$ ]] || return 1
   [[ "$CONF_TIMEOUT" =~ ^[1-9][0-9]{0,4}[smh]$ ]] || return 1
   [[ "$CONF_RETENTION" =~ ^[1-9][0-9]{0,3}$ ]] || return 1
+  JOB_TIMEOUT_SECS="$(_secs "$CONF_JOB_TIMEOUT")" || return 1
+  _secs "$CONF_JOB_KILL_AFTER" >/dev/null || return 1
+  LOCK_WAIT_SECS="$(_secs "$CONF_LOCK_WAIT")" || return 1
+}
+
+_secs() { # _secs <n><s|m|h> -> seconds, or returns 1
+  [[ "$1" =~ ^([1-9][0-9]{0,4})([smh])$ ]] || return 1
+  case "${BASH_REMATCH[2]}" in
+    s) echo "${BASH_REMATCH[1]}" ;;
+    m) echo $(( BASH_REMATCH[1] * 60 )) ;;
+    h) echo $(( BASH_REMATCH[1] * 3600 )) ;;
+  esac
+}
+
+# _ledger_sealed — the ledger still starts with the header root wrote at
+# container start.
+_ledger_sealed() {
+  local first=""
+  [[ -f "$LEDGER" && ! -L "$LEDGER" ]] || return 1
+  IFS= read -r first < "$LEDGER" 2>/dev/null
+  [[ "$first" == "$LEDGER_HEADER"* ]]
 }
 
 # --- Prune -----------------------------------------------------------------------
@@ -336,7 +383,7 @@ _transcript_stats() {
 
 _audit() { # _audit <outcome> <exit code> [skipped reason]
   local outcome="$1" rc="$2" skipped="${3:-}" line month file
-  local sessions="${SESSIONS_JSON:-}" stats="${STATS_JSON:-}"
+  local sessions="${SESSIONS_JSON:-}" stats="${STATS_JSON:-}" synced="${SYNCED_JSON:-[]}"
   [[ -n "$sessions" ]] || sessions='{"sessions":[],"refusals":[]}'
   [[ -n "$stats" ]] || stats='{"tool_uses":{},"files_changed":[],"prs_opened":[]}'
   line="$(jq -n -c \
@@ -344,8 +391,10 @@ _audit() { # _audit <outcome> <exit code> [skipped reason]
     --arg started "$STARTED_AT" --arg ended "$(date -Is)" --argjson rc "$rc" \
     --argjson s "$sessions" --argjson stats "$stats" --arg outcome "$outcome" \
     --arg skipped "$skipped" --argjson paused "${PAUSED:-false}" \
+    --argjson synced "$synced" --arg sync_error "${SYNC_ERROR:-}" \
     --argjson codes "$(printf '%s\n' "${NOTIFY_CODES[@]}" | jq -R . | jq -s -c 'map(select(length > 0))')" \
     --argjson killed "${LEFTOVERS_KILLED:-0}" --argjson waited "${LOCK_WAIT:-0}" \
+    --argjson lock_timed_out "${LOCK_TIMED_OUT:-false}" --argjson job_timed_out "${JOB_TIMED_OUT:-false}" \
     --argjson transcripts "${TRANSCRIPTS_KEPT:-0}" --argjson intact "${AUDIT_INTACT:-true}" '
     { run_id: $run_id, trigger: $trigger, repos: $repos, started_at: $started, ended_at: $ended,
       exit_code: $rc,
@@ -354,11 +403,13 @@ _audit() { # _audit <outcome> <exit code> [skipped reason]
       refusals: $s.refusals,
       paused: $paused,
       skipped: (if $skipped == "" then null else $skipped end),
+      synced: $synced, sync_error: (if $sync_error == "" then null else $sync_error end),
       sessions: $s.sessions, session_ids: [$s.sessions[].id],
       tool_uses: $stats.tool_uses, files_changed: $stats.files_changed, prs_opened: $stats.prs_opened,
       transcripts_kept: $transcripts, outcome: $outcome,
       notified: ($codes | length > 0), notify_codes: $codes,
-      leftovers_killed: $killed, lock_wait_seconds: $waited, audit_intact: $intact }')" || {
+      leftovers_killed: $killed, lock_wait_seconds: $waited, lock_timed_out: $lock_timed_out,
+      job_timed_out: $job_timed_out, audit_intact: $intact }')" || {
     echo "run-job: cannot build the audit line for run $RUN_ID" >&2
     return 1
   }
@@ -445,15 +496,36 @@ if ! { [[ -f "$JOB_LOCK" && ! -L "$JOB_LOCK" ]] && { exec 8<"$JOB_LOCK"; } 2>/de
 fi
 _wait_start="$(date +%s)"
 if ! flock -n 8; then
-  echo "run-job: another job is running — $JOB waits for it"
-  flock 8
+  echo "run-job: another job is running — $JOB waits for it (at most $CONF_LOCK_WAIT)"
+  if ! flock -w "$LOCK_WAIT_SECS" 8; then
+    LOCK_WAIT=$(( $(date +%s) - _wait_start ))
+    LOCK_TIMED_OUT=true
+    echo "run-job: another job held the job lock for more than $CONF_LOCK_WAIT (DEVLEAD_JOB_LOCK_WAIT) — $JOB not run" >&2
+    _need job-timeout "$JOB: not run — another job held the job lock for more than $CONF_LOCK_WAIT (run $RUN_ID)"
+    _audit timeout 1
+    exit 1
+  fi
 fi
 LOCK_WAIT=$(( $(date +%s) - _wait_start ))
+# The job's time starts now (JOB_TIMEOUT).
+_JOB_T0="$(date +%s)"
+# _over — the job's time is up. _left — seconds left, at least 1 (`timeout 0`
+# would mean no limit at all).
+_over() { (( $(date +%s) - _JOB_T0 >= JOB_TIMEOUT_SECS )); }
+_left() { local l=$(( JOB_TIMEOUT_SECS - ($(date +%s) - _JOB_T0) )); (( l > 0 )) || l=1; echo "$l"; }
+JOB_TIMED_OUT=false
 if [[ -e "$PAUSE_FILE" ]]; then
   echo "run-job: DevLead was paused while $JOB waited ($PAUSE_FILE exists) — not run"
   PAUSED=true
   _audit paused 0
   exit 0
+fi
+if ! _ledger_sealed; then
+  AUDIT_INTACT=false
+  echo "run-job: the session ledger $LEDGER was emptied or replaced since the container started — today's session count is unknown, $JOB not run" >&2
+  _need audit-tampered "$JOB: not run — the session ledger was emptied since the container started, so today's session count is unknown (run $RUN_ID)"
+  _audit failed 1
+  exit 1
 fi
 
 RUN_DIR="$AUDIT_DIR/runs/$RUN_ID"
@@ -488,13 +560,58 @@ _mine
 for _p in "${_PIDS[@]}"; do _BEFORE[$_p]=1; done
 
 echo "run-job: $JOB started (run $RUN_ID)" >&7
-(
-  cd "$STATE_DIR" 2>/dev/null || cd "$HOME" || exit 1
-  exec env -u DEVLEAD_CLAUDE_BIN TMPDIR="$JOBTMP" DEVLEAD_RUN_ID="$RUN_ID" \
-    setsid "$SCRIPTS_DIR/${JOB_ARGV[0]}" "${JOB_ARGV[@]:1}"
-) </dev/null >&7 2>&7 7>&- 8<&-
-RC=$?
-echo "run-job: $JOB exited $RC (run $RUN_ID)" >&7
+
+# The clones it works on, at origin's default branch (S13).
+SYNCED_JSON='[]'
+SYNC_ERROR=""
+_sync_args=()
+case "$JOB_REPOS" in
+  enrolled) _sync_args=(--all) ;;
+  loop) [[ -n "${DEVLEAD_LOOP_REPO:-}" ]] && _sync_args=("$DEVLEAD_LOOP_REPO") ;;
+esac
+if [[ ${#_sync_args[@]} -gt 0 ]]; then
+  if ! { [[ -f "$SESSION_LOCK" && ! -L "$SESSION_LOCK" ]] && { exec 5<"$SESSION_LOCK"; } 2>/dev/null && flock -n 5; }; then
+    SYNC_ERROR="a claude session is running in the container"
+  else
+    _sync_out="$(cd "$STATE_DIR" 2>/dev/null || cd "$HOME" || exit 1
+      timeout --kill-after="$CONF_JOB_KILL_AFTER" "$(_left)s" "$SYNC_REPOS" "${_sync_args[@]}" </dev/null 2>&7 5<&- 7>&- 8<&-)"
+    _sync_rc=$?
+    if (( _sync_rc == 124 || _sync_rc == 137 )) && _over; then
+      JOB_TIMED_OUT=true
+      SYNC_ERROR="the sync ran past the job's time limit"
+    fi
+    while IFS=$'\t' read -r _kind _path _f3 _f4; do
+      case "$_kind" in
+        SYNCED) SYNCED_JSON="$(jq -c --arg r "$_path" --arg b "$_f3" --arg c "$_f4" '. + [{repo: $r, branch: $b, commit: $c}]' <<<"$SYNCED_JSON")" ;;
+        FAILED) SYNC_ERROR="$_path: $_f3" ;;
+      esac
+    done <<<"$_sync_out"
+    [[ $_sync_rc -eq 0 || -n "$SYNC_ERROR" ]] || SYNC_ERROR="sync-repos.sh exited $_sync_rc"
+  fi
+  exec 5<&- 2>/dev/null
+fi
+
+if [[ -n "$SYNC_ERROR" ]]; then
+  echo "run-job: the repos could not be synced from origin ($SYNC_ERROR) — $JOB not run" >&7
+  RC=1
+elif _over; then
+  JOB_TIMED_OUT=true
+  echo "run-job: no time left of the $CONF_JOB_TIMEOUT job limit — $JOB not run" >&7
+  RC=1
+else
+  (
+    cd "$STATE_DIR" 2>/dev/null || cd "$HOME" || exit 1
+    exec env -u DEVLEAD_CLAUDE_BIN TMPDIR="$JOBTMP" DEVLEAD_RUN_ID="$RUN_ID" \
+      timeout --kill-after="$CONF_JOB_KILL_AFTER" "$(_left)s" \
+      setsid "$SCRIPTS_DIR/${JOB_ARGV[0]}" "${JOB_ARGV[@]:1}"
+  ) </dev/null >&7 2>&7 7>&- 8<&-
+  RC=$?
+  if (( RC == 124 || RC == 137 )) && _over; then
+    JOB_TIMED_OUT=true
+    echo "run-job: $JOB ran past the $CONF_JOB_TIMEOUT job limit (DEVLEAD_JOB_TIMEOUT) and was stopped" >&7
+  fi
+  echo "run-job: $JOB exited $RC (run $RUN_ID)" >&7
+fi
 
 # After: nothing of the job outlives it.
 LEFTOVERS_KILLED=0
@@ -542,7 +659,13 @@ _timed_out="$(jq '[.sessions[] | select(.timed_out)] | length > 0' <<<"$SESSIONS
 _refusal="$(jq -r '[.refusals[] | select(. != "paused")] | .[0] // ""' <<<"$SESSIONS_JSON")"
 _paused_refusal="$(jq '[.refusals[] | select(. == "paused")] | length > 0' <<<"$SESSIONS_JSON")"
 OUTCOME=ok
-if [[ "$_timed_out" == "true" ]]; then
+if [[ "$JOB_TIMED_OUT" == "true" ]]; then
+  OUTCOME=timeout
+  _need job-timeout "$JOB: ran past the $CONF_JOB_TIMEOUT job limit and was stopped (run $RUN_ID)"
+elif [[ -n "$SYNC_ERROR" ]]; then
+  OUTCOME=failed
+  _need job-failed "$JOB: not run — its repos could not be synced from origin: ${SYNC_ERROR##*: } (run $RUN_ID)"
+elif [[ "$_timed_out" == "true" ]]; then
   OUTCOME=timeout
   _need job-timeout "$JOB: a claude session ran past the $CONF_TIMEOUT limit and was stopped (run $RUN_ID)"
 elif [[ -n "$_refusal" ]]; then
@@ -550,6 +673,7 @@ elif [[ -n "$_refusal" ]]; then
   case "$_refusal" in
     cap)  _why="the daily limit of $CONF_MAX claude sessions is reached" ;;
     busy) _why="another claude session was running" ;;
+    nolock) _why="the session lock could not be opened" ;;
     *)    _why="the session limits could not be read" ;;
   esac
   _need job-refused "$JOB: a claude session was refused — $_why (run $RUN_ID)"

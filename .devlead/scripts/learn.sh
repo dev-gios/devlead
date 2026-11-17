@@ -33,6 +33,12 @@
 #       <id> TAB <added> TAB <active|removed> TAB <unseen|seen> TAB <source> TAB <text>
 #   ~/.devlead/learn/<repo-key>/repo      the repository path the key stands for
 #
+# One writer at a time: the host's /devlead and the DevLead server share this
+# state (S14). capture, digested and the pref-* commands that change a file
+# hold an exclusive flock on the repository's state directory while they read
+# and change it, and wait up to LOCK_WAIT_SECS for another DevLead process to
+# finish. Without flock (not util-linux) they run unlocked, as before.
+#
 # Exit codes: 0 ok (including "nothing new" and a failed `gh`, reported as a
 # STATUS line) · 1 misuse or a local write that failed.
 #
@@ -49,6 +55,7 @@ BODY_MAX_CHARS=2000
 PREF_MAX_CHARS=300
 CAPTURE_PAGE=100
 CAPTURE_PR_LIMIT=30
+LOCK_WAIT_SECS=30
 
 _root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$_root" ]]; then
@@ -64,11 +71,43 @@ PREFS="$STATE_DIR/prefs.tsv"
 # _flat <text> — one line, no tabs: both files are line- and tab-delimited.
 _flat() { printf '%s' "$1" | tr '\t\r\n' '   ' | sed 's/^ *//; s/ *$//'; }
 
+# _no_links <path>... — never write through a symbolic link in the state
+# (A3). The DevLead server's sessions write in these directories too (S14):
+# a link one of them planted would send this write — or what a rewrite reads
+# — somewhere else. The command refuses before it changes anything.
+_no_links() {
+  local p
+  for p in "$@"; do
+    if [[ -L "$p" ]]; then
+      echo "learn: $p is a symbolic link — DevLead does not write through links in its state; nothing changed" >&2
+      return 1
+    fi
+  done
+}
+_state_links() { _no_links "$STATE_DIR" "$FEEDBACK" "$PREFS" "$STATE_DIR/repo"; }
+
+# _lock_state — hold the state directory's lock until this script exits.
+_LOCKED=0
+_lock_state() {
+  [[ $_LOCKED -eq 1 ]] && return 0
+  _state_links || return 1
+  [[ -d "$STATE_DIR" ]] || return 0
+  command -v flock >/dev/null 2>&1 || return 0
+  { exec {_LOCK_FD}<"$STATE_DIR"; } 2>/dev/null || return 0
+  if ! flock -w "$LOCK_WAIT_SECS" "$_LOCK_FD"; then
+    echo "learn: another DevLead process kept $STATE_DIR locked for ${LOCK_WAIT_SECS}s — nothing changed, try again" >&2
+    return 1
+  fi
+  _LOCKED=1
+}
+
 _ensure_state() {
+  _state_links || return 1
   if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
     echo "learn: cannot create $STATE_DIR" >&2
     return 1
   fi
+  _lock_state || return 1
   [[ -f "$STATE_DIR/repo" ]] || printf '%s\n' "$_root" > "$STATE_DIR/repo" 2>/dev/null
   return 0
 }
@@ -169,6 +208,7 @@ _digested() {
     echo "STATUS: empty"
     return 0
   fi
+  _lock_state || return 1
   _rewrite "$FEEDBACK" '{ if ($6 == "new") $6 = "digested"; print }' || return 1
   echo "STATUS: digested"
 }
@@ -251,6 +291,7 @@ _pref_shown() {
     echo "STATUS: empty"
     return 0
   fi
+  _lock_state || return 1
   _rewrite "$PREFS" '{ $4 = "seen"; print }' || return 1
   echo "STATUS: shown"
 }
@@ -261,6 +302,7 @@ _pref_remove() {
     echo "learn: usage: learn.sh pref-remove <id>   (an id looks like p3)" >&2
     return 1
   fi
+  _lock_state || return 1
   if [[ ! -f "$PREFS" ]] || ! grep -q "^${id}"$'\t' "$PREFS"; then
     echo "learn: no preference with id $id" >&2
     return 1

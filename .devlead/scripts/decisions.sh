@@ -26,6 +26,12 @@
 #       <id> TAB <when> TAB <new|shown> TAB <task> TAB <what> TAB <why> TAB <correction> TAB <-|pending|digested>
 #   ~/.devlead/decisions/<repo-key>/repo     the repository path the key stands for
 #
+# One writer at a time: the host's /devlead and the DevLead server share this
+# state (S14). Every command holds an exclusive flock on the repository's
+# state directory while it reads and rewrites the log, and waits up to
+# LOCK_WAIT_SECS for another DevLead process to finish. Without flock (not
+# util-linux) it runs unlocked, as before.
+#
 # Environment:
 #   DEVLEAD_DECISIONS_DIR    state root (default ~/.devlead/decisions)
 #   DEVLEAD_DECISIONS_NOW    timestamp, "YYYY-MM-DD HH:MM" (tests)
@@ -41,6 +47,7 @@ NOW="${DEVLEAD_DECISIONS_NOW:-$(date '+%F %H:%M')}"
 FIELD_MAX_CHARS=300
 LIST_ROWS=40               # how many of the latest decisions a plain `list` prints
 LOG_MAX_ROWS="${DEVLEAD_DECISIONS_MAX_ROWS:-500}"
+LOCK_WAIT_SECS=30
 
 _root="$(git rev-parse --show-toplevel 2>/dev/null)"
 if [[ -z "$_root" ]]; then
@@ -59,11 +66,43 @@ _flat() {
   printf '%s' "${t:0:$FIELD_MAX_CHARS}"
 }
 
+# _no_links <path>... — never write through a symbolic link in the state
+# (A3). The DevLead server's sessions write in these directories too (S14):
+# a link one of them planted would send this write — or what a rewrite reads
+# — somewhere else. The command refuses before it changes anything.
+_no_links() {
+  local p
+  for p in "$@"; do
+    if [[ -L "$p" ]]; then
+      echo "decisions: $p is a symbolic link — DevLead does not write through links in its state; nothing changed" >&2
+      return 1
+    fi
+  done
+}
+_state_links() { _no_links "$STATE_DIR" "$LOG" "$STATE_DIR/repo"; }
+
+# _lock_state — hold the state directory's lock until this script exits.
+_LOCKED=0
+_lock_state() {
+  [[ $_LOCKED -eq 1 ]] && return 0
+  _state_links || return 1
+  [[ -d "$STATE_DIR" ]] || return 0
+  command -v flock >/dev/null 2>&1 || return 0
+  { exec {_LOCK_FD}<"$STATE_DIR"; } 2>/dev/null || return 0
+  if ! flock -w "$LOCK_WAIT_SECS" "$_LOCK_FD"; then
+    echo "decisions: another DevLead process kept $STATE_DIR locked for ${LOCK_WAIT_SECS}s — nothing changed, try again" >&2
+    return 1
+  fi
+  _LOCKED=1
+}
+
 _ensure_state() {
+  _state_links || return 1
   if ! mkdir -p "$STATE_DIR" 2>/dev/null; then
     echo "decisions: cannot create $STATE_DIR" >&2
     return 1
   fi
+  _lock_state || return 1
   [[ -f "$STATE_DIR/repo" ]] || printf '%s\n' "$_root" > "$STATE_DIR/repo" 2>/dev/null
   touch "$LOG" 2>/dev/null || { echo "decisions: cannot write $LOG" >&2; return 1; }
 }

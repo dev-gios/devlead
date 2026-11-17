@@ -119,6 +119,29 @@ git init -q "$OTHER"
 ( cd "$OTHER" && entry 2026-11-12 "other repo" | bash "$JOURNAL" save >/dev/null )
 lacks "isolation: this repo's journal holds no other repo's entry" "$(cat "$CURRENT")" "other repo"
 
+# No write through a link planted in the state (A3): the server's sessions can
+# write in the journals directory (S14). A current entry linked to a secret
+# would be archived — copied — into the shared history; save refuses instead
+# and changes nothing.
+SECRET="$SANDBOX/secret.txt"; printf 'PRIVATE KEY\n' > "$SECRET"
+mv "$CURRENT" "$SANDBOX/current.real"; ln -s "$SECRET" "$CURRENT"
+hist_before="$(sha256sum < "$HISTORY")"
+out="$(cd "$REPO" && printf '# DevLead Journal — x\nlinked\n' | bash "$JOURNAL" save 2>&1)"; rc=$?
+check "a current entry that is a link: save refuses" "$rc" "1"
+contains "a current entry that is a link: says why" "$out" "$CURRENT is a symbolic link"
+lacks "a current entry that is a link: the secret is not archived" "$(cat "$HISTORY")" "PRIVATE KEY"
+check "a current entry that is a link: the history is unchanged" "$(sha256sum < "$HISTORY")" "$hist_before"
+check "a current entry that is a link: the link stays, the secret is untouched" "$(readlink "$CURRENT") $(cat "$SECRET")" "$SECRET PRIVATE KEY"
+rm -f "$CURRENT"; mv "$SANDBOX/current.real" "$CURRENT"
+mv "$HISTORY" "$SANDBOX/history.real"; ln -s "$SECRET" "$HISTORY"
+cur_before="$(cat "$CURRENT")"
+out="$(cd "$REPO" && printf '# DevLead Journal — y\nlinked\n' | bash "$JOURNAL" save 2>&1)"; rc=$?
+check "a history that is a link: save refuses" "$rc" "1"
+check "a history that is a link: the target and the current entry are unchanged" "$(cat "$SECRET")|$(cat "$CURRENT")" "PRIVATE KEY|$cur_before"
+rm -f "$HISTORY"; mv "$SANDBOX/history.real" "$HISTORY"
+out="$(cd "$REPO" && printf '# DevLead Journal — z\nno links\n' | bash "$JOURNAL" save)"
+contains "without links: save works as before" "$out" "STATUS: saved"
+
 echo
 echo "unit-journal: $PASS_COUNT passed, $FAIL_COUNT failed"
 [[ $FAIL_COUNT -eq 0 ]]
