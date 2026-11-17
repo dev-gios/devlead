@@ -271,6 +271,11 @@ p egress_ip "$(yn curl -fsS --max-time 10 -o /dev/null https://1.1.1.1/)"
 p egress_github "$(curl -sS --max-time 20 -o /dev/null -w '%{http_code}' https://api.github.com/ 2>/dev/null)"
 p gh_reaches "$(gh api /zen 2>&1 | grep -c 'HTTP 401')"
 p claude_reaches "$(cd /tmp/work && timeout 90 claude -p hi </dev/null 2>&1 | grep -c '401')"
+# The real API refused the dummy token, so the wrapper rested the single
+# token's account until a restart (S22). The probe's later sessions use the
+# mock: clear the mark, as a restart after renewing the token would.
+p reach_mark "$(grep -v '^#' /var/lib/devlead/accounts.tsv | cut -f1-3,7 | tr '\t' '|')"
+head -n 1 /var/lib/devlead/accounts.tsv > /tmp/marks-header && cat /tmp/marks-header > /var/lib/devlead/accounts.tsv
 
 # --- F2: the runner's files and limits (S11, S16-S18) -------------------------
 p supercronic "$(supercronic -version 2>&1 | head -n 1)"
@@ -541,6 +546,7 @@ check "egress to an address outside the allowlist fails" "$(v egress_ip)" "no"
 check "egress to api.github.com works" "$(v egress_github)" "200"
 check "gh reaches GitHub (dummy token: HTTP 401)" "$(v gh_reaches)" "1"
 check "claude reaches the Anthropic API (dummy token: 401)" "$(v claude_reaches)" "1"
+check "the API's refusal of the dummy token rests the account until a restart (S22, the real API's answer)" "$(v reach_mark)" "default|-|auth|auth"
 check "settings env cannot change the pinned variables in a session" "$(v s_env)" \
   '"g=1 b=[] e=[] n=[] l=[] p=[] m=1"'
 check "session 1 cannot plant a guard override (EACCES)" "$(v s_plant)" '"EACCES"'
@@ -623,6 +629,8 @@ read -r -d '' POOL_PROBE <<'POOL_EOF'
 p() { printf '%s=%s\n' "$1" "$2"; }
 M=/home/devlead/.cache/smoke
 mkdir -p "$M" /tmp/work && cd /tmp/work && git init -q -b feat/work 2>/dev/null
+# The ledger volume keeps the probe's sessions: count from here.
+L0="$(wc -l < /var/lib/devlead/sessions.tsv)"
 cat > "$M/pool-mock.js" <<'JS'
 const http = require('http'), fs = require('fs');
 const log = s => fs.appendFileSync('/home/devlead/.cache/smoke/pool-mock.log', s + '\n');
@@ -655,8 +663,8 @@ s() { ANTHROPIC_BASE_URL=http://127.0.0.1:8099 timeout 120 claude -p hi </dev/nu
 p conf "$(grep '^CLAUDE_ACCOUNTS=' /etc/devlead/runner.conf)"
 p rc1 "$(s 1)"
 p rc2 "$(s 2)"
-p mock "$(grep '^REQ' "$M/pool-mock.log" | cut -d' ' -f2 | paste -sd, -)"
-p starts "$(awk -F'\t' '$3 == "start" {print $7}' /var/lib/devlead/sessions.tsv | paste -sd, -)"
+p mock "$(grep '^REQ' "$M/pool-mock.log" | cut -d' ' -f2 | awk '!seen[$0]++' | paste -sd, -)"
+p starts "$(tail -n +"$((L0 + 1))" /var/lib/devlead/sessions.tsv | awk -F'\t' '$3 == "start" {print $7}' | paste -sd, -)"
 p mark "$(grep -v '^#' /var/lib/devlead/accounts.tsv | cut -f1,2,3,7 | tr '\t' '|')"
 p reset "$(cat "$M/pool-reset")"
 p err1 "$(grep -c 'the Claude account team rests until .* — its 5-hour limit; the next session uses ultra' "$M/err1")"
@@ -677,7 +685,7 @@ check "pool: runner.conf lists the accounts in priority order" "$(pv conf)" \
   "CLAUDE_ACCOUNTS=team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN ultra=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN"
 check "pool: the first session, on team, ends on the 5-hour limit (exit 1)" "$(pv rc1)" "1"
 check "pool: the second session runs on ultra (exit 0)" "$(pv rc2)" "0"
-check "pool: the API saw team's token, then ultra's" "$(pv mock)" "team,ultra"
+check "pool: the API saw team's token first, then ultra's" "$(pv mock)" "team,ultra"
 check "pool: the ledger names the accounts" "$(pv starts)" "team,ultra"
 check "pool: team rests until the reset the API sent, as Claude Code 2.1.326 reported it" "$(pv mark)" "team|$(pv reset)|five_hour|reported"
 check "pool: the wrapper says so and names the next account" "$(pv err1)" "1"
