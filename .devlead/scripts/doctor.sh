@@ -131,6 +131,95 @@ _token_age_warning() {
 }
 trap _token_age_warning EXIT
 
+# ---------------------------------------------------------------------------
+# 0b. The DevLead server image (docker/). Nothing there is published from a
+#     checkout: the image build installs DevLead root-owned and read-only, and
+#     writes an install stamp with the source revision it was built from
+#     (DEVLEAD_SOURCE_REV) and the SHA-256 of every file it installed. There
+#     is no SOURCE_REPO and no trunk to compare with, so here
+#       INTEGRITY  is every stamped file being there, unchanged, owned by root
+#                  and writable by nobody else, with nothing added under the
+#                  stamp's install roots; and
+#       PROVENANCE is the revision the build recorded. An image built without
+#                  one is STATUS: unknown, so the unattended launchers do not
+#                  run on it.
+#     Recognized by the server-mode marker, which only the image has: on any
+#     other machine this block does nothing. The three paths are fixed
+#     (test/unit-doctor.sh points them into a sandbox in a copy).
+# ---------------------------------------------------------------------------
+_IMAGE_MARKER=/etc/devlead/server-mode
+_IMAGE_STAMP=/etc/devlead/install-stamp
+_IMAGE_OWNER_UID=0
+
+# _owner_only <path> — owned by the image's owner and writable by nobody else.
+_owner_only() {
+  local meta uid mode
+  meta="$(stat -c '%u %a' "$1" 2>/dev/null)" || return 1
+  read -r uid mode <<<"$meta"
+  [[ "$uid" == "$_IMAGE_OWNER_UID" && "$mode" =~ ^[0-7]{3,4}$ ]] && (( (8#$mode & 8#022) == 0 ))
+}
+
+_image_doctor() {
+  local line rev="" roots=() paths=() sums=() actual=() diffs=() i root f
+  SOURCE_LABEL="DevLead server image (install stamp $_IMAGE_STAMP)"
+  [[ -f "$_IMAGE_STAMP" ]] \
+    || _unknown "no install stamp at $_IMAGE_STAMP — this server image was not built by docker/Dockerfile; rebuild it"
+  _owner_only "$_IMAGE_STAMP" \
+    || _unknown "the install stamp $_IMAGE_STAMP is not root-owned and read-only, so it proves nothing — rebuild the image"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      "REVISION: "*) rev="${line#REVISION: }" ;;
+      "ROOT: /"*) roots+=("${line#ROOT: }") ;;
+      *)
+        if [[ "$line" =~ ^([0-9a-f]{64})\ \ (/.+)$ ]]; then
+          sums+=("${BASH_REMATCH[1]}")
+          paths+=("${BASH_REMATCH[2]}")
+        fi
+        ;;
+    esac
+  done < "$_IMAGE_STAMP"
+  [[ "$rev" =~ ^[0-9a-f]{7,40}$ ]] \
+    || _unknown "the image was built without DEVLEAD_SOURCE_REV, so the revision it came from is not recorded — rebuild it: DEVLEAD_SOURCE_REV=\"\$(git rev-parse HEAD)\" docker compose up -d --build"
+  [[ ${#paths[@]} -gt 0 ]] || _unknown "the install stamp $_IMAGE_STAMP lists no files — rebuild the image"
+
+  declare -A stamped=()
+  for ((i = 0; i < ${#paths[@]}; i++)); do
+    f="${paths[$i]}"
+    stamped["$f"]=1
+    if [[ ! -f "$f" ]]; then
+      diffs+=("$f (missing)")
+    elif ! _owner_only "$f"; then
+      diffs+=("$f (writable by others than its root owner)")
+    else
+      actual=()
+      read -r -a actual < <(sha256sum -- "$f" 2>/dev/null)
+      [[ "${actual[0]:-}" == "${sums[$i]}" ]] || diffs+=("$f (content differs from the install stamp)")
+    fi
+  done
+  for root in "${roots[@]}"; do
+    while IFS= read -r -d '' f; do
+      [[ -n "${stamped[$f]+x}" ]] || diffs+=("$f (not in the install stamp)")
+    done < <(find "$root" -type f -print0 2>/dev/null)
+  done
+
+  if [[ ${#diffs[@]} -eq 0 ]]; then
+    echo "STATUS: ok"
+    echo "MATCHES: image @ ${rev:0:12}"
+    echo "SOURCE: $SOURCE_LABEL"
+    echo "DRIFT:  0 of ${#paths[@]} artifacts differ from the image's install stamp"
+    exit 0
+  fi
+  echo "STATUS: drifted"
+  echo "SOURCE: $SOURCE_LABEL"
+  echo "DRIFT:  ${#diffs[@]} of ${#paths[@]} artifacts differ from the image's install stamp (built from ${rev:0:12})"
+  for line in "${diffs[@]}"; do
+    echo "DIFF:   $line"
+  done
+  exit 1
+}
+
+[[ -e "$_IMAGE_MARKER" ]] && _image_doctor
+
 command -v git &>/dev/null || _unknown "git not found — cannot compare against the trunk"
 
 # ---------------------------------------------------------------------------
