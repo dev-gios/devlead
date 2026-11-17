@@ -616,6 +616,15 @@ fi
 if [[ "$_scan" =~ \$\{?CLAUDE_CODE_OAUTH_TOKEN($|[^A-Za-z0-9_]) ]]; then
   _deny secrets "the command reads the Claude token from the environment"
 fi
+# The server's account pool (S21): every account's token is in the
+# environment of the processes that start sessions (the claude wrapper takes
+# them out of the session's own). Any expansion of a pool variable, a listing
+# of them by prefix, or a lookup by name through a language's environment API
+# is refused — names and issue dates included.
+_pool_re='(environ|getenv|process\.env|ENV\[|Deno\.env)[^;&|]*DEVLEAD_CLAUDE_ACCOUNT_'
+if [[ "$_scan" =~ \$\{?!?DEVLEAD_CLAUDE_ACCOUNT_ ]] || [[ "$_scan" =~ $_pool_re ]]; then
+  _deny secrets "the command reads a Claude account's token from the environment"
+fi
 if _runs "$_scan" "printenv${_END}" || _runs "$_scan" "(env|export[[:space:]]+-p|declare[[:space:]]+-x)[[:space:]]*(\$|[;&|)>])"; then
   _deny secrets "the command dumps the environment, credentials included"
 fi

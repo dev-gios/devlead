@@ -2,11 +2,11 @@
 # entrypoint.sh — the DevLead container's start (runs under tini, as root).
 #
 # Root is held only long enough to:
-#   1. turn the schedule and the session limits of the env file into
-#      /etc/devlead/crontab and /etc/devlead/runner.conf, root's (S11, S16,
-#      S17; docker/runner-config.sh). An invalid value — a cron expression, a
-#      time zone, a limit, a DEVLEAD_CLAUDE_BIN that is not the wrapper — stops
-#      the start, named;
+#   1. turn the schedule, the session limits and the Claude accounts of the
+#      env file into /etc/devlead/crontab and /etc/devlead/runner.conf, root's
+#      (S11, S16, S17, S21; docker/runner-config.sh). An invalid value — a cron
+#      expression, a time zone, a limit, a DEVLEAD_CLAUDE_BIN that is not the
+#      wrapper, an account of the pool — stops the start, named;
 #   2. apply the egress firewall (S8). If it fails, the container does not
 #      start: the command below never runs on an open network;
 #   3. hand the ntfy settings to notify.sh, in the file it reads
@@ -95,10 +95,14 @@ if [[ -n "${DEVLEAD_NTFY_URL:-}" ]]; then
 fi
 unset DEVLEAD_NTFY_URL DEVLEAD_NTFY_TOKEN DEVLEAD_NOTIFY_DETAIL
 
-for _v in CLAUDE_CODE_OAUTH_TOKEN DEVLEAD_CLAUDE_TOKEN_ISSUED GH_TOKEN DEVLEAD_LOOP_CLAUDE_ARGS; do
+# The Claude token: the single CLAUDE_CODE_OAUTH_TOKEN, or an account pool
+# (S21), which runner-config.sh validated and wrote to runner.conf by name.
+_claude_vars=(CLAUDE_CODE_OAUTH_TOKEN DEVLEAD_CLAUDE_TOKEN_ISSUED)
+if grep -q '^CLAUDE_ACCOUNTS=.*DEVLEAD_CLAUDE_ACCOUNT_' /etc/devlead/runner.conf; then _claude_vars=(); fi
+for _v in "${_claude_vars[@]}" GH_TOKEN DEVLEAD_LOOP_CLAUDE_ARGS; do
   [[ -n "${!_v:-}" ]] || log "$_v is not set in the env file — unattended runs will not work until it is"
 done
-unset _v
+unset _v _claude_vars
 
 
 # _clone_dir <workspace> <repo path> <entry number> — root's directories down

@@ -31,12 +31,24 @@
 #   - MAX_SESSIONS_PER_DAY sessions per calendar day, in the configured TZ;
 #   - SESSION_TIMEOUT per session: then TERM, and KILL SESSION_KILL_AFTER later.
 #
+# The Claude account (S12, S21). runner.conf's CLAUDE_ACCOUNTS lists the
+# accounts in priority order, each name with the variable that holds its
+# token (DEVLEAD_CLAUDE_ACCOUNT_<N>_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN for the
+# single-token setup, a pool of one named "default"). Every session runs with
+# one account: the wrapper takes the highest-priority one, and the session's
+# environment gets that account's token as CLAUDE_CODE_OAUTH_TOKEN and no
+# other — every DEVLEAD_CLAUDE_ACCOUNT_*TOKEN* variable is removed from it.
+# Without CLAUDE_ACCOUNTS (no token in the env file) CLAUDE_CODE_OAUTH_TOKEN is
+# left as the caller gave it. A token never reaches the ledger, a message or a
+# log: only the account's name does.
+#
 # Every start, end and refusal is one line of /var/lib/devlead/sessions.tsv,
 # the ledger that run-job.sh reads to audit a run:
 #   day TAB utc time TAB start|end|refused TAB session id TAB run id TAB exit
-#   code TAB detail (timeout on an end line; root, paused, busy, nolock, cap,
-#   noconf or noledger on a refusal). busy is another session holding the
-#   lock; nolock, a lock file that cannot be opened.
+#   code TAB detail (the account's name, or -, on a start line; timeout on an
+#   end line; root, paused, busy, nolock, cap, noconf or noledger on a
+#   refusal). busy is another session holding the lock; nolock, a lock file
+#   that cannot be opened.
 # Its first line is a header root writes at container start (a ledger that is
 # empty at the start of a run was emptied). Root owns /var/lib/devlead — a
 # volume, so the day's count survives a recreated container — and the ledger
@@ -158,6 +170,30 @@ _count="$(awk -F'\t' -v d="$_today" '$1 == d && $3 == "start" { n++ } END { prin
 (( _count < 10#$_max )) \
   || _refuse cap "the daily limit of $_max claude sessions is reached ($_today, $_TZ); the next one can start tomorrow"
 
+# --- The account -----------------------------------------------------------------
+_names=(); _vars=(); _items=()
+read -ra _items <<<"$(_conf_get CLAUDE_ACCOUNTS)"
+for _item in "${_items[@]}"; do
+  [[ "$_item" =~ ^([a-z][a-z0-9-]{0,23})=(CLAUDE_CODE_OAUTH_TOKEN|DEVLEAD_CLAUDE_ACCOUNT_[1-9]_TOKEN)$ ]] \
+    || _refuse noconf "$_noconf"
+  _names+=("${BASH_REMATCH[1]}"); _vars+=("${BASH_REMATCH[2]}")
+done
+_account="-"
+_token=""
+if (( ${#_names[@]} > 0 )); then
+  _account="${_names[0]}"
+  _token="${!_vars[0]:-}"
+fi
+# The session sees one token at most, its account's.
+for _v in $(compgen -e); do
+  [[ "$_v" == DEVLEAD_CLAUDE_ACCOUNT_*TOKEN* ]] && unset "$_v"
+done
+if (( ${#_names[@]} > 0 )); then
+  unset CLAUDE_CODE_OAUTH_TOKEN
+  [[ -n "$_token" ]] && export CLAUDE_CODE_OAUTH_TOKEN="$_token"
+fi
+unset _token _v _item _items
+
 # --- The session ---------------------------------------------------------------
 _sid="$(cat /proc/sys/kernel/random/uuid 2>/dev/null)"
 [[ "$_sid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
@@ -179,7 +215,7 @@ done
 _fg=()
 [[ -t 0 ]] && _fg=(--foreground)
 
-_ledger start "$_sid" - -
+_ledger start "$_sid" - "$_account"
 _start="$(date +%s)"
 # 9<&- : the lock stays with this process; a background process the session
 # leaves behind must not hold it.

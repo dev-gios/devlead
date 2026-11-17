@@ -31,12 +31,16 @@ contains() {
 
 FAKE_DIR="$SANDBOX/fake"
 FAKE_LOG="$SANDBOX/fake.log"
+FAKE_ENV_LOG="$SANDBOX/fake-env.log"
 CONF="$SANDBOX/runner.conf"
 LEDGER="$SANDBOX/state/sessions.tsv"
 LOCK="$SANDBOX/state/session.lock"
 PAUSE="$SANDBOX/PAUSE"
 WRAPPER="$SANDBOX/claude"
-export FAKE_DIR FAKE_LOG
+export FAKE_DIR FAKE_LOG FAKE_ENV_LOG
+# The suite decides which Claude variables a session gets.
+unset CLAUDE_CODE_OAUTH_TOKEN
+while IFS= read -r _v; do unset "$_v"; done < <(compgen -e | grep '^DEVLEAD_CLAUDE_ACCOUNT_')
 mkdir -p "$FAKE_DIR" "$SANDBOX/state"
 : > "$LEDGER"; : > "$LOCK"
 
@@ -46,6 +50,9 @@ cat > "$SANDBOX/real-claude" <<'EOF'
 #!/usr/bin/env bash
 { printf 'ARGS'; for a in "$@"; do printf ' %s' "$a"; done
   printf '\tRUN=%s\tFD9=%s\n' "${DEVLEAD_RUN_ID:-}" "$([[ -e /proc/$$/fd/9 ]] && echo open || echo closed)"; } >> "$FAKE_LOG"
+# The Claude token it was given and the pool variables it can still see.
+printf 'OAUTH=%s\tPOOL=%s\n' "${CLAUDE_CODE_OAUTH_TOKEN-unset}" \
+  "$(compgen -e | grep '^DEVLEAD_CLAUDE_ACCOUNT_' | sort | paste -sd, -)" >> "$FAKE_ENV_LOG"
 [[ -f "$FAKE_DIR/spawn" ]] && { sleep 6 >/dev/null 2>&1 & }
 [[ -f "$FAKE_DIR/stubborn" ]] && trap '' TERM
 [[ -f "$FAKE_DIR/sleep" ]] && sleep "$(cat "$FAKE_DIR/sleep")"
@@ -65,18 +72,20 @@ done
 chmod +x "$WRAPPER"
 
 conf() { # conf [KEY=value...] — the defaults with these overrides
-  local tz=UTC max=3 timeout=60m kill=30s kv
+  local tz=UTC max=3 timeout=60m kill=30s accounts="" kv
   for kv in "$@"; do
     case "$kv" in
       TZ=*) tz="${kv#TZ=}" ;; MAX=*) max="${kv#MAX=}" ;;
       TIMEOUT=*) timeout="${kv#TIMEOUT=}" ;; KILL=*) kill="${kv#KILL=}" ;;
+      ACCOUNTS=*) accounts="${kv#ACCOUNTS=}" ;;
     esac
   done
   printf '# test\nTZ=%s\nMAX_SESSIONS_PER_DAY=%s\nSESSION_TIMEOUT=%s\nSESSION_KILL_AFTER=%s\nAUDIT_RETENTION_DAYS=30\n' \
     "$tz" "$max" "$timeout" "$kill" > "$CONF"
+  [[ -n "$accounts" ]] && printf 'CLAUDE_ACCOUNTS=%s\n' "$accounts" >> "$CONF"
   chmod 0644 "$CONF"
 }
-reset() { : > "$LEDGER"; : > "$FAKE_LOG"; rm -f "$FAKE_DIR"/* "$PAUSE"; conf "$@"; }
+reset() { : > "$LEDGER"; : > "$FAKE_LOG"; : > "$FAKE_ENV_LOG"; rm -f "$FAKE_DIR"/* "$PAUSE"; conf "$@"; }
 # w <args...> — run the wrapper; OUT holds stderr+stdout, RC the exit code.
 w() { OUT="$("$WRAPPER" "$@" </dev/null 2>&1)"; RC=$?; }
 calls() { if [[ -s "$FAKE_LOG" ]]; then wc -l < "$FAKE_LOG" | tr -d ' '; else echo 0; fi; }
@@ -274,6 +283,65 @@ reset TIMEOUT=60m
 echo 137 > "$FAKE_DIR/rc"
 w -p hi
 check "an exit 137 before the limit is not a timeout" "$(awk -F'\t' '$3 == "end" {print $6 "/" $7}' "$LEDGER")" "137/-"
+
+# ===========================================================================
+# Claude accounts (S21): one account per session, its token and no other
+# ===========================================================================
+POOL="team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN ultra=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN"
+TEAM_TOKEN=sk-ant-oat01-DUMMY-team
+ULTRA_TOKEN=sk-ant-oat01-DUMMY-ultra
+POOL_ENV=(DEVLEAD_CLAUDE_ACCOUNT_1=team "DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=$TEAM_TOKEN" DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-01
+          DEVLEAD_CLAUDE_ACCOUNT_2=ultra "DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=$ULTRA_TOKEN" DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-10-15)
+# pw <args...> — the wrapper with the pool in its environment, as the jobs run it.
+pw() { OUT="$(env "${POOL_ENV[@]}" "$WRAPPER" "$@" </dev/null 2>&1)"; RC=$?; }
+start_account() { awk -F'\t' '$3 == "start" {print $7}' "$LEDGER" | paste -sd, -; }
+
+reset ACCOUNTS="$POOL"
+pw -p hi
+check "pool: the session runs" "$RC" "0"
+check "pool: the first account in priority order is used" "$(start_account)" "team"
+check "pool: its token reaches the session as CLAUDE_CODE_OAUTH_TOKEN" "$(cut -f1 "$FAKE_ENV_LOG")" "OAUTH=$TEAM_TOKEN"
+check "pool: no token variable of the pool reaches the session" "$(cut -f2 "$FAKE_ENV_LOG")" \
+  "POOL=DEVLEAD_CLAUDE_ACCOUNT_1,DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED,DEVLEAD_CLAUDE_ACCOUNT_2,DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED"
+check "pool: the ledger names the account, never the token" "$(grep -c 'DUMMY' "$LEDGER")" "0"
+lacks "pool: the wrapper prints no token" "$OUT" "DUMMY"
+
+reset ACCOUNTS="ultra=DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN"
+pw -p hi
+check "pool: the order is runner.conf's, not the numbering's" "$(start_account) $(cut -f1 "$FAKE_ENV_LOG")" "ultra OAUTH=$ULTRA_TOKEN"
+
+reset ACCOUNTS="$POOL"
+env "${POOL_ENV[@]}" CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-DUMMY-caller DEVLEAD_CLAUDE_ACCOUNT_7_TOKEN=x \
+  "$WRAPPER" -p hi </dev/null >/dev/null 2>&1
+check "pool: a token the caller set is replaced by the account's" "$(cut -f1 "$FAKE_ENV_LOG")" "OAUTH=$TEAM_TOKEN"
+check "pool: a stray pool token variable does not reach the session" "$(cut -f2 "$FAKE_ENV_LOG" | grep -c '_7_TOKEN')" "0"
+
+reset ACCOUNTS="$POOL"
+env -u DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN="$ULTRA_TOKEN" "$WRAPPER" -p hi </dev/null >/dev/null 2>&1
+check "pool: an account whose token the caller removed gets no token (the caller's own auth, as before)" \
+  "$(start_account) $(cut -f1 "$FAKE_ENV_LOG")" "team OAUTH=unset"
+
+for bad_item in "team" "team=GH_TOKEN" "Team=DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN" "team=DEVLEAD_CLAUDE_ACCOUNT_0_TOKEN"; do
+  reset ACCOUNTS="$bad_item"
+  pw -p hi
+  check "a CLAUDE_ACCOUNTS entry that is not name=token variable ($bad_item): refused as noconf" \
+    "$RC $(calls) $(awk -F'\t' '{print $7}' "$LEDGER")" "75 0 noconf"
+done
+
+# Previous behaviour: the single token is a pool of one, "default", and the
+# session gets it exactly as before; with no account line nothing changes.
+reset ACCOUNTS="default=CLAUDE_CODE_OAUTH_TOKEN"
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-DUMMY-single w -p hi
+check "single token: the session runs" "$RC" "0"
+check "single token: the session gets the same token" "$(cut -f1 "$FAKE_ENV_LOG")" "OAUTH=sk-ant-oat01-DUMMY-single"
+check "single token: the ledger names the account default" "$(start_account)" "default"
+reset ACCOUNTS="default=CLAUDE_CODE_OAUTH_TOKEN"
+w -p hi
+check "single token removed by the caller (an API key session): still none" "$(cut -f1 "$FAKE_ENV_LOG")" "OAUTH=unset"
+reset
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-DUMMY-single w -p hi
+check "no account line: the caller's token is left as it was" "$(cut -f1 "$FAKE_ENV_LOG")" "OAUTH=sk-ant-oat01-DUMMY-single"
+check "no account line: the start line's detail stays -" "$(start_account)" "-"
 
 # ===========================================================================
 # Fail closed: no trustworthy configuration or ledger, no session

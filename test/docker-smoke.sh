@@ -119,6 +119,7 @@ check ".env (the secrets) is git-ignored" \
   "$(git -C "$REPO_ROOT" check-ignore -q .env && echo ignored || echo tracked)" "ignored"
 _tpl="$(cat "$REPO_ROOT/$TEMPLATE" 2>/dev/null)"
 for var in DEVLEAD_UID DEVLEAD_GID CLAUDE_CODE_OAUTH_TOKEN DEVLEAD_CLAUDE_TOKEN_ISSUED GH_TOKEN \
+           DEVLEAD_CLAUDE_ACCOUNT_1 DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED \
            DEVLEAD_NTFY_URL DEVLEAD_NTFY_TOKEN DEVLEAD_NOTIFY_DETAIL DEVLEAD_LOOP_CLAUDE_ARGS \
            DEVLEAD_DISCOVER_CLAUDE_ARGS DEVLEAD_EGRESS_ALLOW TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP \
            DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER DEVLEAD_CRON_POLL DEVLEAD_CRON_ENDOFDAY \
@@ -673,6 +674,8 @@ if compose up -d --wait --wait-timeout 180 >"$SCRATCH/up.log" 2>&1; then
   check "the crontab: discover off, as the env file says" "$(grep -c 'run-job.sh discover' <<<"$crontab")" "0"
   check "the limits are the env file's" "$(dx grep -E '^(TZ|MAX_SESSIONS_PER_DAY|SESSION_TIMEOUT)=' /etc/devlead/runner.conf | paste -sd, -)" \
     "TZ=America/Bogota,MAX_SESSIONS_PER_DAY=4,SESSION_TIMEOUT=20s"
+  check "the single token is a pool of one account, default (S21)" "$(dx grep '^CLAUDE_ACCOUNTS=' /etc/devlead/runner.conf)" \
+    "CLAUDE_ACCOUNTS=default=CLAUDE_CODE_OAUTH_TOKEN"
 
   # Setup, as the operator: an (empty) fleet list, so the fleet job runs.
   rx sh -c 'touch /home/devlead/.devlead/autonomous-repos && chmod 0644 /home/devlead/.devlead/autonomous-repos'

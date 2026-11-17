@@ -44,6 +44,19 @@ claude setup-token
 
 Aprueba el acceso y guarda el token que imprime. Anota la fecha de hoy. El token dura un año y `doctor` avisa desde el mes 11.
 
+**Varias suscripciones.** Si tienes más de una cuenta de Claude (por ejemplo la del equipo de tu empresa y la tuya personal), el servidor puede usarlas todas como un *pool* de cuentas. Corre `claude setup-token` una vez por cuenta, con la sesión iniciada en esa cuenta, y guarda cada token con su fecha. En el paso 5 cada cuenta lleva un número, que es su prioridad, y un nombre corto:
+
+```bash
+DEVLEAD_CLAUDE_ACCOUNT_1=team                  # la cuenta Team: la que se usa primero
+DEVLEAD_CLAUDE_ACCOUNT_1_TOKEN=sk-ant-oat01-...
+DEVLEAD_CLAUDE_ACCOUNT_1_ISSUED=2026-11-17
+DEVLEAD_CLAUDE_ACCOUNT_2=ultra                 # la cuenta personal: el respaldo
+DEVLEAD_CLAUDE_ACCOUNT_2_TOKEN=sk-ant-oat01-...
+DEVLEAD_CLAUDE_ACCOUNT_2_ISSUED=2026-11-17
+```
+
+El orden es tuyo: el número 1 es la cuenta que se usa primero. Cada sesión usa la cuenta de mayor prioridad y recibe solo el token de esa cuenta. El registro de sesiones y la auditoría nombran la cuenta, nunca el token. Con un pool, deja vacíos `CLAUDE_CODE_OAUTH_TOKEN` y `DEVLEAD_CLAUDE_TOKEN_ISSUED`: las dos formas no se mezclan, y si una cuenta está incompleta o mal escrita el contenedor no arranca y el log nombra la variable.
+
 ### 2. Token de GitHub
 
 Crea un token *fine-grained* en GitHub → Settings → Developer settings → Fine-grained tokens:
@@ -85,7 +98,7 @@ chmod 600 .env
 | `DEVLEAD_WORKSPACE` | La carpeta absoluta que contiene los repos a enrolar |
 | `DEVLEAD_REPOS` | `<ruta local>=<owner>/<repo>`, separados por comas |
 | `DEVLEAD_GIT_NAME`, `DEVLEAD_GIT_EMAIL` | El autor de los commits del servidor |
-| `CLAUDE_CODE_OAUTH_TOKEN`, `DEVLEAD_CLAUDE_TOKEN_ISSUED` | El token del paso 1 y su fecha (`AAAA-MM-DD`) |
+| `CLAUDE_CODE_OAUTH_TOKEN`, `DEVLEAD_CLAUDE_TOKEN_ISSUED` | El token del paso 1 y su fecha (`AAAA-MM-DD`); o, con varias cuentas, `DEVLEAD_CLAUDE_ACCOUNT_<N>`, `_TOKEN` e `_ISSUED` por cuenta |
 | `GH_TOKEN` | El token del paso 2 |
 | `TZ` | Tu zona horaria, por ejemplo `America/Bogota` |
 
@@ -151,7 +164,7 @@ Los comandos que actúan como el agente llevan `-u devlead`. `docker compose exe
 ## Mantenimiento
 
 - **Actualizar DevLead:** `git pull` en este repo y luego el mismo comando del paso 7. La versión de Claude Code está fijada en la imagen y solo cambia al reconstruir.
-- **Renovar el token de Claude** antes del año: `claude setup-token`, actualiza `CLAUDE_CODE_OAUTH_TOKEN` y `DEVLEAD_CLAUDE_TOKEN_ISSUED` en `.env`, y corre `docker compose up -d`.
+- **Renovar el token de Claude** antes del año: `claude setup-token`, actualiza `CLAUDE_CODE_OAUTH_TOKEN` y `DEVLEAD_CLAUDE_TOKEN_ISSUED` en `.env`, y corre `docker compose up -d`. Con un pool, renueva la cuenta que nombra el aviso: su `DEVLEAD_CLAUDE_ACCOUNT_<N>_TOKEN` y su `DEVLEAD_CLAUDE_ACCOUNT_<N>_ISSUED`.
 - **Detener:** `docker compose down`. Los clones y el conteo diario quedan en sus volúmenes. `docker compose down -v` también borra los volúmenes.
 
 ## Límites conocidos
