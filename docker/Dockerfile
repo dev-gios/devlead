@@ -52,11 +52,6 @@ RUN npm install -g --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_CODE
  && npm cache clean --force \
  && claude --version | grep -qF "$CLAUDE_CODE_VERSION"
 
-# git authenticates to GitHub through gh, which reads GH_TOKEN (S10). System
-# config: root-owned, so a session cannot point it somewhere else.
-RUN git config --system credential.https://github.com.helper '' \
- && git config --system --add credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'
-
 # The devlead user, with the host's UID/GID. The base image's node user holds
 # 1000, the usual host UID, so it goes.
 RUN set -eux; \
@@ -81,17 +76,31 @@ COPY docker/entrypoint.sh docker/init-firewall.sh /opt/devlead/docker/
 # writable by root only.
 COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
 
-# Layout. The agent must not be able to swap what it runs:
+# Layout. The agent must not be able to swap what it runs, nor leave behind
+# anything that the next session reads as configuration:
 #   /opt/devlead            root:root, files 0644, scripts 0755
 #   /etc/claude-code        root:root; DevLead's commands are installed here as
 #                           enterprise skills (/sweep-execute and the rest)
-#   /home/devlead           root:<gid> 1775 — sticky and group-writable, like
-#                           /tmp: the user creates and renames its own files
-#                           (Claude Code's ~/.claude, ~/.claude.json, caches)
-#                           but cannot rename or replace anything root owns
+#   /etc/devlead            root:root. server-mode: the marker that keeps
+#                           guard.sh on whatever the environment says.
+#                           gitconfig: git's only config file besides each
+#                           repo's own (GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM)
+#   /home/devlead           root:root 0755: the user writes nothing directly
+#                           in it, so it cannot create ~/.gitconfig,
+#                           ~/.config/git or ~/.claude.json
 #   ~/.bashrc and the other shell startup files
 #                           root-owned and empty: a session cannot plant a
 #                           function that shadows `bash` in the next one
+#   ~/.cache                the user's (caches, gate-check.sh's test cache)
+#   ~/.claude               CLAUDE_CONFIG_DIR, root:root 0755. Its settings
+#                           files, CLAUDE.md and the agents/, commands/,
+#                           skills/, hooks/, output-styles/, plugins/, rules/,
+#                           workflows/, agent-memory/ and themes/ directories
+#                           are root-owned and empty, and nothing else can be
+#                           created next to them (no cached server policy, no
+#                           keybindings). Only Claude Code's runtime state is
+#                           the user's: .claude.json and the session, project
+#                           history, snapshot and backup directories.
 #   ~/.devlead              root:root 0755. scripts and hooks are root-owned
 #                           links to /opt/devlead, so the paths the scripts
 #                           use ($HOME/.devlead/scripts/...) keep working. The
@@ -99,19 +108,25 @@ COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
 #                           are the user's; notify.env is written at start.
 #                           F3 (S14) mounts the host's state over them.
 RUN set -eux; \
-    chown -R root:root /opt/devlead /etc/claude-code; \
+    install -d -m 0755 -o root -g root /etc/devlead; \
+    printf '%s\n' 'DevLead server image: guard.sh is always on (see .claude/hooks/guard.sh).' \
+      > /etc/devlead/server-mode; \
+    git config --file /etc/devlead/gitconfig credential.https://github.com.helper ''; \
+    git config --file /etc/devlead/gitconfig --add credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'; \
+    chown -R root:root /opt/devlead /etc/claude-code /etc/devlead; \
     for f in /opt/devlead/commands/*.md; do \
       name="$(basename "$f" .md)"; \
       install -D -m 0644 "$f" "/etc/claude-code/.claude/skills/$name/SKILL.md"; \
     done; \
-    find /opt/devlead /etc/claude-code -type d -exec chmod 0755 {} +; \
-    find /opt/devlead /etc/claude-code -type f -exec chmod 0644 {} +; \
+    find /opt/devlead /etc/claude-code /etc/devlead -type d -exec chmod 0755 {} +; \
+    find /opt/devlead /etc/claude-code /etc/devlead -type f -exec chmod 0644 {} +; \
     chmod 0755 /opt/devlead/scripts/*.sh /opt/devlead/hooks/*.sh /opt/devlead/bin/devlead /opt/devlead/docker/*.sh; \
     ln -s /opt/devlead/bin/devlead /usr/local/bin/devlead; \
-    install -d -m 1775 -o root -g "$DEVLEAD_GID" /home/devlead; \
+    install -d -m 0755 -o root -g root /home/devlead; \
     for f in .bashrc .bash_profile .bash_login .bash_logout .profile; do \
       install -m 0644 -o root -g root /dev/null "/home/devlead/$f"; \
     done; \
+    install -d -m 0700 -o "$DEVLEAD_UID" -g "$DEVLEAD_GID" /home/devlead/.cache; \
     install -d -m 0755 -o root -g root /home/devlead/.devlead; \
     ln -s /opt/devlead/scripts /home/devlead/.devlead/scripts; \
     ln -s /opt/devlead/hooks /home/devlead/.devlead/hooks; \
@@ -121,14 +136,33 @@ RUN set -eux; \
     for f in inbox.tsv inbox.read.tsv; do \
       install -m 0600 -o "$DEVLEAD_UID" -g "$DEVLEAD_GID" /dev/null "/home/devlead/.devlead/$f"; \
     done; \
-    install -d -m 0700 -o "$DEVLEAD_UID" -g "$DEVLEAD_GID" /home/devlead/.claude
+    install -d -m 0755 -o root -g root /home/devlead/.claude; \
+    for f in settings.json settings.local.json; do \
+      printf '{}\n' > "/home/devlead/.claude/$f"; \
+    done; \
+    : > /home/devlead/.claude/CLAUDE.md; \
+    chmod 0644 /home/devlead/.claude/settings.json /home/devlead/.claude/settings.local.json /home/devlead/.claude/CLAUDE.md; \
+    for d in agents commands skills hooks output-styles plugins rules workflows agent-memory themes; do \
+      install -d -m 0755 -o root -g root "/home/devlead/.claude/$d"; \
+    done; \
+    for d in backups cache debug file-history paste-cache plans projects session-env sessions shell-snapshots tasks; do \
+      install -d -m 0700 -o "$DEVLEAD_UID" -g "$DEVLEAD_GID" "/home/devlead/.claude/$d"; \
+    done; \
+    printf '{}\n' > /home/devlead/.claude/.claude.json; \
+    chown "$DEVLEAD_UID:$DEVLEAD_GID" /home/devlead/.claude/.claude.json; \
+    chmod 0600 /home/devlead/.claude/.claude.json
 
 # No user-writable directory on PATH, so neither the hooks nor the scripts can
 # be handed a planted binary. DEVLEAD_GUARD=1 turns guard.sh on in every
-# session started in this container, unattended or not.
+# session started in this container, unattended or not; the server-mode marker
+# keeps it on if a session's settings say otherwise, and the managed settings
+# pin these variables for every session as well.
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    CLAUDE_CONFIG_DIR=/home/devlead/.claude \
+    GIT_CONFIG_GLOBAL=/etc/devlead/gitconfig \
+    GIT_CONFIG_NOSYSTEM=1 \
     DEVLEAD_GUARD=1
 
 WORKDIR /home/devlead

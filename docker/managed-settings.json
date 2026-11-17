@@ -4,6 +4,7 @@
     "disableBypassPermissionsMode": "disable",
     "deny": [
       "Edit(//etc/claude-code/**)",
+      "Edit(//etc/devlead/**)",
       "Edit(//opt/devlead/**)",
       "Edit(~/.devlead/**)",
       "Edit(~/.claude/settings.json)",
@@ -12,9 +13,22 @@
     ]
   },
   "allowManagedHooksOnly": true,
+  "allowManagedMcpServersOnly": true,
+  "allowedMcpServers": [],
+  "autoMemoryEnabled": false,
   "env": {
     "DISABLE_AUTOUPDATER": "1",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+    "DEVLEAD_GUARD": "1",
+    "BASH_ENV": "",
+    "ENV": "",
+    "NODE_OPTIONS": "",
+    "LD_PRELOAD": "",
+    "PROMPT_COMMAND": "",
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "GIT_CONFIG_GLOBAL": "/etc/devlead/gitconfig",
+    "GIT_CONFIG_NOSYSTEM": "1"
   },
   "hooks": {
     "PreToolUse": [

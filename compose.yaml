@@ -1,13 +1,16 @@
 # DevLead server (S20): one long-lived container, built locally from this
 # repository.
 #
-#   cp .env.example .env && chmod 600 .env    # then fill it in
+#   cp docker/devlead.env.example .env && chmod 600 .env    # then fill it in
 #   docker compose up -d --build
 #   docker compose ps                         # STATUS shows (healthy)
 #
 # Everything secret comes from .env, which stays out of git and out of the
-# image (.dockerignore). DEVLEAD_ENV_FILE and DEVLEAD_IMAGE exist so the smoke
-# test (make docker-test) can use dummy values and its own image tag.
+# image (.dockerignore). compose also reads DEVLEAD_UID and DEVLEAD_GID from it
+# and refuses to go on without them: the container must run as your user, and
+# a silent default could be someone else's. DEVLEAD_ENV_FILE and DEVLEAD_IMAGE
+# exist so the smoke test (make docker-test) can use dummy values and its own
+# image tag.
 name: devlead
 
 services:
@@ -16,8 +19,8 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       args:
-        DEVLEAD_UID: ${DEVLEAD_UID:-1000}
-        DEVLEAD_GID: ${DEVLEAD_GID:-1000}
+        DEVLEAD_UID: ${DEVLEAD_UID:?set DEVLEAD_UID in .env to the output of `id -u`}
+        DEVLEAD_GID: ${DEVLEAD_GID:?set DEVLEAD_GID in .env to the output of `id -g`}
     image: ${DEVLEAD_IMAGE:-devlead-server:local}
     restart: unless-stopped
     env_file:

@@ -10,13 +10,15 @@
 # runs on an open network (fail closed).
 #
 # What may leave the container (IPv4, TCP 443 unless a port is given):
-#   - loopback, which includes Docker's embedded DNS on 127.0.0.11
+#   - loopback
 #   - replies on connections that were allowed (ESTABLISHED,RELATED)
-#   - DNS (udp/tcp 53) to the nameservers in /etc/resolv.conf. Docker's
-#     embedded resolver (127.0.0.11) forwards each query to the host's DNS
-#     from inside this network namespace, through a socket owned by root, so
-#     root may send DNS to any server; the devlead user (UID != 0) reaches
-#     only the resolvers resolv.conf names
+#   - DNS (udp/tcp 53), for root only. Docker's embedded resolver (127.0.0.11)
+#     forwards each query to the host's DNS from inside this network
+#     namespace through a root-owned socket, and this script resolves the
+#     allowlist as root. The devlead user (UID != 0) gets no DNS at all — not
+#     even 127.0.0.11, which would resolve any name and so carry data out in
+#     the names it looks up. It resolves the allowlisted names, and only
+#     those, from /etc/hosts, which this script writes
 #   - Anthropic: the API and the auth hosts Claude Code needs
 #     (https://code.claude.com/docs/en/network-config)
 #   - GitHub: the web, api and git ranges GitHub publishes at
@@ -28,8 +30,9 @@
 #     address; address ranges are not accepted.
 # Everything else is rejected, and IPv6 is closed except for loopback.
 #
-# Names are resolved once, when this runs. An address that changes later is
-# picked up when the container restarts.
+# Names are resolved once, when this runs, and written to /etc/hosts with the
+# addresses they had. An address that changes later is picked up when the
+# container restarts.
 #
 # An allowlist entry that cannot be parsed or resolved is fatal, not skipped:
 # a typo should stop the container with its name, not fail a run at night.
@@ -113,6 +116,7 @@ _valid_port() { [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 ))
 
 ALLOW=()      # "<ipv4 or cidr> <port>"
 HOSTS=()      # names, for the log line
+HOSTS_FILE_LINES=()   # "<ipv4> <name>", the user's only name resolution
 
 # _allow_host <host> <port> — an IPv4 address as is, a name by its addresses.
 _allow_host() {
@@ -129,6 +133,7 @@ _allow_host() {
   while IFS= read -r ip; do
     _valid_ipv4 "$ip" || die "$host resolved to '$ip', which is not an IPv4 address"
     ALLOW+=("$ip $port")
+    HOSTS_FILE_LINES+=("$ip $host")
   done <<<"$ips"
   HOSTS+=("$host:$port")
 }
@@ -171,32 +176,32 @@ if [[ -n "${DEVLEAD_EGRESS_ALLOW:-}" ]]; then
   done
 fi
 
-# Nameservers.
-NAMESERVERS=()
+# The resolvers resolv.conf names — Docker's embedded 127.0.0.11 in a compose
+# network. User traffic to them is rejected on any port (Docker redirects
+# 127.0.0.11:53 to another port), before the loopback rule could let it through.
+RESOLVERS=()
 while read -r _kw _ns _; do
   [[ "$_kw" == "nameserver" ]] || continue
-  _valid_ipv4 "$_ns" && NAMESERVERS+=("$_ns")
+  _valid_ipv4 "$_ns" && RESOLVERS+=("$_ns")
 done < /etc/resolv.conf
-(( ${#NAMESERVERS[@]} > 0 )) || die "no IPv4 nameserver in /etc/resolv.conf"
 
 # --- Apply ----------------------------------------------------------------------
 
 _ruleset4() {
-  local ns dst port
+  local dst port ns
   echo "*filter"
   echo ":INPUT DROP [0:0]"
   echo ":FORWARD DROP [0:0]"
   echo ":OUTPUT DROP [0:0]"
   echo "-A INPUT -i lo -j ACCEPT"
   echo "-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
+  for ns in "${RESOLVERS[@]}"; do
+    echo "-A OUTPUT -d $ns/32 -m owner ! --uid-owner 0 -j REJECT --reject-with icmp-admin-prohibited"
+  done
   echo "-A OUTPUT -o lo -j ACCEPT"
   echo "-A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
   echo "-A OUTPUT -p udp -m udp --dport 53 -m owner --uid-owner 0 -j ACCEPT"
   echo "-A OUTPUT -p tcp -m tcp --dport 53 -m owner --uid-owner 0 -j ACCEPT"
-  for ns in "${NAMESERVERS[@]}"; do
-    echo "-A OUTPUT -d $ns/32 -p udp -m udp --dport 53 -j ACCEPT"
-    echo "-A OUTPUT -d $ns/32 -p tcp -m tcp --dport 53 -j ACCEPT"
-  done
   while read -r dst port; do
     [[ "$dst" == */* ]] || dst="$dst/32"
     echo "-A OUTPUT -d $dst -p tcp -m tcp --dport $port -j ACCEPT"
@@ -216,6 +221,16 @@ _ruleset6() {
   echo "COMMIT"
 }
 
+# /etc/hosts: Docker's own lines, then the allowlist. Rewritten in place (it
+# is a bind mount) on every start, so a restart drops the old addresses.
+HOSTS_TAG="# devlead-firewall"
+{
+  grep -vF "$HOSTS_TAG" /etc/hosts || true
+  printf '%s\n' "${HOSTS_FILE_LINES[@]}" | sort -u | sed "s/\$/ $HOSTS_TAG/"
+} > /etc/hosts.devlead.new || die "cannot build the new /etc/hosts"
+cat /etc/hosts.devlead.new > /etc/hosts || die "cannot write /etc/hosts"
+rm -f /etc/hosts.devlead.new
+
 _ruleset4 | iptables-restore -w || die "iptables-restore failed (does the container have NET_ADMIN?)"
 if _has_ipv6; then
   command -v ip6tables-restore >/dev/null 2>&1 || die "ip6tables-restore is not installed"
@@ -232,4 +247,4 @@ if curl -fsS --max-time 5 -o /dev/null "$PROBE_URL" 2>/dev/null; then
   die "$PROBE_URL is still reachable — the egress firewall is not effective"
 fi
 
-log "egress allowed to $(printf '%s\n' "${ALLOW[@]}" | sort -u | wc -l | tr -d ' ') destinations: ${HOSTS[*]} and the GitHub ranges ($_n_ranges listed); DNS via ${NAMESERVERS[*]}"
+log "egress allowed to $(printf '%s\n' "${ALLOW[@]}" | sort -u | wc -l | tr -d ' ') destinations: ${HOSTS[*]} and the GitHub ranges ($_n_ranges listed); DNS for root only, the user resolves these names from /etc/hosts"

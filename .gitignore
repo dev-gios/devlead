@@ -18,8 +18,7 @@ IMG_*.png
 # LOCAL-PLAN plan file — personal/ephemeral, must not be committed (REQ-1.5)
 .devlead/plan.local.yml
 
-# DevLead server secrets (compose.yaml, S12) — never committed. Only the
-# template is tracked.
+# DevLead server secrets (compose.yaml, S12) — never committed. The tracked
+# template is docker/devlead.env.example.
 .env
 .env.*
-!.env.example
