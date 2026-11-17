@@ -251,7 +251,8 @@ if (( ${#_names[@]} > 0 )); then
   done
   if (( _sel < 0 )); then
     _earliest=""
-    for _u in "${_rest[@]}"; do
+    for _n in "${_names[@]}"; do
+      _u="${_rest[$_n]}"
       [[ "$_u" != "-" ]] && { [[ -z "$_earliest" ]] || (( 10#$_u < 10#$_earliest )); } && _earliest="$_u"
     done
     _when="a token is renewed and the container restarted"

@@ -447,7 +447,8 @@ done
 # Every account resting: no session, not counted, one machine-readable line.
 reset ACCOUNTS="$POOL" MAX=5
 early=$(( $(now) + 3600 )); late=$(( $(now) + 7200 ))
-printf 'team\t%s\tfive_hour\tt\ts\tr\treported\nultra\t%s\tseven_day\tt\ts\tr\treported\n' "$late" "$early" > "$MARKS"
+printf 'gone\t%s\tfive_hour\tt\ts\tr\treported\nteam\t%s\tfive_hour\tt\ts\tr\treported\nultra\t%s\tseven_day\tt\ts\tr\treported\n' \
+  "$(( $(now) + 60 ))" "$late" "$early" > "$MARKS"
 OUT_STDOUT="$(env "${POOL_ENV[@]}" "$WRAPPER" -p hi </dev/null 2>"$SANDBOX/stderr")"; RC=$?
 check "all resting: refused (75)" "$RC" "75"
 check "all resting: stdout says claude-limited, for the launchers" "$OUT_STDOUT" "STATUS: claude-limited"
