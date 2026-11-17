@@ -344,6 +344,21 @@ git remote set-url origin "$SANDBOX/gone.git"
 srv_refused "origin cannot be fetched" "merge refused: envelope blocked — cannot fetch origin's default branch 'main'"
 git remote set-url origin "$SANDBOX/origin.git"
 
+# GitHub cannot be asked (gh auth down) and the local origin/HEAD symref was
+# pointed at a branch the session pushed with a granting envelope: the
+# symref is never the answer in server mode, so no envelope, no merge.
+git checkout -q -b grant main
+write_envelope "  integration_branch: dev" "integration-branch"
+git add .devlead/envelope.yml && git commit -q --allow-empty -m "a granting envelope on a pushed branch" && git push -q origin grant 2>/dev/null
+git checkout -q main
+git fetch -q origin 2>/dev/null
+git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/grant
+cp "$FAKEBIN/gh-authdown" "$FAKEBIN/gh"; chmod +x "$FAKEBIN/gh"
+srv_refused "gh cannot answer, the symref points at a pushed granting branch" \
+  "merge refused: envelope blocked — cannot ask GitHub for origin's default branch"
+cp "$FAKEBIN/gh.real" "$FAKEBIN/gh"
+git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+
 # Without the marker the same copy reads the working tree, as on any host.
 rm -f "$MARKER"
 write_envelope "  integration_branch: dev" "integration-branch"

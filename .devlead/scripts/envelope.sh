@@ -70,6 +70,10 @@ fi
 # branch". Prints the branch name and returns 0, or returns 1 (no stdout)
 # when neither source resolves — callers fail closed on that case
 # (GOVERNANCE.md §A3).
+# _GH_ONLY=1 (set by `show --origin`) drops the symref fallback: there the
+# answer decides which branch merge authority is read from, and a session can
+# rewrite the local symref — no answer from GitHub, no default branch.
+_GH_ONLY=0
 _resolve_default_branch() {
   local _db _auth_rc _view_rc _gh_timeout=()
   # `timeout` is coreutils and normally present, but don't assume it: if
@@ -96,6 +100,7 @@ _resolve_default_branch() {
       fi
     fi
   fi
+  [[ "$_GH_ONLY" == "1" ]] && return 1
   _db=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
   if [[ -n "$_db" ]]; then
     printf '%s' "$_db"
@@ -420,14 +425,18 @@ _do_upgrade() {
 # default branch holds. Points ENV_FILE at a private copy of that blob; any
 # step that cannot be completed blocks (fail closed). Replace objects are
 # ignored: a planted refs/replace/ entry cannot swap the blob read here.
+# The default branch is GitHub's answer only (gh repo view), never the local
+# origin/HEAD symref, which a session can point at a branch it pushed; the
+# same holds for the integration-branch check that follows.
 # ---------------------------------------------------------------------------
 _ORIGIN_TMP=""
 _origin_envelope() {
   local d _t=()
   command -v timeout &>/dev/null && _t=(timeout 60)
+  _GH_ONLY=1
   d="$(_resolve_default_branch)" || d=""
   [[ -n "$d" ]] \
-    || _block "cannot resolve origin's default branch — the envelope committed there cannot be read"
+    || _block "cannot ask GitHub for origin's default branch — the envelope committed there cannot be read"
   [[ "$d" =~ ^[A-Za-z0-9._/-]+$ && "$d" != *..* && "$d" != -* ]] \
     || _block "origin's default branch has a name DevLead does not read — the envelope committed there cannot be read"
   "${_t[@]}" git -c fetch.prune=false fetch --quiet --no-tags origin \
