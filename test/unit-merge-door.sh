@@ -267,6 +267,107 @@ before="$(sha256sum .devlead/envelope.yml)"
 FAKE_PR_BASE=dev run_door 7 >/dev/null 2>&1
 check "envelope untouched" "$(sha256sum .devlead/envelope.yml)" "$before"
 
+# ===========================================================================
+# Server mode (L21 A1): authority is the envelope committed on origin's
+# default branch, fetched at merge time — never the clone's working tree.
+# A copy of the scripts whose SERVER_MARKER points at a sandbox file.
+# ===========================================================================
+SRV="$SANDBOX/server-scripts"
+cp -r "$REPO_ROOT/.devlead/scripts" "$SRV"
+MARKER="$SANDBOX/server-mode"
+check "merge.sh has the fixed path SERVER_MARKER" "$(grep -c '^SERVER_MARKER=' "$SRV/merge.sh")" "1"
+sed -i "s|^SERVER_MARKER=.*|SERVER_MARKER=$MARKER|" "$SRV/merge.sh"
+touch "$MARKER"
+run_server() {
+  : > "$GH_LOG"
+  HOME="$FAKE_HOME" GH_LOG="$GH_LOG" PATH="$FAKEBIN:$PATH" bash "$SRV/merge.sh" "$@"
+}
+# srv_refused <label> <expected-substring> — as `refused`, through the copy.
+srv_refused() {
+  local out rc
+  out="$(FAKE_PR_BASE=dev run_server 7 2>/dev/null)"; rc=$?
+  check "server: $1: exit 2" "$rc" "2"
+  check "server: $1: gh pr merge never invoked" "$(merge_calls)" "0"
+  contains "server: $1: reason" "$out" "PARK_REASON: $2"
+}
+# on_origin <merge.mode> — commit an envelope to origin's default branch, then
+# leave the working tree's copy as it was.
+on_origin() {
+  local keep; keep="$(cat .devlead/envelope.yml)"
+  git checkout -q main
+  write_envelope "  integration_branch: dev" "$1"
+  git add .devlead/envelope.yml && git commit -q -m "envelope: $1" && git push -q origin main 2>/dev/null
+  printf '%s\n' "$keep" > .devlead/envelope.yml
+}
+
+# The working tree grants merging; origin has no envelope at all.
+write_envelope "  integration_branch: dev" "integration-branch"
+srv_refused "no envelope on origin, the working tree grants" "merge refused: envelope blocked — no envelope.yml on origin's default branch 'main'"
+
+on_origin never
+write_envelope "  integration_branch: dev" "integration-branch"
+srv_refused "origin says never, the working tree was rewritten to grant" "merge refused: merge.mode is 'never'"
+check "server: the working tree's envelope is left as it is" "$(grep -c 'mode: integration-branch' .devlead/envelope.yml)" "1"
+
+on_origin integration-branch
+write_envelope "  integration_branch: dev" "never"
+out="$(FAKE_PR_BASE=dev run_server 7 2>/dev/null)"; rc=$?
+check "server: origin grants, the working tree says never: merged (exit 0)" "$rc" "0"
+check "server: origin grants: exact gh call" "$(cat "$GH_LOG")" "$(printf 'CALL\tpr\tmerge\t7\t--merge')"
+
+# A stale local origin/main still grants; origin itself was moved to never.
+# The door fetches before it reads.
+_stale="$(git rev-parse origin/main)"
+git clone -q "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
+( cd "$SANDBOX/other" && git checkout -q main && sed -i 's/mode: integration-branch/mode: never/' .devlead/envelope.yml \
+  && git -c user.email=t@t -c user.name=t commit -q -am "envelope: never" && git push -q origin main 2>/dev/null )
+check "server: the local origin/main is stale before the merge" "$(git rev-parse origin/main)" "$_stale"
+write_envelope "  integration_branch: dev" "integration-branch"
+srv_refused "stale local origin/main grants, origin says never" "merge refused: merge.mode is 'never'"
+
+# A replace ref planted in the clone cannot swap the blob read from origin.
+git checkout -q -b fake origin/main
+write_envelope "  integration_branch: dev" "integration-branch"
+git add .devlead/envelope.yml && git commit -q -m "fake grant"
+git replace "$(git rev-parse origin/main)" "$(git rev-parse HEAD)"
+git checkout -q main
+srv_refused "a planted refs/replace entry" "merge refused: merge.mode is 'never'"
+git replace -d "$(git rev-parse origin/main)" >/dev/null
+
+# An envelope on origin that does not validate refuses like any blocked one.
+( cd "$SANDBOX/other" && git pull -q 2>/dev/null; echo "surprise: key" >> .devlead/envelope.yml \
+  && git -c user.email=t@t -c user.name=t commit -q -am "envelope: invalid" && git push -q origin main 2>/dev/null )
+srv_refused "invalid envelope on origin" "merge refused: envelope blocked — unknown top-level key 'surprise'"
+
+# origin cannot be fetched: no answer, no merge.
+git remote set-url origin "$SANDBOX/gone.git"
+srv_refused "origin cannot be fetched" "merge refused: envelope blocked — cannot fetch origin's default branch 'main'"
+git remote set-url origin "$SANDBOX/origin.git"
+
+# GitHub cannot be asked (gh auth down) and the local origin/HEAD symref was
+# pointed at a branch the session pushed with a granting envelope: the
+# symref is never the answer in server mode, so no envelope, no merge.
+git checkout -q -b grant main
+write_envelope "  integration_branch: dev" "integration-branch"
+git add .devlead/envelope.yml && git commit -q --allow-empty -m "a granting envelope on a pushed branch" && git push -q origin grant 2>/dev/null
+git checkout -q main
+git fetch -q origin 2>/dev/null
+git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/grant
+cp "$FAKEBIN/gh-authdown" "$FAKEBIN/gh"; chmod +x "$FAKEBIN/gh"
+srv_refused "gh cannot answer, the symref points at a pushed granting branch" \
+  "merge refused: envelope blocked — cannot ask GitHub for origin's default branch"
+cp "$FAKEBIN/gh.real" "$FAKEBIN/gh"
+git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+
+# Without the marker the same copy reads the working tree, as on any host.
+rm -f "$MARKER"
+write_envelope "  integration_branch: dev" "integration-branch"
+out="$(FAKE_PR_BASE=dev run_server 7 2>/dev/null)"; rc=$?
+check "no server marker: the working tree's envelope decides (exit 0)" "$rc" "0"
+write_envelope "  integration_branch: dev" "never"
+out="$(FAKE_PR_BASE=dev run_server 7 2>/dev/null)"; rc=$?
+check "no server marker: the working tree's never refuses (exit 2)" "$rc" "2"
+
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
 [[ "$FAIL_COUNT" -eq 0 ]]

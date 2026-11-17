@@ -413,6 +413,71 @@ printf '{"tool_name":"Bash","tool_input":{"command":"ls"}}' | PATH="$NOJQ" DEVLE
 if [[ $rc -eq 2 ]] && grep -q 'jq is not installed' "$ERR"; then _ok "without jq every call is blocked"
 else _fail "without jq every call is blocked" "exit=$rc"; fi
 
+echo "=== irreversible: the DevLead server only (S2) ==="
+# A copy of the guard whose SERVER_MARKER points at a sandbox file.
+GUARD_HOST="$GUARD"
+GUARD="$SANDBOX/guard-server.sh"
+cp "$GUARD_HOST" "$GUARD"
+sed -i "s|^SERVER_MARKER=.*|SERVER_MARKER=$SANDBOX/server-mode|" "$GUARD"
+touch "$SANDBOX/server-mode"
+if [[ "$(grep -c "^SERVER_MARKER=$SANDBOX/server-mode\$" "$GUARD")" == 1 ]]; then _ok "the server copy points at the sandbox marker"
+else _fail "the server copy points at the sandbox marker" "SERVER_MARKER line not rewritten"; fi
+bash_blocked irreversible 'gh issue close 12'
+bash_blocked irreversible 'gh issue close 12 --comment "done"'
+bash_blocked irreversible 'gh issue comment 12 --body hi'
+bash_blocked irreversible 'gh issue delete 12 --yes'
+bash_blocked irreversible 'gh issue transfer 12 other/repo'
+bash_blocked irreversible 'cd sub && gh pr comment 7 -b "looks good"'
+bash_blocked irreversible 'gh pr review 7 --approve'
+bash_blocked irreversible 'gh pr close 7 --delete-branch'
+bash_blocked irreversible 'git push origin --delete feat/x'
+bash_blocked irreversible 'git push -d origin feat/x'
+bash_blocked irreversible 'git push origin :feat/x'
+bash_blocked irreversible 'git push origin +:refs/heads/feat/x'
+bash_blocked irreversible 'gh api -X DELETE repos/o/r/git/refs/heads/feat/x'
+bash_blocked irreversible 'gh api --method=delete repos/o/r/issues/comments/9'
+bash_blocked irreversible 'gh api repos/o/r/issues/12 -X PATCH -f state=closed'
+bash_blocked irreversible 'gh api repos/o/r/issues/12/comments -f body=hi'
+bash_blocked irreversible 'gh api -X POST repos/o/r/pulls/7/reviews --input review.json'
+# gh's options between the noun and the verb (B1), every verb of the rule.
+for _v in 'close 5' 'comment 5 --body hi' 'delete 5 --yes' 'lock 5' 'transfer 5 o/other'; do
+  bash_blocked irreversible "gh issue -R o/r $_v"
+  bash_blocked irreversible "gh issue --repo o/r $_v"
+  bash_blocked irreversible "gh issue --repo=o/r $_v"
+  bash_blocked irreversible "gh issue -Ro/r $_v"
+done
+for _v in 'close 5' 'comment 5 -b hi' 'review 5 --approve' 'ready 5'; do
+  bash_blocked irreversible "gh pr -R o/r $_v"
+  bash_blocked irreversible "gh pr --repo o/r $_v"
+  bash_blocked irreversible "gh pr --repo=o/r $_v"
+done
+# S3: a draft is the door's call; nothing in the server un-drafts a PR.
+bash_blocked irreversible 'gh pr ready 7'
+bash_blocked irreversible 'gh pr ready https://github.com/o/r/pull/7'
+bash_blocked irreversible 'cd sub && gh pr ready --undo 7'
+bash_allowed 'gh issue list --search close'
+bash_allowed 'gh issue -R o/r list --search close --json number'
+bash_allowed 'gh pr -R o/r view 5 --json reviews'
+bash_allowed 'gh pr list --label ready'
+bash_allowed 'gh issue view 12 --json title,body'
+bash_allowed 'gh issue list --search "close the modal"'
+bash_allowed 'gh issue create --title t --body b'
+bash_allowed 'gh pr view 7 --json state'
+bash_allowed 'git push -u origin feat/x'
+bash_allowed 'git push --force-with-lease origin feat/x'
+bash_allowed 'git branch -D feat/x'
+bash_allowed 'gh api repos/{owner}/{repo}/issues/12/events --paginate'
+bash_allowed 'gh api "repos/{owner}/{repo}/issues/comments?sort=created&direction=desc&per_page=50"'
+GUARD="$GUARD_HOST"
+# Without the marker (any host) none of these is a limit: the user is there.
+bash_allowed 'gh issue close 12'
+bash_allowed 'gh pr comment 7 -b "looks good"'
+bash_allowed 'git push origin --delete feat/x'
+bash_allowed 'gh api -X DELETE repos/o/r/git/refs/heads/feat/x'
+bash_allowed 'gh issue -R o/r close 5'
+bash_allowed 'gh pr --repo=o/r review 5 --approve'
+bash_allowed 'gh pr ready 7'
+
 echo "=== inert outside DevLead ==="
 _payload='{"tool_name":"Bash","tool_input":{"command":"vercel --prod"},"cwd":"'"$WORK"'"}'
 printf '%s' "$_payload" | env -u DEVLEAD_GUARD bash "$GUARD" 2>"$ERR"; rc=$?

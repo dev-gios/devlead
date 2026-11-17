@@ -33,9 +33,9 @@ lacks() {
 
 # The settings come only from the variables given to each call: the caller's
 # shell gets no vote.
-SETTINGS=(TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER
+SETTINGS=(TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER DEVLEAD_CRON_POLL DEVLEAD_CRON_ENDOFDAY
           DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT DEVLEAD_AUDIT_RETENTION_DAYS
-          DEVLEAD_CLAUDE_BIN DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_STATE_DIR
+          DEVLEAD_CLAUDE_BIN DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_LOOP_PLAN DEVLEAD_STATE_DIR
           DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL DEVLEAD_JOB_TIMEOUT DEVLEAD_JOB_LOCK_WAIT)
 UNSET=()
 for _v in "${SETTINGS[@]}"; do UNSET+=(-u "$_v"); done
@@ -52,10 +52,10 @@ cron_ok() { env "${UNSET[@]}" bash "$CFG" check-cron "$1" >/dev/null 2>&1 && ech
 # The job table: one line per job, read by the renderer
 # ===========================================================================
 list="$(bash "$RUN_JOB" --list 2>&1)"
-check "run-job.sh --list prints the four jobs, in order" "$(cut -d'|' -f1 <<<"$list" | paste -sd, -)" \
-  "morning,loop,fleet,discover"
+check "run-job.sh --list prints the jobs, in order" "$(cut -d'|' -f1 <<<"$list" | paste -sd, -)" \
+  "morning,loop,fleet,discover,poll,endofday"
 check "each job is scheduled by its own variable" "$(cut -d'|' -f2 <<<"$list" | paste -sd, -)" \
-  "DEVLEAD_CRON_MORNING,DEVLEAD_CRON_LOOP,DEVLEAD_CRON_FLEET,DEVLEAD_CRON_DISCOVER"
+  "DEVLEAD_CRON_MORNING,DEVLEAD_CRON_LOOP,DEVLEAD_CRON_FLEET,DEVLEAD_CRON_DISCOVER,DEVLEAD_CRON_POLL,DEVLEAD_CRON_ENDOFDAY"
 
 # ===========================================================================
 # Defaults (S16; fleet keeps today's systemd timer, 22:30)
@@ -69,8 +69,10 @@ contains "default morning: 06:30 Monday to Friday" "$crontab" "30 6 * * 1-5 $RUN
 contains "default loop: 22:00 every day" "$crontab" "0 22 * * * $RUN_JOB loop"
 contains "default fleet: 22:30 every day, as devlead-fleet.timer" "$crontab" "30 22 * * * $RUN_JOB fleet"
 contains "default discover: Monday 05:00" "$crontab" "0 5 * * 1 $RUN_JOB discover"
+contains "default poll (S16): every 30 minutes from 07:00, the last at 19:30" "$crontab" "*/30 7-19 * * * $RUN_JOB poll"
+contains "default end of day (S16): 18:30 Monday to Friday" "$crontab" "30 18 * * 1-5 $RUN_JOB endofday"
 contains "transcripts are pruned daily" "$crontab" "$RUN_JOB --prune"
-check "the crontab has exactly five schedule lines" "$(grep -cv '^#' <<<"$crontab")" "5"
+check "the crontab has exactly seven schedule lines" "$(grep -cv '^#' <<<"$crontab")" "7"
 check "default limits" "$(grep -v '^#' <<<"$conf")" \
   "$(printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30\nJOB_TIMEOUT=4h\nJOB_KILL_AFTER=30s\nJOB_LOCK_WAIT=4h\nWORKSPACE=')"
 check "default: no repo enrolled" "$(grep -cv '^#' "$OUT/repos")" "0"
@@ -134,6 +136,10 @@ bad() { # bad <label> <expected message> VAR=value...
 }
 bad "bad loop schedule" "DEVLEAD_CRON_LOOP='61 22 * * *' is not a valid schedule" 'DEVLEAD_CRON_LOOP=61 22 * * *'
 bad "bad fleet schedule" "DEVLEAD_CRON_FLEET='@daily' is not a valid schedule" 'DEVLEAD_CRON_FLEET=@daily'
+bad "bad poll schedule" "DEVLEAD_CRON_POLL='*/30 7-25 * * *' is not a valid schedule" 'DEVLEAD_CRON_POLL=*/30 7-25 * * *'
+bad "bad end-of-day schedule" "DEVLEAD_CRON_ENDOFDAY='30 18 * *' is not a valid schedule" 'DEVLEAD_CRON_ENDOFDAY=30 18 * *'
+out="$(render "$SANDBOX/poll-off" DEVLEAD_CRON_POLL=off)"
+contains "poll off: the crontab says so" "$(cat "$SANDBOX/poll-off/crontab")" "# poll: off (DEVLEAD_CRON_POLL=off)"
 bad "unknown time zone" "TZ='Mars/Olympus' is not a time zone" TZ=Mars/Olympus
 bad "time zone path" "TZ='../../etc/passwd' is not a time zone" TZ=../../etc/passwd
 bad "daily cap not a number" "DEVLEAD_MAX_SESSIONS_PER_DAY='lots' must be a whole number from 0 to 1000" DEVLEAD_MAX_SESSIONS_PER_DAY=lots
@@ -157,6 +163,7 @@ bad "claude binary other than the wrapper (F1 follow-up b)" \
 # runner.conf): a newline, a carriage return or any other control character
 # is refused in every value, and the value is not echoed back.
 CTRL="contains a newline, a carriage return or another control character"
+bad "newline in the poll schedule" "DEVLEAD_CRON_POLL $CTRL" $'DEVLEAD_CRON_POLL=*/30 7-19 * * *\n* * * * * touch /tmp/pwned'
 bad "newline in a schedule (crontab injection)" "DEVLEAD_CRON_LOOP $CTRL" $'DEVLEAD_CRON_LOOP=0 22 * * *\n* * * * * touch /tmp/pwned'
 lacks "newline in a schedule: the injected line is not echoed" "$out" "touch /tmp/pwned"
 bad "carriage return in a schedule" "DEVLEAD_CRON_FLEET $CTRL" $'DEVLEAD_CRON_FLEET=30 22 * * *\r'
@@ -249,16 +256,27 @@ bad "a name with angle brackets" "DEVLEAD_GIT_NAME must be a name of at most 100
 bad "a name too long" "DEVLEAD_GIT_NAME must be a name of at most 100" "DEVLEAD_GIT_NAME=$(printf 'a%.0s' {1..101})" DEVLEAD_GIT_EMAIL=a@example.com
 bad "newline in the name (a config line of its own)" "DEVLEAD_GIT_NAME $CTRL" $'DEVLEAD_GIT_NAME=Ana\n[core]\n\tfsmonitor = touch /tmp/x' DEVLEAD_GIT_EMAIL=a@example.com
 nothing_echoed "newline in the name" "fsmonitor"
+# The loop's plan on the host (L21 A2): a plain absolute path, never echoed.
+out="$(render "$SANDBOX/plan-ok" DEVLEAD_LOOP_PLAN=/home/me/.devlead/plan.local.yml)"; rc=$?
+check "a plan path: render exits 0" "$rc" "0"
+lacks "a plan path is not written to the runner configuration" "$(cat "$SANDBOX/plan-ok/runner.conf")" "plan.local.yml"
+bad "a relative plan path" "DEVLEAD_LOOP_PLAN must be the absolute path of your plan file on the host" DEVLEAD_LOOP_PLAN=plan.local.yml
+out="$(render "$SANDBOX/plan-bad" DEVLEAD_LOOP_PLAN=my-plan.local.yml)"
+lacks "a relative plan path is not echoed" "$out" "my-plan.local.yml"
+bad "a plan path that is a directory" "DEVLEAD_LOOP_PLAN must be the absolute path of your plan file" DEVLEAD_LOOP_PLAN=/home/me/.devlead/
+bad "a plan path with .." "DEVLEAD_LOOP_PLAN must be the absolute path of your plan file" DEVLEAD_LOOP_PLAN=/home/me/../../etc/shadow
+bad "a plan path with a space" "DEVLEAD_LOOP_PLAN must be the absolute path of your plan file" 'DEVLEAD_LOOP_PLAN=/home/me/my plan.yml'
+bad "newline in DEVLEAD_LOOP_PLAN" "DEVLEAD_LOOP_PLAN $CTRL" $'DEVLEAD_LOOP_PLAN=/home/me/plan.yml\n'
 bad "a relative state dir" "DEVLEAD_STATE_DIR must be the absolute path of your ~/.devlead" DEVLEAD_STATE_DIR=.devlead
 bad "a state dir with .." "DEVLEAD_STATE_DIR must be the absolute path" DEVLEAD_STATE_DIR=/home/me/../../etc
 bad "newline in the state dir" "DEVLEAD_STATE_DIR $CTRL" $'DEVLEAD_STATE_DIR=/home/me/.devlead\n'
 
-# Previous behaviour: with none of the F3 settings, the crontab and the F2
-# limits are exactly what they were.
+# Previous behaviour: with none of the F3 settings, the crontab is the F2 one
+# plus the F4 jobs (S16), and the F2 limits are exactly what they were.
 OUT="$SANDBOX/f2"
 render "$OUT" >/dev/null
-check "without F3 settings: the crontab is the F2 one" "$(grep -v '^#' "$OUT/crontab")" \
-  "$(printf '30 6 * * 1-5 %s morning\n0 22 * * * %s loop\n30 22 * * * %s fleet\n0 5 * * 1 %s discover\n17 4 * * * %s --prune' "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB")"
+check "without F3 settings: the crontab is the F2 one, plus the F4 jobs" "$(grep -v '^#' "$OUT/crontab")" \
+  "$(printf '30 6 * * 1-5 %s morning\n0 22 * * * %s loop\n30 22 * * * %s fleet\n0 5 * * 1 %s discover\n*/30 7-19 * * * %s poll\n30 18 * * 1-5 %s endofday\n17 4 * * * %s --prune' "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB")"
 check "without F3 settings: the F2 limits keep their values" "$(grep -E '^(TZ|MAX_SESSIONS_PER_DAY|SESSION_TIMEOUT|SESSION_KILL_AFTER|AUDIT_RETENTION_DAYS)=' "$OUT/runner.conf")" \
   "$(printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30')"
 

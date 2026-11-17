@@ -16,6 +16,13 @@
 #      inbox — never gh-token, notify.env, loop.env or anything else of it.
 #      Each must be a mount of the user's (same UID as on the host); learn/
 #      read-only, since the unattended commands only read preferences;
+#   4b. install the loop's plan (L21 A2): with DEVLEAD_LOOP_PLAN set, compose
+#      binds the host's plan file read-only at /run/devlead/host-plan.yml
+#      (otherwise docker/no-loop-plan.yml, never read). Root checks it parses as the loop
+#      reads it (yq, .tasks[].id: at least one task, each with an id) and
+#      installs a root-owned 0644 copy as ~/.devlead/plan.local.yml — the
+#      loop's condition file. An invalid plan stops the start. With
+#      DEVLEAD_LOOP_REPO set and no plan, a warning: the loop job is skipped;
 #   5. prepare the workspace (S13): the clones volume, mounted by compose at
 #      DEVLEAD_WORKSPACE — the host directory that holds the enrolled repos,
 #      so each clone sits at the repo's host path and every piece of state
@@ -152,6 +159,25 @@ for _m in agenda audit decisions journals outcomes reports run-state learn inbox
   fi
 done
 unset _m _p _ro
+
+# The loop's plan (L21 A2): read-only from the host, validated here, then
+# root's, so no session can change what the next night's loop works on.
+_staged=/run/devlead/host-plan.yml
+_plan="$DEVLEAD_HOME/.devlead/plan.local.yml"
+rm -f "$_plan"
+if [[ -n "${DEVLEAD_LOOP_PLAN:-}" ]]; then
+  [[ -f "$_staged" && ! -L "$_staged" ]] \
+    || die "DEVLEAD_LOOP_PLAN is set, but no plan file reached the container — start it with docker compose, which binds that file"
+  _ids="$(yq e '.tasks[].id' "$_staged" 2>/dev/null)" && [[ "$(yq e '.tasks | type' "$_staged" 2>/dev/null)" == "!!seq" ]] \
+    && [[ -n "$_ids" ]] && ! grep -qxE 'null|[[:space:]]*' <<<"$_ids" \
+    || die "DEVLEAD_LOOP_PLAN does not name a plan the loop can read (YAML with a tasks list, each task with an id), so the container does not start"
+  install -m 0644 -o root -g root "$_staged" "$_plan" || die "cannot install the loop's plan"
+  log "the loop's plan from DEVLEAD_LOOP_PLAN is installed ($(grep -c . <<<"$_ids") task(s)); restart the container after you change it"
+fi
+if [[ -n "${DEVLEAD_LOOP_REPO:-}" && ! -f "$_plan" ]]; then
+  log "WARNING: DEVLEAD_LOOP_REPO is set but there is no plan: the loop job is skipped every night until DEVLEAD_LOOP_PLAN names your plan file (docker/devlead.env.example)"
+fi
+unset _staged _ids
 
 # The workspace and the clones' directories (S13).
 _ws="$(sed -n 's/^WORKSPACE=//p' /etc/devlead/runner.conf)"

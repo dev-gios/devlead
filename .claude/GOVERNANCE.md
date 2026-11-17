@@ -48,6 +48,10 @@ Absoluto. No hay excepción por modo, flag, ni instrucción inline.
 
    *(La validación de schema vive en `_do_show`, no en `_do_check` — `check` solo reporta ENROLLED/ENABLED. En el pipeline eso significa que el guard dispara en E1.4, no en el gate de enrolamiento de E1.2; sigue siendo antes de cualquier merge posible.)*
 
+**En el servidor (Docker), la autoridad se lee del remoto.** Con el marcador de root `/etc/devlead/server-mode`, `merge.sh` y `open-pr.sh` leen el envelope con `envelope.sh show --origin`: la copia commiteada en la rama por defecto de origin, traída en el momento. Nunca la del working tree del clon, que una sesión puede reescribir. Sin envelope ahí, o con uno inválido, no hay merge.
+
+**PRs desatendidos en borrador (S3).** Un PR que abre una corrida desatendida (el servidor, o una sesión lanzada por `sweep-loop.sh` o `discover-fleet.sh`, que exportan `DEVLEAD_GUARD=1`) sale en borrador, salvo que `merge.mode: integration-branch` conceda el merge en ese repo: GitHub no mergea un borrador. Lo decide `open-pr.sh` en código; un envelope que no se puede leer no concede nada y el PR sale en borrador. Una sesión interactiva abre el PR tal como lo pide.
+
 #### Qué propiedad protege A3
 
 No es "el usuario tipea el comando de merge". Es: **ningún código entra a la rama por defecto sin que un humano lo haya mirado.** Bajo `integration-branch` esa propiedad se conserva exactamente — la cadena se acumula sin intervención y queda EXACTAMENTE un punto de revisión humana: el PR de la rama de integración a la rama por defecto.
@@ -87,6 +91,7 @@ DevLead trabaja por su cuenta. Lo que NO puede hacer no depende de una frase en 
 |---|---|
 | `production` | Deploys, cambios de infraestructura o de cluster, CLIs de nube, conexión a otra máquina, publicar paquetes o releases, push a la rama por defecto |
 | `merge-door` | Mergear un PR por cualquier vía que no sea `merge.sh` (que lee el envelope — §A3) |
+| `irreversible` | Solo en el servidor (Docker), donde nadie mira (S2): cerrar, borrar, transferir o comentar una issue; comentar, revisar o cerrar un PR en nombre del usuario; pasar un PR de borrador a listo (el borrador lo decide `open-pr.sh`, S3); borrar una rama en GitHub (también por `gh api`). Con o sin opciones de `gh` antes del verbo (`gh issue -R o/r close`) |
 | `database` | Todo lo que apunte a una base de datos que no esté en esta máquina, incluida una dirección tomada de una variable |
 | `secrets` | Leer o escribir un archivo de credenciales fuera de los lugares permitidos; volcar el entorno; `gh auth token` |
 | `scope` | Escribir un archivo fuera del repositorio en el que se inició la sesión |
@@ -199,6 +204,7 @@ El perfil interactivo. Reemplaza al antiguo perfil `manual`, que pedía confirma
 - **Catástrofe (scope):** REPO ACTUAL únicamente. `NOT_A_GIT_REPO` o `gh auth` perdido MID-REPO → PARK repo actual + marcar STATUS + continuar outer loop. El run NO se detiene.
 - **Mid-run notify:** no mid-run — reporte en archivo al final
 - **Cómo satisface A1:** el trigger `/sweep-execute` con los `#N` ES la autorización para todos los repos e issues declarados.
+- **En el servidor, el trabajo `poll` (S4):** `poll-issues.sh` invoca este perfil, vía `sweep-loop.sh`, con issues elegibles según `envelope.sh plan` (las de `INCLUDED` y las que el plan cortó por `budget-cut`) que el poll nunca había visto, menos las que el usuario salteó hoy en la agenda, y como mucho `budget.max_issues` por corrida (S17); las que sobran quedan sin ver para el próximo poll. "Nueva" es nunca vista, no "recién entrada a la ventana de `max_issues`". Ahí la lista no la escribe el usuario: la autorizó la policy del envelope, como en plan-driven (§inv6-governance). El poll nunca agrega una issue que el plan no haya hecho elegible.
 - **Chequeo narrow-not-widen:** catástrofe estrecha vs. batch — en batch, catástrofe = stop global; en sweep, catástrofe = stop de ESE REPO, el run continúa. Más estrecho, no más amplio.
 
 ### §sweep-plan-driven-profile
@@ -247,7 +253,7 @@ El perfil interactivo. Reemplaza al antiguo perfil `manual`, que pedía confirma
 
 ## §escalation-channel — Avisar no es decidir
 
-La columna "Mid-run notify" de la tabla de perfiles describe lo que hace **DevLead dentro de un run**: los perfiles autónomos no se detienen a preguntar por cada issue aparcada, y eso no cambia. PARK sigue siendo silencioso hacia adentro del run y visible en el reporte.
+La columna "Mid-run notify" de la tabla de perfiles describe lo que hace **DevLead dentro de un run**: los perfiles autónomos no se detienen a preguntar por cada issue aparcada, y eso no cambia. PARK sigue siendo silencioso hacia adentro del run y visible en el reporte. En el servidor, además, el runner avisa al terminar el run (ver abajo, `park`).
 
 Lo que esta sección agrega es un canal de **escalada de nivel run**, implementado en código (`.devlead/scripts/notify.sh`), para el caso que la tabla no cubría: un run desatendido que **no puede seguir solo**. Hasta ahora ese caso terminaba en un archivo y una línea de journald que nadie leía.
 
@@ -256,7 +262,7 @@ Lo que esta sección agrega es un canal de **escalada de nivel run**, implementa
 | Nivel | Cuándo | A dónde va |
 |-------|--------|------------|
 | `need` | El run no puede continuar sin una decisión o una acción del usuario | Bandeja local + push al teléfono (prioridad alta) |
-| `agenda` | La lista de lo que DevLead va a trabajar hoy; no pide nada (§daily-agenda). Un solo emisor: `sweep.sh`, una vez por corrida | Bandeja local + push al teléfono (prioridad normal) |
+| `agenda` | Lo que DevLead va a trabajar hoy y, en el servidor, lo que hizo en el día; no pide nada. Dos emisores: `sweep.sh` a la mañana, una vez por corrida (§daily-agenda), y `day-summary.sh` al cierre del día, una vez por corrida (corridas, PRs abiertos, aparcadas, fallos y los PRs que esperan al usuario; el código lleva solo cantidades) | Bandeja local + push al teléfono (prioridad normal) |
 | `info` | Desenlace normal que conviene saber | Bandeja local únicamente |
 
 **Disparadores de `need` (lista cerrada; agregar uno es una edición de esta sección):**
@@ -275,10 +281,12 @@ Lo que esta sección agrega es un canal de **escalada de nivel run**, implementa
 - en el servidor, se rechazó una sesión de `claude` por el tope diario, porque otra sesión estaba corriendo, porque no se pudo abrir su lock o porque no se pudieron leer los límites (`job-refused`)
 - en el servidor, el log de auditoría o el registro de sesiones cambió durante una corrida, o el registro de sesiones apareció vaciado al empezar una (y el trabajo no corrió) (`audit-tampered`)
 - `doctor` avisa que el token de Claude tiene 11 meses o más, o que su fecha de emisión no es válida; como máximo un aviso por día, que dice cómo renovarlo sin repetir la fecha (`token-expiring`)
+- en el servidor, un trabajo abrió uno o más PRs, que esperan al usuario: un aviso por corrida con los links (`pr-opened`)
+- en el servidor, el reporte de un trabajo aparcó o escaló una o más unidades de trabajo: un aviso por corrida con la cantidad y los números de issue, nunca la razón ni el título (la razón queda en el reporte) (`park`)
 
-Los avisos del servidor llevan solo el nombre del trabajo, el motivo corto y el id de la corrida: nunca texto de issues, valores del entorno ni secretos. Pausar el servidor (`~/.devlead/PAUSE`) es una decisión del usuario y no avisa.
+Los avisos del servidor llevan solo el nombre del trabajo, el motivo corto, los links de los PRs, los números de issue y el id de la corrida: nunca texto de issues, valores del entorno ni secretos. El push lleva los links solo con `DEVLEAD_NOTIFY_DETAIL=1`; sin eso, solo el código. Pausar el servidor (`~/.devlead/PAUSE`) es una decisión del usuario y no avisa.
 
-Una issue aparcada por un gate rojo NO es un disparador: es el funcionamiento normal del perfil y va al reporte. Lo que escala es que el run entero dejó de avanzar. Única excepción: una issue que quedó fuera o aparcada por `untrusted-content` sí avisa, porque alguien intentó dar órdenes a DevLead desde GitHub y eso lo tiene que ver el usuario aunque el resto del run siga.
+**Decisión del usuario (D19-A, 2026-11-16):** En el servidor, una unidad de trabajo aparcada SÍ es un disparador (`park`), igual que un PR abierto (`pr-opened`): nadie está mirando, y el usuario se entera al terminar la corrida, no al día siguiente. Lo manda el runner (`docker/run-job.sh`), uno por corrida, a partir del reporte que escribió esa corrida; dentro del run el PARK sigue siendo silencioso. Fuera del servidor (los lanzadores del host) una issue aparcada no avisa: va al reporte, y lo que escala es que el run entero dejó de avanzar. En ambos casos, una issue que quedó fuera o aparcada por `untrusted-content` avisa además con su propio código, porque alguien intentó dar órdenes a DevLead desde GitHub.
 
 **Lo que el canal no puede hacer:**
 

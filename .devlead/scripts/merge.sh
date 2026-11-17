@@ -15,6 +15,14 @@
 #      never updates: here "cannot ask" means "do not merge")
 #   4. the PR is OPEN and its base is exactly base.integration_branch
 #
+# In the DevLead server image (the root-owned marker /etc/devlead/server-mode)
+# the envelope is read with `envelope.sh show --origin`: the copy committed on
+# origin's default branch, fetched at merge time — never the clone's working
+# tree, which a session can rewrite through paths the guard allows (L21 A1).
+# No envelope there, or one that does not validate, refuses like any other
+# blocked envelope. Outside the image nothing changes: the working tree's
+# envelope, as always.
+#
 # Until now the merge was a `gh pr merge` line in the command prose, guarded by
 # preconditions the model was told to check. Here they are checked in code, so
 # a run with `merge.mode: never` cannot merge whatever the prompt does.
@@ -38,6 +46,9 @@ set -uo pipefail
 export LC_ALL=C
 
 _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Fixed path (test/unit-merge-door.sh rewrites it in a copy): the server image's
+# marker, root-owned. A file a session can create is never asked instead.
+SERVER_MARKER=/etc/devlead/server-mode
 
 _park() {
   local _line
@@ -83,7 +94,9 @@ if [[ ! -f "$_envelope" ]]; then
   _park "merge refused: envelope.sh not found next to this script — cannot read merge authority"
   exit 2
 fi
-_show="$(bash "$_envelope" show </dev/null 2>/dev/null)"
+_show_args=(show)
+[[ -e "$SERVER_MARKER" ]] && _show_args=(show --origin)
+_show="$(bash "$_envelope" "${_show_args[@]}" </dev/null 2>/dev/null)"
 _status="$(sed -n 's/^STATUS:[[:space:]]*//p' <<<"$_show" | head -n 1)"
 if [[ "$_status" != "ok" ]]; then
   _gap="$(sed -n 's/^GAP:[[:space:]]*//p' <<<"$_show" | head -n 1)"

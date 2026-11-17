@@ -875,6 +875,13 @@ Eso mantiene coherente la resolución de predecesores de `branch.sh`: con la ram
 eliminada, el lookup de `depends-on` cae a su rama "ya mergeado" y la tarea siguiente
 ramifica del integration branch, que ya contiene el trabajo.
 
+**En el servidor (existe `/etc/devlead/server-mode`) NO borrás la rama remota.** Borrar una
+rama en GitHub es irreversible y queda para el usuario (S2; `guard.sh` lo bloquea ahí).
+Borrá solo la copia local y su referencia remota local, que alcanzan para el mismo lookup
+dentro de este run: `git branch -D {rama}` y `git branch -dr origin/{rama}`. La rama queda
+en GitHub, ya mergeada; si el usuario quiere que desaparezca sola, activa "Automatically
+delete head branches" en la configuración del repo.
+
 **Interacción con `depends-on`:** bajo `integration-branch` las tareas NO apilan. Para
 cuando una tarea dependiente ramifica, el trabajo de su predecesor ya está en el
 integration branch. El apilado (`STACKED:` → `--base {rama-predecesora}`) es el mecanismo
