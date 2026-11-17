@@ -224,9 +224,10 @@ _notify_agenda() {
 # $_untrusted_tmp, "<repo name>: #N, #M", naming the EXCLUDED issues whose
 # reason is untrusted-content (GOVERNANCE.md §untrusted-content). Only the
 # reason that ENDS the line counts — it is the one plan wrote; a title cannot
-# imitate it. `untrusted-content-unverified` is a missing body, not a
-# detection, and is not reported here. Writes nothing to fd 1 or fd 4 and
-# always returns 0.
+# imitate it (and plan prints these lines with the title omitted). Trailing
+# whitespace or a CR does not hide a line. `untrusted-content-unverified` is
+# a missing body, not a detection, and is not reported here. Writes nothing
+# to fd 1 or fd 4 and always returns 0.
 # ---------------------------------------------------------------------------
 _collect_untrusted() {
   local repo_path="$1" plan_out="$2" nums
@@ -234,7 +235,7 @@ _collect_untrusted() {
   nums="$(awk '
     /^--- EXCLUDED ---$/ { on = 1; next }
     /^--- / || /^=== END PLAN/ { on = 0 }
-    on && $0 ~ /   reason: untrusted-content \([a-z,-]+\)$/ && match($0, /^#[0-9]+  /) {
+    on && $0 ~ /   reason: untrusted-content \([a-z,-]+\)[[:space:]]*$/ && match($0, /^#[0-9]+  /) {
       print substr($0, 1, RLENGTH - 2)
     }' <<<"$plan_out" | paste -sd ' ' - | sed 's/ /, /g')"
   [[ -n "$nums" ]] || return 0

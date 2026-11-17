@@ -126,7 +126,8 @@ _assert_keys() {
 }
 # _intake_actor <issue> <label> — login that applied <label> to <issue> MOST
 # RECENTLY, read from the issue's events (every page). A label removed and
-# re-added is vouched for by whoever re-added it. Returns 1 with no stdout
+# re-added is vouched for by whoever re-added it. Label names compare
+# case-insensitively, as GitHub does. Returns 1 with no stdout
 # when the events cannot be read, hold no `labeled` event for that exact
 # label, or name an actor that is not a plain GitHub login — the caller
 # treats every one of those as unverified (fail closed, S5).
@@ -134,7 +135,7 @@ _intake_actor() {
   local events actor
   events=$(gh api "repos/{owner}/{repo}/issues/$1/events" --paginate 2>/dev/null) || return 1
   actor=$(printf '%s' "$events" | jq -rs --arg l "$2" '
-    [.[][] | select(.event == "labeled" and .label.name == $l)]
+    [.[][] | select(.event == "labeled" and ((.label.name // "") | ascii_downcase) == ($l | ascii_downcase))]
     | sort_by(.created_at) | last | .actor.login // empty' 2>/dev/null) || return 1
   [[ "$actor" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 1
   printf '%s' "$actor"
@@ -677,14 +678,15 @@ _do_show() {
       || _block "select.intake_label must be a non-empty string without surrounding whitespace"
     # Same label as discovery's: plan would take discovery's own filed
     # issues, which is exactly what the discover coupling rule forbids.
-    if [[ "$disc_enabled" == "true" && "$il_val" == "$disc_label" ]]; then
+    # Case-insensitive, as GitHub compares label names.
+    if [[ "$disc_enabled" == "true" && "${il_val,,}" == "${disc_label,,}" ]]; then
       _block "select.intake_label '$il_val' must not equal discover.label — plan would take discovery's own filed issues"
     fi
     # An excluded intake label would never take anything: fail loudly.
     local _xl
     while IFS= read -r _xl; do
       _xl=$(printf '%s' "$_xl" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-      [[ "$_xl" == "$il_val" ]] \
+      [[ "${_xl,,}" == "${il_val,,}" ]] \
         && _block "select.intake_label '$il_val' must not appear in select.exclude_labels — no issue carrying it could ever be taken"
     done < <(yq e '.select.exclude_labels[]' "$ENV_FILE" 2>/dev/null)
   fi
@@ -863,18 +865,15 @@ _do_plan() {
   fi
 
   # Body of every candidate: the untrusted-content scan (S6) reads it, and
-  # so does the readiness check. When readiness needs it, a failed fetch
-  # still blocks the plan as before; otherwise the list stays empty and
-  # every issue without a body to scan is excluded below (fail closed).
+  # so does the readiness check. A failed fetch blocks the plan whatever
+  # require_readiness says — no issue is ever taken without its text having
+  # been scanned. An issue missing from the list is excluded below.
   local body_json
   if ! body_json=$(gh issue list --assignee @me --state open \
     --limit 50 --json number,body 2>/dev/null); then
-    if [[ "$require_readiness" == "true" ]]; then
-      echo "STATUS: blocked"
-      echo "GAP:    gh issue list (body) failed — check gh auth status"
-      exit 0
-    fi
-    body_json="[]"
+    echo "STATUS: blocked"
+    echo "GAP:    gh issue list (body) failed — check gh auth status"
+    exit 0
   fi
 
   # 6. Intake by label (S5): open issues carrying select.intake_label that
@@ -913,14 +912,17 @@ _do_plan() {
 
     # The allowlist: intake_labelers when declared, otherwise the
     # authenticated gh user. Looked up once, only when there is something to
-    # check. GH_REPO / GH_HOST are dropped for that one call so another
-    # repository or host can never stand in for the authenticated user.
+    # check. The login is asked of the host gh is pointed at (GH_HOST, when
+    # set, as an explicit --hostname); GH_REPO and GH_HOST themselves are
+    # dropped for that one call.
     if [[ -n "${intake_nums// /}" ]]; then
       if [[ "$intake_labelers_set" == "true" ]]; then
         IFS=',' read -ra intake_allow <<< "$intake_labelers_raw"
       else
         local _me
-        if _me=$(unset GH_REPO GH_HOST; gh api user -q .login 2>/dev/null) \
+        if _me=$(_h="${GH_HOST:-}"; unset GH_REPO GH_HOST
+                 if [[ -n "$_h" ]]; then gh api --hostname "$_h" user -q .login
+                 else gh api user -q .login; fi 2>/dev/null) \
           && [[ "$_me" =~ ^[A-Za-z0-9-]+$ ]]; then
           intake_allow=("$_me")
         else
@@ -936,7 +938,14 @@ _do_plan() {
   IFS="$IFS_SAVE"
 
   # Build order_by array
-  # Process each assigned issue
+  # Process each assigned issue. Entries are joined with the ASCII unit
+  # separator (\x1f), which is stripped from every title and label below:
+  # a '|' — or anything else a title may carry — can never cut a title or
+  # shift the reason that follows it.
+  local _FS=$'\x1f'
+  # Issues excluded for their text are listed without it: the text is
+  # exactly what is not trusted, so it never reaches the digest or the model.
+  local _UNTRUSTED_TITLE='(título omitido — contenido no confiable)'
   local -a included_issues=()
   local -a excluded_issues=()
 
@@ -947,6 +956,8 @@ _do_plan() {
     # Skip unavailable markers
     [[ "$issue_num" == "#"* ]] && continue
     [[ "$issue_num" =~ ^[0-9]+$ ]] || continue
+    title="${title//"$_FS"/}"
+    labels="${labels//"$_FS"/}"
 
     local exclude_reason=""
 
@@ -956,36 +967,38 @@ _do_plan() {
     if [[ "$intake_nums" == *" $issue_num "* ]]; then
       local _actor _allowed=false _a
       if [[ "$intake_allow_ok" != "true" ]] || ! _actor=$(_intake_actor "$issue_num" "$intake_label"); then
-        excluded_issues+=("${issue_num}|${title}|intake-label-unverified")
+        excluded_issues+=("${issue_num}${_FS}${title}${_FS}intake-label-unverified")
         continue
       fi
       for _a in "${intake_allow[@]+"${intake_allow[@]}"}"; do
         [[ "${_a,,}" == "${_actor,,}" ]] && { _allowed=true; break; }
       done
       if [[ "$_allowed" != "true" ]]; then
-        excluded_issues+=("${issue_num}|${title}|intake-label-untrusted (applied by ${_actor})")
+        excluded_issues+=("${issue_num}${_FS}${title}${_FS}intake-label-untrusted (applied by ${_actor})")
         continue
       fi
     fi
 
     # Issue text is untrusted data (S6, GOVERNANCE.md §untrusted-content):
-    # title and body go through the deterministic scan before every other
-    # check, so an instruction aimed at the agent is reported even when
-    # another rule would also have excluded the issue. No body to scan, or
-    # a scanner that cannot answer, fails closed.
+    # title and body go through the (heuristic) scan before every other check
+    # except the intake labeler check above, so an instruction aimed at the
+    # agent is reported even when another rule would also have excluded the
+    # issue. No body to scan, or a scanner that cannot answer (exit 2 on an
+    # empty text, 127 when missing), fails closed. The title is never empty
+    # on GitHub, so the scan always receives text.
     local _scan_body _scan_out _scan_rc
     if ! _scan_body=$(printf '%s' "$body_json" | jq -er --arg n "$issue_num" \
         'first(.[] | select(.number == ($n | tonumber))) | .body // ""' 2>/dev/null); then
-      excluded_issues+=("${issue_num}|${title}|untrusted-content-unverified")
+      excluded_issues+=("${issue_num}${_FS}${_UNTRUSTED_TITLE}${_FS}untrusted-content-unverified")
       continue
     fi
     _scan_out=$(printf '%s\n%s\n' "$title" "$_scan_body" | bash "$UNTRUSTED_BIN" scan 2>/dev/null)
     _scan_rc=$?
     if [[ $_scan_rc -eq 1 && -n "$_scan_out" ]] && ! grep -qvE '^[a-z-]+$' <<< "$_scan_out"; then
-      excluded_issues+=("${issue_num}|${title}|untrusted-content ($(paste -sd, - <<< "$_scan_out"))")
+      excluded_issues+=("${issue_num}${_FS}${_UNTRUSTED_TITLE}${_FS}untrusted-content ($(paste -sd, - <<< "$_scan_out"))")
       continue
     elif [[ $_scan_rc -ne 0 ]]; then
-      excluded_issues+=("${issue_num}|${title}|untrusted-content-unverified")
+      excluded_issues+=("${issue_num}${_FS}${_UNTRUSTED_TITLE}${_FS}untrusted-content-unverified")
       continue
     fi
 
@@ -1000,7 +1013,7 @@ _do_plan() {
     fi
 
     if [[ "$is_nuevo" == "false" ]]; then
-      excluded_issues+=("${issue_num}|${title}|${exclude_reason}")
+      excluded_issues+=("${issue_num}${_FS}${title}${_FS}${exclude_reason}")
       continue
     fi
 
@@ -1021,7 +1034,7 @@ _do_plan() {
         done
       done
       if [[ -n "$lbl_hit" ]]; then
-        excluded_issues+=("${issue_num}|${title}|excluded-label (${lbl_hit})")
+        excluded_issues+=("${issue_num}${_FS}${title}${_FS}excluded-label (${lbl_hit})")
         continue
       fi
     fi
@@ -1034,7 +1047,7 @@ _do_plan() {
       local body_trimmed
       body_trimmed=$(printf '%s' "$body_val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
       if [[ -z "$body_trimmed" ]]; then
-        excluded_issues+=("${issue_num}|${title}|not-ready (empty body)")
+        excluded_issues+=("${issue_num}${_FS}${title}${_FS}not-ready (empty body)")
         continue
       fi
     fi
@@ -1076,7 +1089,7 @@ _do_plan() {
       done
     fi
 
-    included_issues+=("${tier}|${created_at}|${issue_num}|${title}|${labels}")
+    included_issues+=("${tier}${_FS}${created_at}${_FS}${issue_num}${_FS}${title}${_FS}${labels}")
   done < <(echo "$assigned_raw"; [[ -n "$intake_rows" ]] && printf '%s\n' "$intake_rows")
 
   # 8. Sort INCLUDED by tier then createdAt asc
@@ -1084,7 +1097,7 @@ _do_plan() {
   if [[ ${#included_issues[@]} -gt 0 ]]; then
     while IFS= read -r line; do
       sorted_included+=("$line")
-    done < <(printf '%s\n' "${included_issues[@]}" | sort -t'|' -k1,1n -k2,2)
+    done < <(printf '%s\n' "${included_issues[@]}" | sort -t"$_FS" -k1,1n -k2,2)
   fi
 
   # 9. Cut at max_issues; remainder → budget-cut
@@ -1098,16 +1111,16 @@ _do_plan() {
     else
       # Extract issue_num and title for budget-cut
       local bc_num bc_title
-      bc_num=$(echo "$entry" | cut -d'|' -f3)
-      bc_title=$(echo "$entry" | cut -d'|' -f4)
-      budget_cut+=("${bc_num}|${bc_title}|budget-cut (beyond max_issues=${max_issues})")
+      bc_num=$(echo "$entry" | cut -d"$_FS" -f3)
+      bc_title=$(echo "$entry" | cut -d"$_FS" -f4)
+      budget_cut+=("${bc_num}${_FS}${bc_title}${_FS}budget-cut (beyond max_issues=${max_issues})")
     fi
   done
 
   # Print header
   echo "=== DEVLEAD ENVELOPE PLAN v1 (DRY-RUN — nothing executed) ==="
   echo "ENVELOPE: ${git_root}/.devlead/envelope.yml  ENABLED: ${enabled}"
-  echo "DATA_SOURCES: state.sh(ASSIGNED_ISSUES,BRANCHES,OPEN_PRS); gh issue list(createdAt$([ "$require_readiness" == "true" ] && echo ",body" || echo ""))$([[ -n "$intake_label" ]] && echo "; gh issue list(intake label); gh api(issue events)")"
+  echo "DATA_SOURCES: state.sh(ASSIGNED_ISSUES,BRANCHES,OPEN_PRS); gh issue list(createdAt,body)$([[ -n "$intake_label" ]] && echo "; gh issue list(intake label); gh api(issue events)")"
   echo "ORDER: ${order_by}  MAX_ISSUES: ${max_issues}  EXCLUDE_LABELS: ${exclude_labels}  READINESS: ${require_readiness}"
   echo "FORBIDDEN_ZONES: inherit (labels-based pre-check only)"
   echo ""
@@ -1120,10 +1133,10 @@ _do_plan() {
     local qi=1
     for entry in "${final_included[@]}"; do
       local tier created num title
-      tier=$(echo "$entry" | cut -d'|' -f1)
-      created=$(echo "$entry" | cut -d'|' -f2)
-      num=$(echo "$entry" | cut -d'|' -f3)
-      title=$(echo "$entry" | cut -d'|' -f4)
+      tier=$(echo "$entry" | cut -d"$_FS" -f1)
+      created=$(echo "$entry" | cut -d"$_FS" -f2)
+      num=$(echo "$entry" | cut -d"$_FS" -f3)
+      title=$(echo "$entry" | cut -d"$_FS" -f4)
       # Determine tier label for output — dual-path mirrors Site A
       local tier_label
       if [[ ${#priority_labels_arr[@]} -gt 0 ]]; then
@@ -1163,9 +1176,9 @@ _do_plan() {
   else
     for entry in "${all_excluded[@]}"; do
       local ex_num ex_title ex_reason
-      ex_num=$(echo "$entry" | cut -d'|' -f1)
-      ex_title=$(echo "$entry" | cut -d'|' -f2)
-      ex_reason=$(echo "$entry" | cut -d'|' -f3-)
+      ex_num=$(echo "$entry" | cut -d"$_FS" -f1)
+      ex_title=$(echo "$entry" | cut -d"$_FS" -f2)
+      ex_reason=$(echo "$entry" | cut -d"$_FS" -f3-)
       local display_title="$ex_title"
       if [[ "$display_title" == *:* ]]; then display_title="\"${display_title}\""; fi
       printf '#%s  %s   reason: %s\n' "$ex_num" "$display_title" "$ex_reason"
@@ -1247,7 +1260,7 @@ _do_schema() {
   _schema_field "select.intake_label" "string" \
     "none — absent means only issues assigned to you are taken" "false" \
     "Optional label that also makes an open issue eligible, but only when a login in select.intake_labelers applied it." \
-    "Fails closed. 'plan' reads each labeled issue's events and takes it only when the LATEST 'labeled' event for this label came from an allowed login; any other login excludes it as 'intake-label-untrusted (applied by <login>)', and an events or login lookup that cannot answer excludes it as 'intake-label-unverified'. Assigned issues never go through this check. Must not appear in select.exclude_labels nor equal discover.label — envelope.sh blocks 'show' otherwise."
+    "Fails closed. 'plan' reads each labeled issue's events and takes it only when the LATEST 'labeled' event for this label came from an allowed login; any other login excludes it as 'intake-label-untrusted (applied by <login>)', and an events or login lookup that cannot answer excludes it as 'intake-label-unverified'. Label names compare case-insensitively, as on GitHub. Assigned issues never go through this check. Must not appear in select.exclude_labels nor equal discover.label, in any case — envelope.sh blocks 'show' otherwise."
 
   _schema_field "select.intake_labelers" "list" \
     "none — absent means only the authenticated gh user (gh api user) may apply select.intake_label" \
