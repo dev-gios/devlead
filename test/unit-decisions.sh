@@ -142,7 +142,7 @@ done
 echo "=== one writer at a time (S14) ==="
 # The host's /devlead and the DevLead server write this log; a writer holds
 # the state directory's lock while it reads and rewrites the file.
-DIR="$(dirname "$(ls "$DEVLEAD_DECISIONS_DIR"/*/log.tsv | head -n 1)")"
+DIR="$DEVLEAD_DECISIONS_DIR/$(printf '%s' "$(cd "$A" && git rev-parse --show-toplevel)" | sha256sum | cut -c1-20)"
 rows_before="$(wc -l < "$DIR/log.tsv")"
 flock "$DIR" sleep 2 & holder=$!
 sleep 0.3
