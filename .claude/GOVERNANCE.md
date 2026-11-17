@@ -204,7 +204,7 @@ El perfil interactivo. Reemplaza al antiguo perfil `manual`, que pedía confirma
 - **Catástrofe (scope):** REPO ACTUAL únicamente. `NOT_A_GIT_REPO` o `gh auth` perdido MID-REPO → PARK repo actual + marcar STATUS + continuar outer loop. El run NO se detiene.
 - **Mid-run notify:** no mid-run — reporte en archivo al final
 - **Cómo satisface A1:** el trigger `/sweep-execute` con los `#N` ES la autorización para todos los repos e issues declarados.
-- **En el servidor, el trabajo `poll` (S4):** `poll-issues.sh` invoca este perfil, vía `sweep-loop.sh`, con issues que salieron del `INCLUDED` de `envelope.sh plan` y que todavía no le había pasado a ninguna corrida, menos las que el usuario salteó hoy en la agenda. Ahí la lista no la escribe el usuario: la autorizó la policy del envelope, como en plan-driven (§inv6-governance). El poll nunca agrega una issue que el plan no haya incluido.
+- **En el servidor, el trabajo `poll` (S4):** `poll-issues.sh` invoca este perfil, vía `sweep-loop.sh`, con issues elegibles según `envelope.sh plan` (las de `INCLUDED` y las que el plan cortó por `budget-cut`) que el poll nunca había visto, menos las que el usuario salteó hoy en la agenda, y como mucho `budget.max_issues` por corrida (S17); las que sobran quedan sin ver para el próximo poll. "Nueva" es nunca vista, no "recién entrada a la ventana de `max_issues`". Ahí la lista no la escribe el usuario: la autorizó la policy del envelope, como en plan-driven (§inv6-governance). El poll nunca agrega una issue que el plan no haya hecho elegible.
 - **Chequeo narrow-not-widen:** catástrofe estrecha vs. batch — en batch, catástrofe = stop global; en sweep, catástrofe = stop de ESE REPO, el run continúa. Más estrecho, no más amplio.
 
 ### §sweep-plan-driven-profile
