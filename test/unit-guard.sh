@@ -368,6 +368,30 @@ bash_blocked self-config 'cp /tmp/s.json ~/.claude/settings.json'
 bash_allowed "jq '.hooks' .claude/settings.json"
 bash_blocked self-config 'jq "del(.hooks)" ~/.claude/settings.json > /tmp/s && mv /tmp/s ~/.claude/settings.json'
 
+echo "=== self-config: devlead enroll (S24) ==="
+# It writes and commits the envelope of every repo in a folder: only the user
+# runs it, from a terminal. A pty (script) does not make a session the user.
+bash_blocked self-config 'devlead enroll ~/Work/Ivolution'
+bash_blocked self-config 'devlead enroll --dry-run ~/Work'
+bash_blocked self-config '~/.local/bin/devlead enroll ~/Work'
+bash_blocked self-config 'timeout 60 devlead enroll ~/Work'
+bash_blocked self-config 'env CLAUDECODE= devlead enroll ~/Work'
+bash_blocked self-config 'bash -c "devlead enroll ~/Work"'
+bash_blocked self-config 'bash ~/.devlead/scripts/enroll.sh ~/Work'
+bash_blocked self-config '~/.devlead/scripts/enroll.sh ~/Work'
+bash_blocked self-config '/opt/devlead/scripts/enroll.sh ~/Work'
+bash_blocked self-config '. ~/.devlead/scripts/enroll.sh'
+bash_blocked self-config 'script -qec "devlead enroll ~/Work" /dev/null'
+bash_blocked self-config "printf 'b\\ny\\n' | script -qec 'bash ~/.devlead/scripts/enroll.sh ~/Work' /dev/null"
+bash_allowed 'cat ~/.devlead/scripts/enroll.sh'
+bash_allowed 'shellcheck -S warning .devlead/scripts/enroll.sh'
+bash_allowed 'bash test/unit-enroll.sh'
+bash_allowed 'grep -n "devlead enroll" DEVLEAD.md'
+bash_allowed 'git commit -m "feat(cli): add devlead enroll"'
+bash_allowed 'devlead agenda skip 3'
+bash_allowed 'devlead help'
+bash_allowed 'devlead config'
+
 echo "=== self-config: the server image (docker/) ==="
 # In the image, DevLead's scripts and hooks live in /opt/devlead (root-owned)
 # and Claude Code's managed settings and skills in /etc/claude-code.

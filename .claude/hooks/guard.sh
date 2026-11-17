@@ -468,6 +468,15 @@ done <<<"$_simple"
 if [[ "$_scan" =~ secrets-allow ]]; then
   _deny self-config "the command names ~/.devlead/secrets-allow; only the user reads or changes that list"
 fi
+# `devlead enroll` (enroll.sh) writes, commits and pushes the envelope of every
+# repo in a folder (S24, §A3): the user runs it, from a terminal. Matched where
+# a command starts, run directly, through an interpreter or through a pty
+# (`script -c`), so reading or checking the file stays allowed.
+_enroll='(([^[:space:];&|]*/)?devlead[[:space:]]+enroll|([^[:space:];&|]*/)?enroll\.sh)'
+if _runs "$_scan" "${_enroll}${_END}" \
+   || _runs "$_scan" "(bash|sh|zsh|dash|ksh|source|\\.|script)[[:space:]]+([^;&|]*[[:space:]\"'])?${_enroll}${_END}"; then
+  _deny self-config "devlead enroll writes the envelope of every repo in a folder; only the user runs it, from their own terminal"
+fi
 
 # -- production
 # Local forms are fine; take them out before the check so `vercel dev` passes
