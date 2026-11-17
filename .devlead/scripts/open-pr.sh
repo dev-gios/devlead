@@ -39,10 +39,22 @@
 # This door has no escape hatch. DEVLEAD_FORCE_CLOSE is the gate's manual
 # override for a human closing a session; it is stripped here so it can never
 # turn a red gate into a PR.
+#
+# Drafts (S3): a PR opened by an unattended run is a draft unless the repo's
+# envelope grants merging (`merge.mode: integration-branch`) — GitHub does not
+# merge a draft, so with that grant merge.sh still can. Unattended means the
+# DevLead server image (the root-owned marker /etc/devlead/server-mode, where
+# the envelope is read from origin's default branch, as merge.sh does) or a
+# session the launchers started (DEVLEAD_GUARD=1). An envelope that cannot be
+# read grants nothing: the PR is a draft. An interactive session opens the PR
+# exactly as asked, as before.
 
 set -uo pipefail
 
 _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Fixed path (test/unit-open-pr.sh rewrites it in a copy): the server image's
+# marker, root-owned.
+SERVER_MARKER=/etc/devlead/server-mode
 
 _reasons=()
 # _refuse <text> — record a refusal reason; multi-line text is kept verbatim.
@@ -227,6 +239,20 @@ fi
 if [[ ${#_reasons[@]} -gt 0 ]]; then
   _emit_reasons
   exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# S3: unattended, and the envelope does not grant merging -> a draft.
+# ---------------------------------------------------------------------------
+if [[ $_draft -eq 0 ]] && { [[ -e "$SERVER_MARKER" ]] || [[ "${DEVLEAD_GUARD:-}" == "1" ]]; }; then
+  _show_args=(show)
+  [[ -e "$SERVER_MARKER" ]] && _show_args=(show --origin)
+  _grant="$(bash "$_script_dir/envelope.sh" "${_show_args[@]}" </dev/null 2>/dev/null)"
+  if [[ "$(sed -n 's/^STATUS:[[:space:]]*//p' <<<"$_grant" | head -n 1)" != "ok" \
+     || "$(sed -n 's/^MERGE_MODE:[[:space:]]*//p' <<<"$_grant" | head -n 1)" != "integration-branch" ]]; then
+    _draft=1
+    echo "open-pr: an unattended run and the envelope does not grant merging — the PR opens as a draft" >&2
+  fi
 fi
 
 # ---------------------------------------------------------------------------

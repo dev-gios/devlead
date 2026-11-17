@@ -48,6 +48,10 @@ Absoluto. No hay excepción por modo, flag, ni instrucción inline.
 
    *(La validación de schema vive en `_do_show`, no en `_do_check` — `check` solo reporta ENROLLED/ENABLED. En el pipeline eso significa que el guard dispara en E1.4, no en el gate de enrolamiento de E1.2; sigue siendo antes de cualquier merge posible.)*
 
+**En el servidor (Docker), la autoridad se lee del remoto.** Con el marcador de root `/etc/devlead/server-mode`, `merge.sh` y `open-pr.sh` leen el envelope con `envelope.sh show --origin`: la copia commiteada en la rama por defecto de origin, traída en el momento. Nunca la del working tree del clon, que una sesión puede reescribir. Sin envelope ahí, o con uno inválido, no hay merge.
+
+**PRs desatendidos en borrador (S3).** Un PR que abre una corrida desatendida (el servidor, o una sesión lanzada por `sweep-loop.sh` o `discover-fleet.sh`, que exportan `DEVLEAD_GUARD=1`) sale en borrador, salvo que `merge.mode: integration-branch` conceda el merge en ese repo: GitHub no mergea un borrador. Lo decide `open-pr.sh` en código; un envelope que no se puede leer no concede nada y el PR sale en borrador. Una sesión interactiva abre el PR tal como lo pide.
+
 #### Qué propiedad protege A3
 
 No es "el usuario tipea el comando de merge". Es: **ningún código entra a la rama por defecto sin que un humano lo haya mirado.** Bajo `integration-branch` esa propiedad se conserva exactamente — la cadena se acumula sin intervención y queda EXACTAMENTE un punto de revisión humana: el PR de la rama de integración a la rama por defecto.

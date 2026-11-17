@@ -307,6 +307,106 @@ check "gh failure: exit code is gh's" "$rc" "4"
 check "gh failure: exactly one attempt, no retry" "$(gh_calls)" "1"
 contains "gh failure: reason reported" "$out" "PARK_REASON: gh pr create failed (exit 4)"
 
+# ===========================================================================
+# S3: an unattended run opens a draft unless the envelope grants merging.
+# Unattended: the server image's marker (a copy of the scripts whose
+# SERVER_MARKER points at a sandbox file), or DEVLEAD_GUARD=1 from a launcher.
+# This gh answers the default-branch question envelope.sh asks ("main").
+# ===========================================================================
+S3BIN="$SANDBOX/s3bin"
+mkdir -p "$S3BIN"
+cat > "$S3BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "auth status") exit 0 ;;
+  "repo view") echo main; exit 0 ;;
+esac
+{ printf 'CALL'; for a in "$@"; do printf '\t%s' "$a"; done; printf '\n'; } >> "$GH_LOG"
+echo "https://example.test/acme/repo/pull/7"
+EOF
+chmod +x "$S3BIN/gh"
+SRV="$SANDBOX/srv"
+mkdir -p "$SRV/.devlead" "$SRV/.claude"
+cp -r "$REPO_ROOT/.devlead/scripts" "$SRV/.devlead/scripts"
+cp -r "$REPO_ROOT/.claude/hooks" "$SRV/.claude/hooks"
+MARKER="$SANDBOX/server-mode"
+check "open-pr.sh has the fixed path SERVER_MARKER" "$(grep -c '^SERVER_MARKER=' "$SRV/.devlead/scripts/open-pr.sh")" "1"
+sed -i "s|^SERVER_MARKER=.*|SERVER_MARKER=$MARKER|" "$SRV/.devlead/scripts/open-pr.sh"
+# s3_door <door> <env...> -- <args...>: OUT, RC; the pr create call in CREATE.
+s3_door() {
+  local door="$1"; shift
+  local envs=()
+  while [[ $# -gt 0 && "$1" != "--" ]]; do envs+=("$1"); shift; done
+  shift
+  : > "$GH_LOG"
+  OUT="$(env "${envs[@]}" HOME="$FAKE_HOME" XDG_CACHE_HOME="$FAKE_CACHE" GH_LOG="$GH_LOG" \
+    PATH="$S3BIN:$PATH" bash "$door" "$@" 2>"$SANDBOX/s3.err")"; RC=$?
+  CREATE="$(grep $'^CALL\tpr\tcreate' "$GH_LOG")"
+}
+# envelope_yml <merge.mode> — a valid envelope granting or not.
+envelope_yml() {
+  printf '%s\n' 'version: 1' 'enabled: true' 'select: {bucket: nuevo-entrante, exclude_labels: [x], require_readiness: true}' \
+    'order: {by: [priority-label, created-asc]}' 'budget: {max_issues: 3, stop_at: null}' \
+    'base: {strategy: nearest-tag, integration_branch: dev}' 'forbidden_zones: inherit' \
+    'on_failure: {policy: park-and-continue, skip_dependents: true}' "merge: {mode: $1}" 'report: {to: journal-per-repo}'
+}
+DRAFT_CALL="$(printf 'CALL\tpr\tcreate\t--base\tmain\t--head\tfeat/unit\t--title\tt\t--body\t\t--draft')"
+READY_CALL="$(printf 'CALL\tpr\tcreate\t--base\tmain\t--head\tfeat/unit\t--title\tt\t--body\t')"
+
+# The envelope is committed on origin's main and the feature branch is cut
+# from it; envelope_on_origin replaces what origin holds.
+envelope_on_origin() {
+  local here; here="$(git symbolic-ref --short HEAD)"
+  git checkout -q main && mkdir -p .devlead && envelope_yml "$1" > .devlead/envelope.yml
+  git add .devlead/envelope.yml && git commit -q -m "envelope $1" && git push -q origin main 2>/dev/null
+  git checkout -q "$here"
+}
+# on_branch <merge.mode> — the envelope as the feature branch commits it.
+on_branch() { mkdir -p .devlead && envelope_yml "$1" > .devlead/envelope.yml && git add .devlead/envelope.yml && git commit -q -m "envelope $1 on the branch"; }
+mk_repo s3
+envelope_on_origin never
+git rebase -q main 2>/dev/null
+commit_file notes.txt "a harmless change"
+
+# --- interactive host: exactly as asked, whatever the envelope says ---------
+s3_door "$OPEN_PR_SH" -u DEVLEAD_GUARD -- --base main --title t
+check "S3 interactive, merge.mode never: exit 0" "$RC" "0"
+check "S3 interactive: the PR opens as asked (no --draft added)" "$CREATE" "$READY_CALL"
+check "S3 interactive: stdout is the PR URL" "$OUT" "https://example.test/acme/repo/pull/7"
+
+# --- host launcher (DEVLEAD_GUARD=1): the working tree's envelope decides ---
+s3_door "$OPEN_PR_SH" DEVLEAD_GUARD=1 -- --base main --title t
+check "S3 unattended host, never: exit 0" "$RC" "0"
+check "S3 unattended host, never: draft" "$CREATE" "$DRAFT_CALL"
+check "S3 unattended host, never: stdout is still only the PR URL" "$OUT" "https://example.test/acme/repo/pull/7"
+contains "S3 unattended host, never: says why on stderr" "$(cat "$SANDBOX/s3.err")" "the PR opens as a draft"
+on_branch integration-branch
+s3_door "$OPEN_PR_SH" DEVLEAD_GUARD=1 -- --base main --title t
+check "S3 unattended host, merge granted: no draft" "$CREATE" "$READY_CALL"
+s3_door "$OPEN_PR_SH" DEVLEAD_GUARD=1 -- --base main --title t --draft
+check "S3 unattended host, merge granted, --draft asked: still a draft" "$CREATE" "$DRAFT_CALL"
+git rm -q .devlead/envelope.yml && git commit -q -m "no envelope"
+s3_door "$OPEN_PR_SH" DEVLEAD_GUARD=1 -- --base main --title t
+check "S3 unattended host, no envelope: draft" "$CREATE" "$DRAFT_CALL"
+
+# --- server: origin's envelope decides, never the working tree --------------
+touch "$MARKER"
+on_branch integration-branch
+s3_door "$SRV/.devlead/scripts/open-pr.sh" -u DEVLEAD_GUARD -- --base main --title t
+check "S3 server, origin never, working tree rewritten to grant: exit 0" "$RC" "0"
+check "S3 server, origin never, working tree rewritten to grant: draft" "$CREATE" "$DRAFT_CALL"
+envelope_on_origin integration-branch
+on_branch never
+s3_door "$SRV/.devlead/scripts/open-pr.sh" -u DEVLEAD_GUARD -- --base main --title t
+check "S3 server, origin grants: no draft" "$CREATE" "$READY_CALL"
+git remote set-url origin "$SANDBOX/gone.git"
+s3_door "$SRV/.devlead/scripts/open-pr.sh" -u DEVLEAD_GUARD -- --base main --title t
+check "S3 server, origin cannot be fetched: draft" "$CREATE" "$DRAFT_CALL"
+git remote set-url origin "$SANDBOX/s3-origin.git"
+rm -f "$MARKER"
+s3_door "$SRV/.devlead/scripts/open-pr.sh" -u DEVLEAD_GUARD -- --base main --title t
+check "S3 copy without the marker, interactive: as asked" "$CREATE" "$READY_CALL"
+
 echo ""
 echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
 cd /tmp || exit 1
