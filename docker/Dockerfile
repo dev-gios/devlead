@@ -119,9 +119,10 @@ COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
 #                           crontab, runner.conf and repos: the schedule, the
 #                           session limits and the enrolled repos, written by
 #                           the entrypoint at start from the env file
-#                           (docker/runner-config.sh). host-plan.yml: where
-#                           compose binds DEVLEAD_LOOP_PLAN read-only; the
-#                           entrypoint installs a root-owned copy of it as
+#                           (docker/runner-config.sh)
+#   /run/devlead/host-plan.yml
+#                           where compose binds DEVLEAD_LOOP_PLAN read-only;
+#                           the entrypoint installs a root-owned copy of it as
 #                           ~/.devlead/plan.local.yml
 #   /var/lib/devlead        root:root 0755, made by the entrypoint: the
 #                           session ledger (the user's, so the claude wrapper

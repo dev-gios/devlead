@@ -1,0 +1,3 @@
+# Stands in for the loop's plan when DEVLEAD_LOOP_PLAN is unset: compose.yaml
+# binds it read-only at /run/devlead/host-plan.yml, and the entrypoint installs
+# a plan only when DEVLEAD_LOOP_PLAN names one. Never read as a plan.

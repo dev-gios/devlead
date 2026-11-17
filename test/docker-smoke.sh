@@ -150,9 +150,14 @@ check "compose refuses to run without DEVLEAD_STATE_DIR" "$([[ $rc -ne 0 ]] && e
 contains "compose says what to set (state)" "$out" "DEVLEAD_STATE_DIR"
 _mounts="$(DEVLEAD_UID="$HOST_UID" DEVLEAD_GID="$HOST_GID" DEVLEAD_ENV_FILE="$ENV_FILE" DEVLEAD_WORKSPACE="$WORKSPACE" DEVLEAD_STATE_DIR="$HOST_STATE" \
   docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" --env-file /dev/null config --format json 2>/dev/null \
-  | jq -r '.services.devlead.volumes[] | select(.type == "bind") | .source' | sed "s|^$HOST_STATE/||" | sort | paste -sd, -)"
+  | jq -r '.services.devlead.volumes[] | select(.type == "bind" and (.target | startswith("/home/devlead/.devlead/"))) | .source' | sed "s|^$HOST_STATE/||" | sort | paste -sd, -)"
 check "compose mounts only the state subdirectories and the inbox of ~/.devlead (S14)" "$_mounts" \
   "agenda,audit,decisions,inbox.read.tsv,inbox.tsv,journals,learn,outcomes,reports,run-state"
+_planbind="$(DEVLEAD_UID="$HOST_UID" DEVLEAD_GID="$HOST_GID" DEVLEAD_ENV_FILE="$ENV_FILE" DEVLEAD_WORKSPACE="$WORKSPACE" DEVLEAD_STATE_DIR="$HOST_STATE" \
+  docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" --env-file /dev/null config --format json 2>/dev/null \
+  | jq -c '[.services.devlead.volumes[] | select(.type == "bind" and (.target | startswith("/home/devlead/") | not)) | [.source, .target, .read_only]]')"
+check "the only other bind: the loop's plan stand-in, read-only, at its staging path (L21 A2)" "$_planbind" \
+  "[[\"$REPO_ROOT/docker/no-loop-plan.yml\",\"/run/devlead/host-plan.yml\",true]]"
 
 echo "=== build (project $PROJECT, image $IMAGE) ==="
 if ! compose build >"$SCRATCH/build.log" 2>&1; then

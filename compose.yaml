@@ -98,8 +98,9 @@ services:
       - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/inbox.read.tsv", target: /home/devlead/.devlead/inbox.read.tsv, bind: {create_host_path: false}}
       # L21 A2: the loop's plan, read-only, at a staging path; the entrypoint
       # validates it as root and installs a root-owned copy where the loop
-      # reads it. Without DEVLEAD_LOOP_PLAN, /dev/null stands in: no plan.
-      - {type: bind, source: "${DEVLEAD_LOOP_PLAN:-/dev/null}", target: /etc/devlead/host-plan.yml, read_only: true, bind: {create_host_path: false}}
+      # reads it. Without DEVLEAD_LOOP_PLAN, docker/no-loop-plan.yml stands
+      # in and no plan is installed.
+      - {type: bind, source: "${DEVLEAD_LOOP_PLAN:-./docker/no-loop-plan.yml}", target: /run/devlead/host-plan.yml, read_only: true, bind: {create_host_path: false}}
 
 volumes:
   workspace:
