@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# runner-config.sh — the DevLead server's schedule and limits (S11, S16, S17),
-# turned from the env file into two root-owned files at container start.
+# runner-config.sh — the DevLead server's schedule, limits and enrolled repos
+# (S11, S13, S16, S17), turned from the env file into root-owned files at
+# container start.
 #
 #   runner-config.sh render <dir>       validate the settings below and write
-#                                       <dir>/crontab and <dir>/runner.conf
+#                                       <dir>/crontab, <dir>/runner.conf and
+#                                       <dir>/repos
 #   runner-config.sh check-cron <expr>  exit 0 when <expr> is a valid schedule
 #
 # entrypoint.sh runs `render /etc/devlead` as root, before privileges are
@@ -25,10 +27,28 @@
 #   DEVLEAD_AUDIT_RETENTION_DAYS   days a run's transcripts are kept (default 30)
 #   DEVLEAD_CLAUDE_BIN             if set, must name the claude wrapper: the
 #                                  launchers never run another binary here
+#   DEVLEAD_WORKSPACE              the host directory that holds every enrolled
+#                                  repo; compose mounts the clones volume at
+#                                  this same path in the container. Absolute,
+#                                  plain characters, and clear of the image's
+#                                  own directories (/etc, /opt, /usr, /var,
+#                                  /tmp, /home/devlead, ...)
+#   DEVLEAD_REPOS                  the enrolled repos (S13), comma-separated
+#                                  <host path>=<owner>/<repo>: each path inside
+#                                  DEVLEAD_WORKSPACE, none inside another
+#   DEVLEAD_LOOP_REPO              empty, or one of the paths in DEVLEAD_REPOS:
+#                                  the loop job works only in a clone
+#
+# The paths of DEVLEAD_REPOS are the repos' paths on the host: each clone sits
+# at that same path in the container, so the state the host's /devlead keys
+# by repo path (agenda, decisions, journals, outcomes, ...) has the same key.
+# Errors about these settings name the variable, and the entry, never the
+# value.
 #
 # runner.conf (KEY=value lines, parsed and never sourced) is read by the claude
-# wrapper and by run-job.sh; the crontab by supercronic. Missed runs are never
-# made up: supercronic keeps no state between starts.
+# wrapper and by run-job.sh; repos (host path TAB owner/repo) by sync-repos.sh
+# and the entrypoint; the crontab by supercronic. Missed runs are never made
+# up: supercronic keeps no state between starts.
 set -uo pipefail
 
 _DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -41,6 +61,8 @@ PRUNE_SCHEDULE="17 4 * * *"
 DEFAULT_MAX_SESSIONS=8
 DEFAULT_TIMEOUT=60m
 DEFAULT_RETENTION=30
+# Directories of the image the workspace may not be, hold or sit inside.
+IMAGE_PATHS=(/bin /boot /dev /etc /home/devlead /lib /lib32 /lib64 /libx32 /opt /proc /root /run /sbin /sys /tmp /usr /var)
 
 _usage() {
   echo "usage: runner-config.sh render <dir> | check-cron <expression>" >&2
@@ -141,6 +163,62 @@ _whole() { # _whole <value> <min> <max>
   [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1 >= $2 && 10#$1 <= $3 ))
 }
 
+# _valid_path <path> — absolute, of plain characters, with no . or ..
+# component and no empty one.
+_valid_path() {
+  local part parts=()
+  [[ ${#1} -le 1024 && "$1" =~ ^(/[A-Za-z0-9._@+-]+)+$ ]] || return 1
+  IFS=/ read -ra parts <<<"${1#/}"
+  for part in "${parts[@]}"; do [[ "$part" == "." || "$part" == ".." ]] && return 1; done
+  return 0
+}
+# _within <path> <dir> — <path> is <dir> or inside it.
+_within() { [[ "$1" == "$2" || "$1" == "$2"/* ]]; }
+
+# _repos <workspace> — validates DEVLEAD_REPOS; sets REPO_PATHS and
+# REPO_SLUGS, adds to errors.
+_repos() {
+  local ws="$1" entry path slug i=0 j prior entries=()
+  REPO_PATHS=(); REPO_SLUGS=()
+  IFS=, read -ra entries <<<"${DEVLEAD_REPOS:-}"
+  for entry in "${entries[@]}"; do
+    entry="$(_trim "$entry")"
+    [[ -n "$entry" ]] || continue
+    i=$((i + 1))
+    if [[ "$entry" != *=* ]]; then
+      errors+=("DEVLEAD_REPOS entry $i is not <host path>=<owner>/<repo>")
+      continue
+    fi
+    path="$(_trim "${entry%%=*}")"
+    slug="$(_trim "${entry#*=}")"
+    slug="${slug%.git}"
+    if ! _valid_path "$path"; then
+      errors+=("DEVLEAD_REPOS entry $i: the path must be absolute, of plain characters (letters, digits, . _ @ + -), with no . or .. part")
+      continue
+    fi
+    if [[ -z "$ws" ]]; then
+      errors+=("DEVLEAD_REPOS entry $i: DEVLEAD_WORKSPACE is not set — every enrolled repo lives inside it")
+      continue
+    fi
+    if [[ "$path" == "$ws" ]] || ! _within "$path" "$ws"; then
+      errors+=("DEVLEAD_REPOS entry $i: the path is not inside DEVLEAD_WORKSPACE")
+      continue
+    fi
+    if ! [[ "$slug" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$ ]] || [[ "${slug#*/}" == "." || "${slug#*/}" == ".." ]]; then
+      errors+=("DEVLEAD_REPOS entry $i: <owner>/<repo> is not the name of a GitHub repository")
+      continue
+    fi
+    for j in "${!REPO_PATHS[@]}"; do
+      prior="${REPO_PATHS[$j]}"
+      if _within "$path" "$prior" || _within "$prior" "$path"; then
+        errors+=("DEVLEAD_REPOS entries $((j + 1)) and $i: one clone would be the other or sit inside it")
+        continue 2
+      fi
+    done
+    REPO_PATHS+=("$path"); REPO_SLUGS+=("$slug")
+  done
+}
+
 # --- render --------------------------------------------------------------------
 _render() {
   local dir="$1" errors=() line name var default value tz max timeout retention bin
@@ -171,7 +249,8 @@ _render() {
     cron_lines+=("# $name ($var)" "$value $RUN_JOB $name")
   done <<<"$table"
 
-  for var in TZ DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT DEVLEAD_AUDIT_RETENTION_DAYS DEVLEAD_CLAUDE_BIN; do
+  for var in TZ DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT DEVLEAD_AUDIT_RETENTION_DAYS DEVLEAD_CLAUDE_BIN \
+             DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO; do
     _has_control "${!var:-}" && errors+=("$var $_CONTROL")
   done
 
@@ -202,14 +281,44 @@ _render() {
     errors+=("DEVLEAD_CLAUDE_BIN='$bin' is not the claude wrapper ($WRAPPER): every session in the server goes through it, so its limits and settings hold — remove the variable from the env file")
   fi
 
+  # Where the clones live (S13). A value with a control character was named
+  # above; it is not looked at again.
+  local ws="" r i
+  REPO_PATHS=(); REPO_SLUGS=()
+  if ! _has_control "${DEVLEAD_WORKSPACE:-}${DEVLEAD_REPOS:-}${DEVLEAD_LOOP_REPO:-}"; then
+    ws="$(_trim "${DEVLEAD_WORKSPACE:-}")"
+    while [[ ${#ws} -gt 1 && "$ws" == */ ]]; do ws="${ws%/}"; done
+    if [[ -n "$ws" ]]; then
+      if ! _valid_path "$ws"; then
+        errors+=("DEVLEAD_WORKSPACE must be an absolute path of plain characters (letters, digits, . _ @ + -), with no . or .. part")
+        ws=""
+      else
+        for r in "${IMAGE_PATHS[@]}"; do
+          if _within "$ws" "$r" || _within "$r" "$ws"; then
+            errors+=("DEVLEAD_WORKSPACE overlaps $r, which the image uses — give the host directory that holds your repos, e.g. /home/you/Work")
+            ws=""
+            break
+          fi
+        done
+      fi
+    fi
+    _repos "$ws"
+    if [[ -n "${DEVLEAD_LOOP_REPO:-}" ]]; then
+      local found=false
+      for i in "${!REPO_PATHS[@]}"; do [[ "${REPO_PATHS[$i]}" == "$DEVLEAD_LOOP_REPO" ]] && found=true; done
+      $found || errors+=("DEVLEAD_LOOP_REPO must be one of the paths in DEVLEAD_REPOS: the loop works only in the server's own clones")
+    fi
+  fi
+
   if [[ ${#errors[@]} -gt 0 ]]; then
     for line in "${errors[@]}"; do echo "runner-config: ERROR: $line" >&2; done
     return 1
   fi
 
-  local tmp_cron tmp_conf
+  local tmp_cron tmp_conf tmp_repos
   tmp_cron="$(mktemp "$dir/crontab.new.XXXXXX")" || return 1
   tmp_conf="$(mktemp "$dir/runner.conf.new.XXXXXX")" || { rm -f "$tmp_cron"; return 1; }
+  tmp_repos="$(mktemp "$dir/repos.new.XXXXXX")" || { rm -f "$tmp_cron" "$tmp_conf"; return 1; }
   {
     echo "# DevLead server schedule (S11, S16). Written by runner-config.sh at container"
     echo "# start from the env file; root's, read by supercronic. Change the DEVLEAD_CRON_*"
@@ -227,14 +336,22 @@ _render() {
     echo "SESSION_TIMEOUT=$timeout"
     echo "SESSION_KILL_AFTER=$SESSION_KILL_AFTER"
     echo "AUDIT_RETENTION_DAYS=$retention"
+    echo "WORKSPACE=$ws"
   } > "$tmp_conf"
-  chmod 0644 "$tmp_cron" "$tmp_conf"
-  mv -f "$tmp_cron" "$dir/crontab" && mv -f "$tmp_conf" "$dir/runner.conf" || {
-    rm -f "$tmp_cron" "$tmp_conf"
-    echo "runner-config: ERROR: cannot write $dir/crontab and $dir/runner.conf" >&2
+  {
+    echo "# DevLead server repos (S13). Written by runner-config.sh at container start"
+    echo "# from DEVLEAD_REPOS; root's. One enrolled repo per line: its path on the host,"
+    echo "# where its clone sits in the container too, TAB owner/repo on GitHub."
+    for i in "${!REPO_PATHS[@]}"; do printf '%s\t%s\n' "${REPO_PATHS[$i]}" "${REPO_SLUGS[$i]}"; done
+  } > "$tmp_repos"
+  chmod 0644 "$tmp_cron" "$tmp_conf" "$tmp_repos"
+  mv -f "$tmp_cron" "$dir/crontab" && mv -f "$tmp_conf" "$dir/runner.conf" && mv -f "$tmp_repos" "$dir/repos" || {
+    rm -f "$tmp_cron" "$tmp_conf" "$tmp_repos"
+    echo "runner-config: ERROR: cannot write $dir/crontab, $dir/runner.conf and $dir/repos" >&2
     return 1
   }
   echo "runner-config: schedule and limits written to $dir (TZ=$tz, $max sessions a day, $timeout per session)"
+  echo "runner-config: ${#REPO_PATHS[@]} enrolled repo(s) written to $dir/repos"
 }
 
 case "${1:-}" in

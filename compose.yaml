@@ -15,6 +15,11 @@
 #   docker compose exec -u root devlead rm /home/devlead/.devlead/PAUSE
 # Run a job now: docker compose exec -u devlead devlead /opt/devlead/docker/run-job.sh fleet
 #
+# The jobs work in the container's own clones of the repos in DEVLEAD_REPOS
+# (the workspace volume), reset to origin's default branch before each job;
+# your working copies are never touched. Drop the clones of repos you no
+# longer enroll with: docker compose down && docker volume rm devlead_workspace
+#
 # Everything secret comes from .env, which stays out of git and out of the
 # image (.dockerignore). compose also reads DEVLEAD_UID and DEVLEAD_GID from it
 # and refuses to go on without them: the container must run as your user, and
@@ -58,5 +63,14 @@ services:
       options:
         max-size: 10m
         max-file: "3"
-    # F3 (S13, S14): the volume with the clones of the enrolled repos and the
-    # mounts of the host's ~/.devlead state subdirectories go here.
+    volumes:
+      # S13: the clones of the enrolled repos (DEVLEAD_REPOS), each at the path
+      # its repo has on the host, so the state the host's /devlead keys by
+      # repo path is the same key here. Only the container sees this volume:
+      # your own working copies are never mounted.
+      - type: volume
+        source: workspace
+        target: ${DEVLEAD_WORKSPACE:?set DEVLEAD_WORKSPACE in .env to the host directory that holds your repos}
+
+volumes:
+  workspace:

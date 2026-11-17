@@ -23,23 +23,29 @@
 #      ConditionPathExists=.
 #   4. One job at a time: a job that finds another one running waits for it,
 #      as devlead-fleet.service waits for devlead-loop.service (After=).
-#   5. The job runs from ~/.devlead with a private TMPDIR, in a session of its
+#   5. The clones the job works on are brought to origin's default branch
+#      (S13, docker/sync-repos.sh): every enrolled repo for morning, fleet and
+#      discover, DEVLEAD_LOOP_REPO for loop. It holds the session lock — no
+#      claude session may be working in a clone it resets — and a job whose
+#      repos cannot all be synced does not run.
+#   6. The job runs from ~/.devlead with a private TMPDIR, in a session of its
 #      own, every process of it tagged DEVLEAD_RUN_ID=<run id>. Its output goes
 #      to the container log and to the run's output.log.
-#   6. Afterwards every process it left behind is stopped (TERM, then KILL):
+#   7. Afterwards every process it left behind is stopped (TERM, then KILL):
 #      its descendants, any process carrying its run id, and any orphan that
 #      appeared during the run (one the container's init adopted). Its TMPDIR
 #      and whatever it created at the top of /tmp are removed. Nothing a job
 #      starts or writes there carries over to the next one. The /tmp sweep is
 #      done holding the session lock, and skipped while a claude session runs
 #      (one the operator started by hand): its files there are its own.
-#   7. The claude sessions it started are read from the wrapper's ledger. Their
+#   8. The claude sessions it started are read from the wrapper's ledger. Their
 #      transcripts — Claude Code's own, found by session id; the launchers'
 #      output format is left alone — are copied to
 #      ~/.devlead/audit/runs/<run id>/, and one JSON line is appended to
 #      ~/.devlead/audit/YYYY-MM.jsonl and printed to the container log.
-#   8. A failed run sends one `need` (GOVERNANCE.md §escalation-channel):
-#      job-failed (non-zero exit, a crash, a refused start), job-timeout (a
+#   9. A failed run sends one `need` (GOVERNANCE.md §escalation-channel):
+#      job-failed (non-zero exit, a crash, a refused start, repos that could
+#      not be synced), job-timeout (a
 #      session stopped at its time limit), job-refused (a session refused by
 #      the daily cap or because another was running). doctor.sh's Claude token
 #      warning becomes a `need` token-expiring, once a day; like every notice it
@@ -48,7 +54,9 @@
 # The audit line: run_id, trigger, repos, started_at, ended_at, exit_code,
 # timed_out, cap_refused (a session refused by the daily cap), refusals (the
 # reason of every refused session: cap, busy, paused, noconf, noledger, root),
-# paused, skipped (the reason, or null), sessions
+# paused, skipped (the reason, or null), synced [{repo, branch, commit}] (the
+# clones as the job found them), sync_error (the repo and the reason, or
+# null), sessions
 # [{id, exit_code, timed_out}], session_ids, tool_uses {tool: count},
 # files_changed, prs_opened, transcripts_kept, outcome (ok, failed, timeout,
 # refused, paused, skipped), notified, notify_codes, leftovers_killed,
@@ -82,6 +90,7 @@ JOB_LOCK=/var/lib/devlead/job.lock
 SESSION_LOCK=/var/lib/devlead/session.lock
 PAUSE_FILE=/home/devlead/.devlead/PAUSE
 SCRIPTS_DIR=/opt/devlead/scripts
+SYNC_REPOS=/opt/devlead/docker/sync-repos.sh
 WRAPPER=/usr/local/bin/claude
 TMP_ROOT=/tmp
 ORPHAN_PARENT=1
@@ -336,7 +345,7 @@ _transcript_stats() {
 
 _audit() { # _audit <outcome> <exit code> [skipped reason]
   local outcome="$1" rc="$2" skipped="${3:-}" line month file
-  local sessions="${SESSIONS_JSON:-}" stats="${STATS_JSON:-}"
+  local sessions="${SESSIONS_JSON:-}" stats="${STATS_JSON:-}" synced="${SYNCED_JSON:-[]}"
   [[ -n "$sessions" ]] || sessions='{"sessions":[],"refusals":[]}'
   [[ -n "$stats" ]] || stats='{"tool_uses":{},"files_changed":[],"prs_opened":[]}'
   line="$(jq -n -c \
@@ -344,6 +353,7 @@ _audit() { # _audit <outcome> <exit code> [skipped reason]
     --arg started "$STARTED_AT" --arg ended "$(date -Is)" --argjson rc "$rc" \
     --argjson s "$sessions" --argjson stats "$stats" --arg outcome "$outcome" \
     --arg skipped "$skipped" --argjson paused "${PAUSED:-false}" \
+    --argjson synced "$synced" --arg sync_error "${SYNC_ERROR:-}" \
     --argjson codes "$(printf '%s\n' "${NOTIFY_CODES[@]}" | jq -R . | jq -s -c 'map(select(length > 0))')" \
     --argjson killed "${LEFTOVERS_KILLED:-0}" --argjson waited "${LOCK_WAIT:-0}" \
     --argjson transcripts "${TRANSCRIPTS_KEPT:-0}" --argjson intact "${AUDIT_INTACT:-true}" '
@@ -354,6 +364,7 @@ _audit() { # _audit <outcome> <exit code> [skipped reason]
       refusals: $s.refusals,
       paused: $paused,
       skipped: (if $skipped == "" then null else $skipped end),
+      synced: $synced, sync_error: (if $sync_error == "" then null else $sync_error end),
       sessions: $s.sessions, session_ids: [$s.sessions[].id],
       tool_uses: $stats.tool_uses, files_changed: $stats.files_changed, prs_opened: $stats.prs_opened,
       transcripts_kept: $transcripts, outcome: $outcome,
@@ -488,13 +499,44 @@ _mine
 for _p in "${_PIDS[@]}"; do _BEFORE[$_p]=1; done
 
 echo "run-job: $JOB started (run $RUN_ID)" >&7
-(
-  cd "$STATE_DIR" 2>/dev/null || cd "$HOME" || exit 1
-  exec env -u DEVLEAD_CLAUDE_BIN TMPDIR="$JOBTMP" DEVLEAD_RUN_ID="$RUN_ID" \
-    setsid "$SCRIPTS_DIR/${JOB_ARGV[0]}" "${JOB_ARGV[@]:1}"
-) </dev/null >&7 2>&7 7>&- 8<&-
-RC=$?
-echo "run-job: $JOB exited $RC (run $RUN_ID)" >&7
+
+# The clones it works on, at origin's default branch (S13).
+SYNCED_JSON='[]'
+SYNC_ERROR=""
+_sync_args=()
+case "$JOB_REPOS" in
+  enrolled) _sync_args=(--all) ;;
+  loop) [[ -n "${DEVLEAD_LOOP_REPO:-}" ]] && _sync_args=("$DEVLEAD_LOOP_REPO") ;;
+esac
+if [[ ${#_sync_args[@]} -gt 0 ]]; then
+  if ! { [[ -f "$SESSION_LOCK" && ! -L "$SESSION_LOCK" ]] && { exec 5<"$SESSION_LOCK"; } 2>/dev/null && flock -n 5; }; then
+    SYNC_ERROR="a claude session is running in the container"
+  else
+    _sync_out="$(cd "$STATE_DIR" 2>/dev/null || cd "$HOME" || exit 1; "$SYNC_REPOS" "${_sync_args[@]}" </dev/null 2>&7 5<&- 7>&- 8<&-)"
+    _sync_rc=$?
+    while IFS=$'\t' read -r _kind _path _f3 _f4; do
+      case "$_kind" in
+        SYNCED) SYNCED_JSON="$(jq -c --arg r "$_path" --arg b "$_f3" --arg c "$_f4" '. + [{repo: $r, branch: $b, commit: $c}]' <<<"$SYNCED_JSON")" ;;
+        FAILED) SYNC_ERROR="$_path: $_f3" ;;
+      esac
+    done <<<"$_sync_out"
+    [[ $_sync_rc -eq 0 || -n "$SYNC_ERROR" ]] || SYNC_ERROR="sync-repos.sh exited $_sync_rc"
+  fi
+  exec 5<&- 2>/dev/null
+fi
+
+if [[ -n "$SYNC_ERROR" ]]; then
+  echo "run-job: the repos could not be synced from origin ($SYNC_ERROR) — $JOB not run" >&7
+  RC=1
+else
+  (
+    cd "$STATE_DIR" 2>/dev/null || cd "$HOME" || exit 1
+    exec env -u DEVLEAD_CLAUDE_BIN TMPDIR="$JOBTMP" DEVLEAD_RUN_ID="$RUN_ID" \
+      setsid "$SCRIPTS_DIR/${JOB_ARGV[0]}" "${JOB_ARGV[@]:1}"
+  ) </dev/null >&7 2>&7 7>&- 8<&-
+  RC=$?
+  echo "run-job: $JOB exited $RC (run $RUN_ID)" >&7
+fi
 
 # After: nothing of the job outlives it.
 LEFTOVERS_KILLED=0
@@ -542,7 +584,10 @@ _timed_out="$(jq '[.sessions[] | select(.timed_out)] | length > 0' <<<"$SESSIONS
 _refusal="$(jq -r '[.refusals[] | select(. != "paused")] | .[0] // ""' <<<"$SESSIONS_JSON")"
 _paused_refusal="$(jq '[.refusals[] | select(. == "paused")] | length > 0' <<<"$SESSIONS_JSON")"
 OUTCOME=ok
-if [[ "$_timed_out" == "true" ]]; then
+if [[ -n "$SYNC_ERROR" ]]; then
+  OUTCOME=failed
+  _need job-failed "$JOB: not run — its repos could not be synced from origin: ${SYNC_ERROR##*: } (run $RUN_ID)"
+elif [[ "$_timed_out" == "true" ]]; then
   OUTCOME=timeout
   _need job-timeout "$JOB: a claude session ran past the $CONF_TIMEOUT limit and was stopped (run $RUN_ID)"
 elif [[ -n "$_refusal" ]]; then

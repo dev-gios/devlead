@@ -96,7 +96,7 @@ COPY .devlead/bin/devlead /opt/devlead/bin/devlead
 COPY .claude/hooks/ /opt/devlead/hooks/
 COPY .claude/commands/ /opt/devlead/commands/
 COPY docker/entrypoint.sh docker/init-firewall.sh docker/claude-wrapper.sh \
-     docker/runner-config.sh docker/run-job.sh /opt/devlead/docker/
+     docker/runner-config.sh docker/run-job.sh docker/sync-repos.sh /opt/devlead/docker/
 # Hooks, deny rules and the bypass lock (S9): Claude Code's highest-precedence
 # settings, readable by the session (a file it cannot read is ignored) and
 # writable by root only.
@@ -113,9 +113,10 @@ COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
 #                           repo's own (GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM).
 #                           install-stamp: the source revision and the SHA-256
 #                           of every installed file (doctor.sh checks it).
-#                           crontab and runner.conf: the schedule and the
-#                           session limits, written by the entrypoint at start
-#                           from the env file (docker/runner-config.sh)
+#                           crontab, runner.conf and repos: the schedule, the
+#                           session limits and the enrolled repos, written by
+#                           the entrypoint at start from the env file
+#                           (docker/runner-config.sh)
 #   /var/lib/devlead        root:root 0755, made by the entrypoint: the
 #                           session ledger (the user's, so the claude wrapper
 #                           can record sessions, but it cannot be removed or
@@ -149,8 +150,14 @@ COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
 #                           are the user's; notify.env is written at start.
 #                           audit/ holds the run log (S18). Only root can
 #                           create or remove ~/.devlead/PAUSE, the global
-#                           pause (S17).
+#                           pause (S17), or autonomous-repos, the fleet list
+#                           the entrypoint writes from DEVLEAD_REPOS (S13).
 #                           F3 (S14) mounts the host's state over them.
+#   DEVLEAD_WORKSPACE       the clones volume (S13), at the host path that
+#                           holds the enrolled repos: each clone sits at its
+#                           repo's host path. Root owns it and every directory
+#                           above a clone; docker/sync-repos.sh resets each
+#                           clone to origin's default branch before a job
 RUN set -eux; \
     install -d -m 0755 -o root -g root /etc/devlead; \
     printf '%s\n' 'DevLead server image: guard.sh is always on (see .claude/hooks/guard.sh).' \

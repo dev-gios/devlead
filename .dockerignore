@@ -10,4 +10,5 @@
 !docker/init-firewall.sh
 !docker/runner-config.sh
 !docker/run-job.sh
+!docker/sync-repos.sh
 !docker/managed-settings.json

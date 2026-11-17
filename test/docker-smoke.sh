@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # docker-smoke.sh — builds the DevLead server image and checks its limits from
-# inside a container (F1: S7-S10, S12, S15, S20; F2: S11, S16-S19).
+# inside a container (F1: S7-S10, S12, S15, S20; F2: S11, S16-S19; F3: S13,
+# S14).
 #
 #   make docker-test
 #
 # NOT part of `make test`: it needs Docker and the network (the firewall
-# resolves Anthropic and GitHub, and the probe reaches api.github.com).
+# resolves Anthropic and GitHub, the probe reaches api.github.com, and the
+# clone of the enrolled repo comes from github.com: octocat/Hello-World, a
+# small public repository, read without credentials).
 #
 # The Claude sessions below run against a small mock of the Messages API on
 # 127.0.0.1 (ANTHROPIC_BASE_URL), so they exercise Claude Code's real settings,
@@ -64,20 +67,26 @@ DEVLEAD_LOOP_CLAUDE_ARGS=--permission-mode acceptEdits --allowedTools Bash,Read,
 DEVLEAD_EGRESS_ALLOW=
 TZ=America/Bogota
 DEVLEAD_MAX_SESSIONS_PER_DAY=50
+DEVLEAD_WORKSPACE=/home/smoke/Work
+DEVLEAD_REPOS=/home/smoke/Work/hello=octocat/Hello-World
+DEVLEAD_LOOP_REPO=
 EOF
 )
+# The workspace path of this run: compose mounts the clones volume there.
+WORKSPACE=/home/smoke/Work
+CLONE="$WORKSPACE/hello"
 # The image is built from this checkout's commit (doctor.sh's install stamp).
 SOURCE_REV="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 # Interpolation values for compose.yaml, so neither a real .env in the repo
 # nor the caller's shell decides what this run builds or reads.
 COMPOSE_ENV="$SCRATCH/compose.env"
-printf 'DEVLEAD_UID=%s\nDEVLEAD_GID=%s\nDEVLEAD_IMAGE=%s\nDEVLEAD_ENV_FILE=%s\nDEVLEAD_SOURCE_REV=%s\n' \
-  "$HOST_UID" "$HOST_GID" "$IMAGE" "$ENV_FILE" "$SOURCE_REV" > "$COMPOSE_ENV"
+printf 'DEVLEAD_UID=%s\nDEVLEAD_GID=%s\nDEVLEAD_IMAGE=%s\nDEVLEAD_ENV_FILE=%s\nDEVLEAD_SOURCE_REV=%s\nDEVLEAD_WORKSPACE=%s\n' \
+  "$HOST_UID" "$HOST_GID" "$IMAGE" "$ENV_FILE" "$SOURCE_REV" "$WORKSPACE" > "$COMPOSE_ENV"
 
 # SERVICE_ENV, when set, replaces the env file (the F2 service section).
 compose() {
   DEVLEAD_UID="$HOST_UID" DEVLEAD_GID="$HOST_GID" DEVLEAD_IMAGE="$IMAGE" \
-  DEVLEAD_ENV_FILE="${SERVICE_ENV:-$ENV_FILE}" DEVLEAD_SOURCE_REV="$SOURCE_REV" \
+  DEVLEAD_ENV_FILE="${SERVICE_ENV:-$ENV_FILE}" DEVLEAD_SOURCE_REV="$SOURCE_REV" DEVLEAD_WORKSPACE="$WORKSPACE" \
     docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" \
       -p "$PROJECT" --env-file "$COMPOSE_ENV" "$@"
 }
@@ -100,7 +109,7 @@ for var in DEVLEAD_UID DEVLEAD_GID CLAUDE_CODE_OAUTH_TOKEN DEVLEAD_CLAUDE_TOKEN_
            DEVLEAD_NTFY_URL DEVLEAD_NTFY_TOKEN DEVLEAD_NOTIFY_DETAIL DEVLEAD_LOOP_CLAUDE_ARGS \
            DEVLEAD_DISCOVER_CLAUDE_ARGS DEVLEAD_EGRESS_ALLOW TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP \
            DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT \
-           DEVLEAD_AUDIT_RETENTION_DAYS; do
+           DEVLEAD_AUDIT_RETENTION_DAYS DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO; do
   check "the template lists $var" "$(grep -cE "^#?${var}=" <<<"$_tpl")" "1"
 done
 for line in "Contents        Read and write" "Pull requests   Read and write" \
@@ -109,13 +118,17 @@ for line in "Contents        Read and write" "Pull requests   Read and write" \
   contains "the template states the PAT rule: $line" "$_tpl" "$line"
 done
 check "the template leaves DEVLEAD_UID for you to fill in" "$(grep -cx 'DEVLEAD_UID=' <<<"$_tpl")" "1"
-out="$(env -u DEVLEAD_UID DEVLEAD_GID="$HOST_GID" DEVLEAD_ENV_FILE="$ENV_FILE" \
+out="$(env -u DEVLEAD_UID DEVLEAD_GID="$HOST_GID" DEVLEAD_ENV_FILE="$ENV_FILE" DEVLEAD_WORKSPACE="$WORKSPACE" \
   docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" --env-file /dev/null config -q 2>&1)"; rc=$?
 check "compose refuses to run without DEVLEAD_UID (no silent 1000)" "$([[ $rc -ne 0 ]] && echo refused || echo accepted)" "refused"
 contains "compose says what to set" "$out" "DEVLEAD_UID"
-out="$(env -u DEVLEAD_GID DEVLEAD_UID="$HOST_UID" DEVLEAD_ENV_FILE="$ENV_FILE" \
+out="$(env -u DEVLEAD_GID DEVLEAD_UID="$HOST_UID" DEVLEAD_ENV_FILE="$ENV_FILE" DEVLEAD_WORKSPACE="$WORKSPACE" \
   docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" --env-file /dev/null config -q 2>&1)"; rc=$?
 check "compose refuses to run without DEVLEAD_GID" "$([[ $rc -ne 0 ]] && echo refused || echo accepted)" "refused"
+out="$(env -u DEVLEAD_WORKSPACE DEVLEAD_UID="$HOST_UID" DEVLEAD_GID="$HOST_GID" DEVLEAD_ENV_FILE="$ENV_FILE" \
+  docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" --env-file /dev/null config -q 2>&1)"; rc=$?
+check "compose refuses to run without DEVLEAD_WORKSPACE" "$([[ $rc -ne 0 ]] && echo refused || echo accepted)" "refused"
+contains "compose says what to set (workspace)" "$out" "DEVLEAD_WORKSPACE"
 
 echo "=== build (project $PROJECT, image $IMAGE) ==="
 if ! compose build >"$SCRATCH/build.log" 2>&1; then
@@ -359,6 +372,33 @@ rm -f /tmp/work/.claude/settings.local.json
 # servers written there must stay out of the next session.
 node -e 'const f=(process.env.CLAUDE_CONFIG_DIR||process.env.HOME)+"/.claude.json";let j={};try{j=JSON.parse(require("fs").readFileSync(f))}catch(e){};const s={type:"stdio",command:"sh",args:["-c","touch /tmp/mark-mcp; sleep 2"]};j.mcpServers={planted:s};j.env={VF_PROBE:"from-state-file",GIT_CONFIG_COUNT:"1",GIT_CONFIG_KEY_0:"core.fsmonitor",GIT_CONFIG_VALUE_0:"touch /tmp/mark-gitenv-json; false"};j.apiKeyHelper="touch /tmp/mark-akh-json; echo sk-ant-api03-DUMMY";j.projects=j.projects||{};j.projects["/tmp/work"]=Object.assign(j.projects["/tmp/work"]||{},{mcpServers:{planted:s}});require("fs").writeFileSync(f,JSON.stringify(j))' 2>/dev/null
 p s_state "$(sess state 'git status >/dev/null 2>&1; echo "vf=[$VF_PROBE]"') mcp=$(yn test -e /tmp/mark-mcp) akh=$(yn test -e /tmp/mark-akh-json) git=$(yn test -e /tmp/mark-gitenv-json)"
+
+# --- F3: the clones (S13) ----------------------------------------------------
+WS=/home/smoke/Work
+p ws_meta "$(stat -c '%U:%G %a' "$WS")"
+p ws_new_dir "$(yn mkdir "$WS/stray")"
+p clone_dir_meta "$(stat -c '%u %a' "$WS/hello")"
+p repos_meta "$(stat -c '%U %a' /etc/devlead/repos)"
+p repos_lines "$(grep -v '^#' /etc/devlead/repos | tr '\t' ' ')"
+p fleet_list "$(cat "$HOME/.devlead/autonomous-repos")"
+p fleet_list_meta "$(stat -c '%U %a' "$HOME/.devlead/autonomous-repos")"
+p fleet_list_write "$(yn sh -c "echo /etc >> $HOME/.devlead/autonomous-repos")"
+p fleet_list_replace "$(yn mv "$HOME/.devlead/autonomous-repos" "$HOME/.devlead/x")"
+p sync1 "$(/opt/devlead/docker/sync-repos.sh --all 2>/dev/null | cut -f1,2)"
+p sync_head "$(git -C "$WS/hello" rev-parse HEAD) $(git -C "$WS/hello" ls-remote origin HEAD | cut -f1)"
+p sync_branch "$(git -C "$WS/hello" rev-parse --abbrev-ref HEAD) $(git -C "$WS/hello" ls-remote --symref origin HEAD | sed -n 's|^ref: refs/heads/\([^[:space:]]*\).*|\1|p')"
+p sync_toplevel "$(git -C "$WS/hello/" rev-parse --show-toplevel)"
+# A session plants an fsmonitor and a hook in the clone; the next sync drops
+# them before git reads the clone again.
+git -C "$WS/hello" config core.fsmonitor 'touch /tmp/mark-clone-fsmonitor; false'
+mkdir -p "$WS/hello/.git/hooks" && printf '#!/bin/sh\ntouch /tmp/mark-clone-hook\n' > "$WS/hello/.git/hooks/post-checkout" && chmod +x "$WS/hello/.git/hooks/post-checkout"
+echo PLANTED > "$WS/hello/README"
+rm -f /tmp/mark-clone-fsmonitor /tmp/mark-clone-hook
+p sync2 "$(/opt/devlead/docker/sync-repos.sh "$WS/hello" 2>/dev/null | cut -f1)"
+git -C "$WS/hello" status >/dev/null 2>&1
+p clone_planted_ran "$(yn test -e /tmp/mark-clone-fsmonitor) $(yn test -e /tmp/mark-clone-hook)"
+p clone_readme "$(grep -c PLANTED "$WS/hello/README")"
+p sync_stray "$(/opt/devlead/docker/sync-repos.sh /home/devlead 2>/dev/null | cut -f1,3)"
 PROBE_EOF
 
 echo "=== inside the container, as the devlead user ==="
@@ -487,6 +527,24 @@ check "doctor exits 0 in the image" "$(v doctor_rc)" "0"
 check "the wrapper refuses --resume" "$(v refuse_resume)" "2"
 check "the wrapper refuses -c" "$(v refuse_continue)" "2"
 check "the wrapper refuses --bg" "$(v refuse_bg)" "2"
+# F3: the clones (S13)
+check "the workspace is root's, 0755" "$(v ws_meta)" "root:root 755"
+check "the user cannot add a directory to the workspace" "$(v ws_new_dir)" "no"
+check "the clone's directory is the user's" "$(v clone_dir_meta)" "$HOST_UID 755"
+check "the enrolled repos are root's, 0644" "$(v repos_meta)" "root 644"
+check "the enrolled repos are the env file's" "$(v repos_lines)" "$CLONE octocat/Hello-World"
+check "the fleet list is the enrolled paths" "$(v fleet_list)" "$CLONE"
+check "the fleet list is root's, 0644 (Inv 3)" "$(v fleet_list_meta)" "root 644"
+check "the user cannot add to the fleet list" "$(v fleet_list_write)" "no"
+check "the user cannot replace the fleet list" "$(v fleet_list_replace)" "no"
+check "sync clones the enrolled repo from GitHub" "$(v sync1)" "$(printf 'SYNCED\t%s' "$CLONE")"
+check "the clone is at origin's HEAD" "$(v sync_head | awk '{print ($1 == $2 && length($1) == 40) ? "same" : $0}')" "same"
+check "on origin's default branch" "$(v sync_branch | awk '{print ($1 == $2) ? "same" : $0}')" "same"
+check "the clone's toplevel is the repo's host path (the state key)" "$(v sync_toplevel)" "$CLONE"
+check "a resync after a session: synced" "$(v sync2)" "SYNCED"
+check "a planted fsmonitor and hook never run after the resync" "$(v clone_planted_ran)" "no no"
+check "a planted change is gone after the resync" "$(v clone_readme)" "0"
+check "sync refuses a path that is not enrolled" "$(v sync_stray)" "$(printf 'FAILED\tnot an enrolled repo (DEVLEAD_REPOS)')"
 
 echo "=== the long-lived service: scheduler and runner (F2) ==="
 # Its own env file: no push channel (the failures below send `need`), a
@@ -494,8 +552,9 @@ echo "=== the long-lived service: scheduler and runner (F2) ==="
 # cap of 4 sessions a day and a 20-second session limit.
 SERVICE_ENV="$SCRATCH/service.env"
 ( umask 077
-  grep -vE '^(DEVLEAD_NTFY_URL|DEVLEAD_NTFY_TOKEN|DEVLEAD_MAX_SESSIONS_PER_DAY)=' "$ENV_FILE"
+  grep -vE '^(DEVLEAD_NTFY_URL|DEVLEAD_NTFY_TOKEN|DEVLEAD_MAX_SESSIONS_PER_DAY|DEVLEAD_REPOS)=' "$ENV_FILE"
   cat <<'EOF'
+DEVLEAD_REPOS=
 DEVLEAD_NTFY_URL=
 DEVLEAD_CRON_MORNING=* * * * *
 DEVLEAD_CRON_DISCOVER=off
@@ -676,6 +735,17 @@ contains "the time zone is named" "$out" "TZ='Mars/Olympus' is not a time zone"
 out="$(compose run --rm -T -e DEVLEAD_CLAUDE_BIN=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe devlead id -u 2>&1)"; rc=$?
 check "DEVLEAD_CLAUDE_BIN set to the real binary stops the start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
 contains "it says the binary is not the wrapper" "$out" "is not the claude wrapper"
+
+out="$(compose run --rm -T -e 'DEVLEAD_REPOS=/home/smoke/Secret/x=octocat/Hello-World' devlead id -u 2>&1)"; rc=$?
+check "a repo outside the workspace stops the start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
+contains "the entry is named" "$out" "DEVLEAD_REPOS entry 1: the path is not inside DEVLEAD_WORKSPACE"
+check "the path is not echoed" "$(grep -c 'Secret' <<<"$out")" "0"
+out="$(compose run --rm -T -e "DEVLEAD_LOOP_REPO=$WORKSPACE/other" devlead id -u 2>&1)"; rc=$?
+check "a loop repo that is not enrolled stops the start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
+contains "it says the loop works only in the clones" "$out" "DEVLEAD_LOOP_REPO must be one of the paths in DEVLEAD_REPOS"
+out="$(compose run --rm -T -e 'DEVLEAD_WORKSPACE=/home/elsewhere' -e 'DEVLEAD_REPOS=/home/elsewhere/x=octocat/Hello-World' devlead id -u 2>&1)"; rc=$?
+check "a workspace that is not where compose mounted the clones stops the start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
+contains "it says nothing is mounted there" "$out" "nothing is mounted at DEVLEAD_WORKSPACE"
 
 out="$(docker run --rm --user "$HOST_UID" --cap-add NET_ADMIN --env-file "$ENV_FILE" "$IMAGE" id -u 2>&1)"; rc=$?
 check "started as a non-root user, the container does not start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"

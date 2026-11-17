@@ -11,10 +11,19 @@
 #      start: the command below never runs on an open network;
 #   3. hand the ntfy settings to notify.sh, in the file it reads
 #      (~/.devlead/notify.env, mode 600), and drop them from the environment;
-#   4. prepare /var/lib/devlead, where the claude wrapper keeps its session
+#   4. prepare the workspace (S13): the clones volume, mounted by compose at
+#      DEVLEAD_WORKSPACE — the host directory that holds the enrolled repos,
+#      so each clone sits at the repo's host path and every piece of state
+#      keyed by that path is the key the host's /devlead reads. Root owns the
+#      workspace and every directory above a clone; each clone's own
+#      directory is the user's. sync-repos.sh fills it before a job;
+#   5. write ~/.devlead/autonomous-repos — the fleet list the jobs read — from
+#      DEVLEAD_REPOS, root's and read-only to the user: no session can enroll
+#      a repo (Inv 3);
+#   6. prepare /var/lib/devlead, where the claude wrapper keeps its session
 #      ledger and locks: root's directory, so the user can neither remove nor
 #      replace them. Ledger lines older than two days are dropped;
-#   5. switch to the devlead user for good — same UID/GID as the host user,
+#   7. switch to the devlead user for good — same UID/GID as the host user,
 #      every capability gone, no way back through setuid binaries —, prune the
 #      run transcripts past their retention, and run the command (S9): by
 #      default supercronic with that crontab.
@@ -26,6 +35,7 @@ set -euo pipefail
 DEVLEAD_USER=devlead
 DEVLEAD_HOME=/home/devlead
 NOTIFY_ENV="$DEVLEAD_HOME/.devlead/notify.env"
+FLEET_LIST="$DEVLEAD_HOME/.devlead/autonomous-repos"
 
 log() { printf 'devlead-entrypoint: %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
@@ -47,6 +57,10 @@ export TZ
 
 /opt/devlead/docker/init-firewall.sh \
   || die "the egress firewall could not be applied, so the container does not start"
+
+_uid="$(id -u "$DEVLEAD_USER")"
+_gid="$(id -g "$DEVLEAD_USER")"
+[[ "$_uid" -ne 0 && "$_gid" -ne 0 ]] || die "the $DEVLEAD_USER user must not be root"
 
 # notify.sh reads its push settings from a 600 file owned by the user who runs
 # it, never from the environment. Written on every start, so a value removed
@@ -71,9 +85,67 @@ for _v in CLAUDE_CODE_OAUTH_TOKEN DEVLEAD_CLAUDE_TOKEN_ISSUED GH_TOKEN DEVLEAD_L
 done
 unset _v
 
-_uid="$(id -u "$DEVLEAD_USER")"
-_gid="$(id -g "$DEVLEAD_USER")"
-[[ "$_uid" -ne 0 && "$_gid" -ne 0 ]] || die "the $DEVLEAD_USER user must not be root"
+
+# _is_mount <path> — something is mounted exactly there.
+_is_mount() { awk -v p="$1" '$5 == p { found = 1 } END { exit !found }' /proc/self/mountinfo; }
+
+# _clone_dir <workspace> <repo path> <entry number> — root's directories down
+# to the clone's, which is the user's. Nothing on the way may be a link or a
+# directory someone else owns (a clone of an earlier DEVLEAD_REPOS, say):
+# root would otherwise create or chown through it.
+_clone_dir() {
+  local ws="$1" path="$2" n="$3" cur="$1" part i last parts=()
+  IFS=/ read -ra parts <<<"${path#"$ws"/}"
+  last=$(( ${#parts[@]} - 1 ))
+  for i in "${!parts[@]}"; do
+    part="${parts[$i]}"
+    cur="$cur/$part"
+    if [[ -L "$cur" ]] || { [[ -e "$cur" ]] && [[ ! -d "$cur" ]]; }; then
+      log "ERROR: the path of DEVLEAD_REPOS entry $n runs through something that is not a directory in the workspace volume"
+      return 1
+    fi
+    if (( i < last )); then
+      if [[ ! -d "$cur" ]]; then
+        install -d -m 0755 -o root -g root "$cur" || return 1
+      elif [[ "$(stat -c %u "$cur")" != 0 ]]; then
+        log "ERROR: the path of DEVLEAD_REPOS entry $n runs through a clone of an earlier list (a directory of the user's in the workspace volume) — remove it from the volume, or enroll that repo again"
+        return 1
+      fi
+    elif [[ ! -d "$cur" ]]; then
+      install -d -m 0755 -o "$_uid" -g "$_gid" "$cur" || return 1
+    elif [[ "$(stat -c %u "$cur")" == 0 && -z "$(ls -A "$cur")" ]]; then
+      chown "$_uid:$_gid" "$cur" && chmod 0755 "$cur" || return 1
+    elif [[ "$(stat -c %u "$cur")" != "$_uid" ]]; then
+      log "ERROR: the clone directory of DEVLEAD_REPOS entry $n is not the user's"
+      return 1
+    fi
+  done
+}
+
+# The workspace and the clones' directories (S13).
+_ws="$(sed -n 's/^WORKSPACE=//p' /etc/devlead/runner.conf)"
+mapfile -t _repo_paths < <(grep -v '^#' /etc/devlead/repos | cut -f1 | grep .)
+if [[ -n "$_ws" ]] && _is_mount "$_ws"; then
+  [[ -d "$_ws" && ! -L "$_ws" ]] || die "DEVLEAD_WORKSPACE is not a directory in the container"
+  chown root:root "$_ws" && chmod 0755 "$_ws" || die "cannot take the workspace for root"
+  for _i in "${!_repo_paths[@]}"; do
+    _clone_dir "$_ws" "${_repo_paths[$_i]}" "$((_i + 1))" \
+      || die "the clone directory of DEVLEAD_REPOS entry $((_i + 1)) cannot be prepared, so the container does not start"
+  done
+elif [[ ${#_repo_paths[@]} -gt 0 ]]; then
+  die "DEVLEAD_REPOS lists repos, but nothing is mounted at DEVLEAD_WORKSPACE — compose.yaml mounts the clones volume there; start the container with docker compose"
+fi
+unset _i
+
+# The fleet list (Inv 3): root's, from DEVLEAD_REPOS only. Without repos there
+# is none, and the fleet and discover jobs are skipped.
+rm -f "$FLEET_LIST"
+if [[ ${#_repo_paths[@]} -gt 0 ]]; then
+  printf '%s\n' "${_repo_paths[@]}" > "$FLEET_LIST.new" \
+    && chown root:root "$FLEET_LIST.new" && chmod 0644 "$FLEET_LIST.new" \
+    && mv -f "$FLEET_LIST.new" "$FLEET_LIST" \
+    || die "cannot write the fleet list $FLEET_LIST"
+fi
 
 # The claude wrapper's ledger and locks (see docker/claude-wrapper.sh).
 _state=/var/lib/devlead
