@@ -123,9 +123,13 @@
 # `STATUS: claude-limited` when every Claude account of the pool is resting
 # (S22). No session can start until the earliest reset, so the loop stops
 # there, exit 0, instead of trying again until the stall check gives up; the
-# runner sends the one notice. A session that ends on one account's limit is
-# an ordinary iteration: the next one runs on the next account. Outside the
-# server none of this applies.
+# runner sends the one notice. A session that ENDS on one account's limit (or
+# on a token Claude refused) is marked by the wrapper, whose stdout then ends
+# with `STATUS: claude-account-limited <name>`: that iteration counts neither
+# toward --max-iterations nor toward the stall check, and runs again at once,
+# on the next account. One such free try per account in a row: a name that
+# already had one counts as an ordinary iteration, so the loop cannot spin.
+# Outside the server none of this applies.
 #
 # Exit codes:
 #   0  plan exhausted, cap reached, dry run, or (server) every Claude account
@@ -598,6 +602,8 @@ fi
 _iter=0
 _stall=0
 _prev_snapshot=""
+# The accounts that already had their free try in the current streak (server).
+declare -A _free_tries=()
 while [[ "$_iter" -lt "$MAX_ITER" ]]; do
   _iter=$((_iter + 1))
 
@@ -638,6 +644,19 @@ while [[ "$_iter" -lt "$MAX_ITER" ]]; do
   if [[ -e "$SERVER_MARKER" && "$_rc" -eq 75 ]] && grep -qx 'STATUS: claude-limited' "$_SWEEP_OUT"; then
     echo "sweep-loop: every Claude account is resting — the claude wrapper refused iteration $_iter; stopping, nothing is re-invoked until an account is back"
     exit 0
+  fi
+  if [[ -e "$SERVER_MARKER" ]]; then
+    _limited_account=""
+    if [[ "$_rc" -ne 0 && "$(tail -n 1 "$_SWEEP_OUT")" =~ ^STATUS:\ claude-account-limited\ ([a-z][a-z0-9-]{0,23})$ ]]; then
+      _limited_account="${BASH_REMATCH[1]}"
+    fi
+    if [[ -n "$_limited_account" && -z "${_free_tries[$_limited_account]+x}" && ${#_free_tries[@]} -lt 9 ]]; then
+      _free_tries[$_limited_account]=1
+      echo "sweep-loop: the Claude account $_limited_account reached its usage limit in iteration $_iter — the iteration does not count; it runs again on the next account"
+      _iter=$((_iter - 1))
+      continue
+    fi
+    [[ -n "$_limited_account" ]] || _free_tries=()
   fi
 
   if grep -q '^STATUS: not-a-git-repo' "$_SWEEP_OUT"; then

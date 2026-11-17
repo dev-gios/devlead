@@ -539,22 +539,89 @@ loop() {
     DEVLEAD_NOTIFY_DIR="$SANDBOX/notify" TMPDIR="$SANDBOX" HOME="$SANDBOX/home" \
     bash "$SRV/sweep-loop.sh" --max-iterations "$1" -- --fleet </dev/null 2>&1)"; RC=$?
 }
+# The wrapper's line for the launchers when it marks an account.
 reset ACCOUNTS="$POOL"
 limited_by team five_hour $(( $(now) + 3 * 3600 ))
-loop 2
-check "sweep-loop: team limited in iteration 1, iteration 2 runs on ultra" "$(start_account)" "team,ultra"
-check "sweep-loop: iteration 2 got ultra's token" "$(sed -n 2p "$FAKE_ENV_LOG" | cut -f1)" "OAUTH=$ULTRA_TOKEN"
-check "sweep-loop: the run goes on to its cap, exit 0" "$RC $(grep -c -- '— invoking' <<<"$OUT")" "0 2"
+STDOUT="$(env "${POOL_ENV[@]}" "$WRAPPER" -p hi </dev/null 2>/dev/null)"
+check "a marked account: stdout ends with STATUS: claude-account-limited <name>" "$(tail -n 1 <<<"$STDOUT")" "STATUS: claude-account-limited team"
+reset ACCOUNTS="$POOL"; echo 1 > "$FAKE_DIR/rc.team"
+STDOUT="$(env "${POOL_ENV[@]}" "$WRAPPER" -p hi </dev/null 2>/dev/null)"
+check "an ordinary failure: no such line" "$(grep -c 'claude-account-limited' <<<"$STDOUT")" "0"
+
+# A3: an iteration that ends on an account's limit does not count; it runs
+# again on the next account, within the same run — the nightly fleet pass
+# (one iteration) included.
+reset ACCOUNTS="$POOL"
+limited_by team five_hour $(( $(now) + 3 * 3600 ))
+loop 1
+check "fleet (one iteration): team's limit, the pass runs again on ultra" "$(start_account)" "team,ultra"
+check "fleet: with ultra's token" "$(sed -n 2p "$FAKE_ENV_LOG" | cut -f1)" "OAUTH=$ULTRA_TOKEN"
+check "fleet: exit 0, the limited try not counted" "$RC $(grep -c -- '— invoking' <<<"$OUT")" "0 2"
+contains "fleet: says why the iteration runs again" "$OUT" "the Claude account team reached its usage limit in iteration 1 — the iteration does not count; it runs again on the next account"
 reset ACCOUNTS="$POOL"
 limited_by team five_hour $(( $(now) + 3 * 3600 ))
 limited_by ultra seven_day $(( $(now) + 2 * 86400 ))
-loop 5
-check "sweep-loop: both accounts limited, the third iteration is refused and the loop stops" \
+loop 1
+check "fleet: both accounts limited, the next try is refused and the loop stops" \
   "$(awk -F'\t' '{print $3 ($3 == "start" ? ":" $7 : "") ($3 == "refused" ? ":" $7 : "")}' "$LEDGER" | paste -sd, -)" \
   "start:team,end,start:ultra,end,refused:limited"
-check "sweep-loop: exit 0, three iterations of five" "$RC $(grep -c -- '— invoking' <<<"$OUT")" "0 3"
-contains "sweep-loop: says why it stopped" "$OUT" "every Claude account is resting — the claude wrapper refused iteration 3; stopping"
-check "sweep-loop: the refusal is not counted" "$(starts)" "2"
+check "fleet: exit 0" "$RC" "0"
+contains "fleet: says why it stopped" "$OUT" "every Claude account is resting — the claude wrapper refused iteration 1; stopping"
+check "fleet: the refusal is not counted" "$(starts)" "2"
+# Bounded: one free try per account in a row. A line that names an account
+# already given its free try (here forged by the session's own output, with
+# no mark) counts as an ordinary iteration, so the loop cannot spin.
+reset ACCOUNTS="$POOL"
+printf 'STATUS: claude-account-limited team\n' > "$FAKE_DIR/stdout.team"; echo 1 > "$FAKE_DIR/rc.team"
+loop 2
+check "bounded: the same account twice in a row counts — 2 iterations, 3 sessions" "$RC $(starts)" "0 3"
+
+# B1, the verifier's L8 and L4, with a plan (the nightly loop): an iteration
+# ending on an account's limit is not progress-free, and never a stall.
+PLAN_REPO="$SANDBOX/plan-repo"
+git init -q "$PLAN_REPO"
+mkdir -p "$PLAN_REPO/.devlead"; printf 'version: 1\nenabled: true\n' > "$PLAN_REPO/.devlead/envelope.yml"
+PLAN3="$SANDBOX/plan3.yml"
+printf 'version: 1\ntasks:\n  - id: a\n    title: A\n    type: feat\n  - id: b\n    title: B\n    type: feat\n  - id: c\n    title: C\n    type: feat\n' > "$PLAN3"
+PLAN_RUN_ID="plan-$(sha256sum "$PLAN3" | cut -c1-16)"
+export PLAN_RUN_ID SRV FAKE_DIR
+export DEVLEAD_RUN_STATE_DIR="$SANDBOX/run-state"
+fixture five_hour $(( $(now) + 3 * 3600 )) > "$FAKE_DIR/../fix-team"
+fixture seven_day $(( $(now) + 2 * 86400 )) > "$FAKE_DIR/../fix-ultra"
+# plan_loop <max iterations> <hook> — sweep-loop.sh on PLAN3, default stall
+# limit, through this wrapper; the hook scripts each account's sessions.
+plan_loop() {
+  rm -rf "$DEVLEAD_RUN_STATE_DIR" "$SANDBOX/notify"; mkdir -p "$SANDBOX/notify"
+  printf '%s\n' "$2" > "$FAKE_DIR/hook"
+  OUT="$(cd "$PLAN_REPO" && env "${POOL_ENV[@]}" DEVLEAD_CLAUDE_BIN="$WRAPPER" DEVLEAD_DOCTOR_BIN="$SANDBOX/doctor-ok" \
+    DEVLEAD_LOOP_CLAUDE_ARGS="--permission-mode acceptEdits" DEVLEAD_LOOP_SLEEP=0 \
+    DEVLEAD_NOTIFY_DIR="$SANDBOX/notify" TMPDIR="$SANDBOX" HOME="$SANDBOX/home" \
+    bash "$SRV/sweep-loop.sh" --repo "$PLAN_REPO" --plan "$PLAN3" --max-iterations "$1" </dev/null 2>&1)"; RC=$?
+}
+# hook lines: count each account's sessions, then do what the case says.
+HOOK_HEAD='n=$(( $(cat "$FAKE_DIR/count.$acct" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_DIR/count.$acct"
+rm -f "$FAKE_DIR/transcript.$acct" "$FAKE_DIR/rc.$acct"
+done_task() { bash "$SRV/run-state.sh" mark "$PLAN_RUN_ID" "$1" done "pr-created https://example.test/pull/$1" >/dev/null; }
+limit() { cp "$FAKE_DIR/../fix-$acct" "$FAKE_DIR/transcript.$acct"; echo 1 > "$FAKE_DIR/rc.$acct"; }'
+reset ACCOUNTS="$POOL" MAX=20
+plan_loop 5 "$HOOK_HEAD
+case \"\$acct.\$n\" in team.1) done_task a ;; team.2) limit ;; ultra.1) limit ;; esac"
+check "L8: team does a task, then team and ultra hit their limits: the loop stops clean, exit 0" "$RC" "0"
+check "L8: sessions team, team, ultra, then the refusal" \
+  "$(awk -F'\t' '{print $3 ($3 == "start" ? ":" $7 : "") ($3 == "refused" ? ":" $7 : "")}' "$LEDGER" | paste -sd, -)" \
+  "start:team,end,start:team,end,start:ultra,end,refused:limited"
+contains "L8: the clean claude-limited stop is reached" "$OUT" "every Claude account is resting — the claude wrapper refused iteration 2; stopping"
+lacks "L8: no convergence verdict" "$OUT" "converged"
+check "L8: no loop-stuck notice" "$(cut -f3 "$SANDBOX/notify/inbox.tsv" 2>/dev/null | grep -c loop-stuck)" "0"
+reset ACCOUNTS="$POOL" MAX=20
+plan_loop 5 "$HOOK_HEAD
+case \"\$acct.\$n\" in team.1) done_task a ;; team.3) limit ;; ultra.1) done_task b ;; ultra.2) done_task c ;; esac"
+check "L4: progress, a no-op, then team's limit: the run goes on with ultra and finishes, exit 0" "$RC" "0"
+check "L4: sessions team, team, team (limited), ultra, ultra" "$(start_account)" "team,team,team,ultra,ultra"
+lacks "L4: the limited iteration is no stall" "$OUT" "converged"
+contains "L4: the plan is done" "$OUT" "every task in $PLAN3 is done"
+check "L4: no loop-stuck notice" "$(cut -f3 "$SANDBOX/notify/inbox.tsv" 2>/dev/null | grep -c loop-stuck)" "0"
+rm -f "$FAKE_DIR/hook"
 
 # The marks file is root's to prepare: without it no session starts.
 reset ACCOUNTS="$POOL"; rm -f "$MARKS"

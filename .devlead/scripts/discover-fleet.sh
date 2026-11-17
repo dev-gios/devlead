@@ -44,6 +44,12 @@
 # `STATUS: claude-limited` when every Claude account of the pool is resting
 # (S22): no session can start until the earliest reset, so the pass stops
 # there and the repos left wait for the next run. The runner sends the notice.
+# A session that ENDS on one account's limit (or on a token Claude refused)
+# is marked by the wrapper, whose stdout then ends with
+# `STATUS: claude-account-limited <name>`: that repo's session runs again at
+# once, on the next account — once per account in a row, so it cannot spin;
+# a name that already had its try counts as a failed session. It is the one
+# exception to "never a retry": the limit, not the repo, stopped the session.
 #
 # Exit codes: 0 the pass ran (per-repo failures are reported, not fatal), or
 # there was nothing to do · 1 refused to start (no permission flags, drift).
@@ -190,19 +196,30 @@ fi
 # on the Claude Code process so the session cannot unset it.
 _session() { ( cd "$_repo" && env "${_ENV_STRIP[@]}" DEVLEAD_GUARD=1 "$CLAUDE_BIN" -p "/sweep-discover" "${_CLAUDE_ARGS[@]}" </dev/null ); }
 for _repo in "${_targets[@]}"; do
-  echo "discover-fleet: $_repo — invoking $CLAUDE_BIN"
-  if [[ -n "$_out" ]]; then
-    _session | tee "$_out"
-    _rc=${PIPESTATUS[0]}
-    if [[ "$_rc" -eq 75 ]] && grep -qx 'STATUS: claude-limited' "$_out"; then
-      _limited=1
-      echo "discover-fleet: every Claude account is resting — the claude wrapper refused the session for $_repo; stopping, the repos left wait for the next run"
-      break
+  declare -A _free_tries=()
+  while :; do
+    echo "discover-fleet: $_repo — invoking $CLAUDE_BIN"
+    if [[ -n "$_out" ]]; then
+      _session | tee "$_out"
+      _rc=${PIPESTATUS[0]}
+      if [[ "$_rc" -eq 75 ]] && grep -qx 'STATUS: claude-limited' "$_out"; then
+        _limited=1
+        echo "discover-fleet: every Claude account is resting — the claude wrapper refused the session for $_repo; stopping, the repos left wait for the next run"
+        break 2
+      fi
+      if [[ "$_rc" -ne 0 && "$(tail -n 1 "$_out")" =~ ^STATUS:\ claude-account-limited\ ([a-z][a-z0-9-]{0,23})$ ]] \
+         && [[ -z "${_free_tries[${BASH_REMATCH[1]}]+x}" && ${#_free_tries[@]} -lt 9 ]]; then
+        _free_tries[${BASH_REMATCH[1]}]=1
+        echo "discover-fleet: the Claude account ${BASH_REMATCH[1]} reached its usage limit on $_repo — it runs again on the next account"
+        continue
+      fi
+    else
+      _session
+      _rc=$?
     fi
-  else
-    _session
-    _rc=$?
-  fi
+    break
+  done
+  unset _free_tries
   _ran=$((_ran + 1))
   if [[ "$_rc" -ne 0 ]]; then
     _failed=$((_failed + 1))

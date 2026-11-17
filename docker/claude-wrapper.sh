@@ -73,7 +73,9 @@
 # (the rateLimitType, or auth) TAB utc time TAB session id TAB run id TAB
 # source (reported, default or auth); an account's last line is its mark.
 # The next session takes the next account; when a mark expires, its account
-# is the highest-priority one again. With every account resting no session
+# is the highest-priority one again. A session the wrapper marked ends its
+# stdout with the line `STATUS: claude-account-limited <name>`: in the server
+# the launchers give that iteration again to the next account, uncounted. With every account resting no session
 # starts: the refusal is "limited", it does not count toward the daily cap,
 # and stdout gets the line `STATUS: claude-limited`, which the launchers
 # read to stop instead of trying again. run-job.sh sends the one notice.
@@ -396,6 +398,8 @@ if (( _sel >= 0 && _rc != 0 )) && [[ "$_detail" != "timeout" ]]; then
       else
         echo "claude: the Claude account $_account rests $_rested — $_why; every account is resting now ($(_resting_list))" >&2
       fi
+      # For the launchers, on a line of its own after whatever the session printed.
+      printf '\nSTATUS: claude-account-limited %s\n' "$_account"
     else
       echo "claude: the Claude account $_account reached $_why, but $ACCOUNTS_FILE cannot be written — the next session may try it again" >&2
     fi

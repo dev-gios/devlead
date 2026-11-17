@@ -56,6 +56,10 @@ cat > "$SANDBOX/fakebin/claude" <<'EOF'
 { printf 'CWD=%s' "$PWD"; for a in "$@"; do printf '\t%s' "$a"; done
   printf '\tGUARD=%s' "${DEVLEAD_GUARD:-}"
   printf '\tLEAK=%s%s%s\n' "${DEVLEAD_LOOP_CLAUDE_ARGS:-}" "${DEVLEAD_DISCOVER_CLAUDE_ARGS:-}" "${DEVLEAD_ALLOW_DRIFT:-}"; } >> "$CLAUDE_LOG"
+# Per call in this repo, .claude-stdout.<n> and .claude-rc.<n> win.
+n=$(( $(cat .claude-count 2>/dev/null || echo 0) + 1 )); echo "$n" > .claude-count
+[[ -f ".claude-stdout.$n" ]] && cat ".claude-stdout.$n"
+[[ -f ".claude-rc.$n" ]] && exit "$(cat ".claude-rc.$n")"
 [[ -f .claude-stdout ]] && cat .claude-stdout
 [[ -f .claude-rc ]] && exit "$(cat .claude-rc)"
 exit 0
@@ -279,6 +283,28 @@ out="$(run env DEVLEAD_LOOP_CLAUDE_ARGS="$FLAGS")"
 check "outside the server: the same output stops nothing" "$(calls)" "2"
 contains "outside the server: counted as failures, as before" "$out" "2 repo(s) explored, 2 failed"
 for r in "$ON" "$ON2"; do rm -f "$r/.claude-rc" "$r/.claude-stdout"; done
+# A3: a session that ENDS on an account's limit (the wrapper marked it and
+# said so on its last stdout line) runs again on the next account, for the
+# same repo — once per account in a row; outside the server, never.
+discover_reset() { for r in "$ON" "$ON2"; do rm -f "$r"/.claude-*; done; }
+discover_reset
+printf '\nSTATUS: claude-account-limited team\n' > "$ON/.claude-stdout.1"; echo 1 > "$ON/.claude-rc.1"
+clear_inbox
+out="$(srv_run env DEVLEAD_LOOP_CLAUDE_ARGS="$FLAGS")"; rc=$?
+check "account limited: the repo runs again on the next account, then the next repo" "$rc $(calls)" "0 3"
+contains "account limited: says why it runs again" "$out" "the Claude account team reached its usage limit on $ON — it runs again on the next account"
+contains "account limited: the retry is not a failure" "$out" "2 repo(s) explored, 0 failed"
+discover_reset
+for n in 1 2; do printf '\nSTATUS: claude-account-limited team\n' > "$ON/.claude-stdout.$n"; echo 1 > "$ON/.claude-rc.$n"; done
+out="$(srv_run env DEVLEAD_LOOP_CLAUDE_ARGS="$FLAGS")"
+check "account limited twice by the same name: one retry only, then a failure" "$(calls)" "3"
+contains "account limited twice: counted as failed" "$out" "2 repo(s) explored, 1 failed"
+discover_reset
+printf '\nSTATUS: claude-account-limited team\n' > "$ON/.claude-stdout.1"; echo 1 > "$ON/.claude-rc.1"
+out="$(run env DEVLEAD_LOOP_CLAUDE_ARGS="$FLAGS")"
+check "outside the server: no retry, as before" "$(calls)" "2"
+contains "outside the server: a failure, as before" "$out" "2 repo(s) explored, 1 failed"
+discover_reset
 
 # ===========================================================================
 # dry run -> shows the command, starts nothing, tells nobody
