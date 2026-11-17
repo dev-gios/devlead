@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# The "~/" paths in _ok/_warn messages are display text for the user, never
+# expanded paths, so SC2088 (tilde in quotes) does not apply to this file.
+# shellcheck disable=SC2088
 # DevLead installer
 # Publica copias versionadas de este repo en sus ubicaciones globales (ya no
 # symlinks — ver REQ-01/README de devlead-pinned-release). Corré desde el

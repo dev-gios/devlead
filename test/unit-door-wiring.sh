@@ -80,6 +80,8 @@ done
 # /devlead is the one entry: it routes by intent and never opens or merges a
 # PR itself — it hands over to the procedures, which go through the doors.
 entry="$CMD_DIR/devlead.md"
+# The needles are literal text searched in devlead.md, not paths to expand.
+# shellcheck disable=SC2088
 for needle in '$ARGUMENTS' '~/.claude/commands/arranquemos.md' '~/.claude/commands/cerremos.md' \
               'guard.sh' 'GOVERNANCE.md §assistant-profile' 'registro neutro'; do
   if grep -qF -- "$needle" "$entry"; then report "devlead.md has: $needle" ""
