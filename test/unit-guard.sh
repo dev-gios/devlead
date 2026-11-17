@@ -256,6 +256,8 @@ bash_allowed 'grep -rn environ lib/procedures/'
 bash_allowed 'git add src/processing/*'
 bash_allowed 'ls src/procedures/*'
 bash_allowed 'cat src/proc/environ.c'
+bash_allowed 'grep -rn environ src/proc'
+bash_allowed 'cd src/proc && grep -n environ x.c'
 bash_allowed 'ls app/process && grep -n environ app/process/env.ts'
 # ... while the real mount stays refused, however it is spelled.
 bash_blocked secrets 'ls /proc >/dev/null && cat 1/environ'

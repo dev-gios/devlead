@@ -669,14 +669,14 @@ _pool_re='(environ|getenv|process\.env|ENV\[|Deno\.env)[^;&|]*DEVLEAD_CLAUDE_ACC
 _flat="${_cmd//[\'\"\\]/}"
 _squash="${_flat//[[:space:]+,]/}"
 # The trigger is the /proc mount, not a repository path that merely starts
-# with "proc" (src/processors, lib/procedures): /proc as a whole component,
-# at the end, before a non-path character, or before a pid-like part —
+# with "proc" (src/processors, lib/procedures, src/proc). The flat spelling
+# keeps word boundaries, so /proc must start a path there (nothing of a path
+# before it). The squashed spelling joins split or concatenated pieces but
+# loses those boundaries, so there /proc only counts before a pid-like part:
 # digits, self, a glob, an expansion ($ ` %), a format field ({) or a call.
-_proc_re='/proc($|[^A-Za-z0-9_./-]|/([0-9]|self|thread-self|[][*?$`%{(]|[A-Za-z_][A-Za-z0-9_.]*\())'
-# Both spellings are judged: the squashed one joins split or concatenated
-# pieces, the flat one keeps the separator after /proc that squashing
-# removes (os.path.join('/proc', pid, 'environ')).
-if [[ "$_squash" =~ $_proc_re || "$_flat" =~ $_proc_re ]]; then
+_proc_flat_re='(^|[^A-Za-z0-9_.-])/proc($|[^A-Za-z0-9_.-])'
+_proc_squash_re='/proc/([0-9]|self|thread-self|[][*?$`%{(]|[A-Za-z_][A-Za-z0-9_.]*\()'
+if [[ "$_flat" =~ $_proc_flat_re || "$_squash" =~ $_proc_squash_re ]]; then
   [[ "$_squash" == *environ* ]] \
     && _deny secrets "the command reads a process's environment (/proc/<pid>/environ), credentials included"
   # A glob that would match "environ": the file name of a /proc path
