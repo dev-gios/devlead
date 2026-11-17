@@ -466,6 +466,12 @@ Vocabulario de resultado por issue: `pr-created (URL)` / `parked-<razón>` / `es
 
 ---
 
+## Servidor local 24/7 (Docker)
+
+DevLead también puede correr como un servidor en tu propia máquina: un contenedor encendido todo el día, con tu suscripción de Claude, que reemplaza a los timers de systemd. Detecta issues nuevas, abre PRs en borrador, manda la agenda y el resumen del día, y deja todo en el mismo estado que lee `/devlead`. La instalación paso a paso, el uso diario y los límites están en [`docker/README.md`](docker/README.md); el diseño votado, en `.devlead/specs/design-proactive-local-server.md`.
+
+---
+
 ## 9. Invariantes (lo que NUNCA se rompe)
 
 Los invariantes normativos viven en `.claude/GOVERNANCE.md`. Esta sección es histórica/narrativa — no es la fuente de autoridad.
