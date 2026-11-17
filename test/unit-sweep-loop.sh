@@ -406,6 +406,34 @@ contains "the cap-reached message still appears" "$out" "iteration cap"
 check "no scratch file remains after the normal-cap path" \
   "$(find "$REACT_TMP_B" -name 'sweep-loop-out.*' 2>/dev/null | wc -l | tr -d ' ')" "0"
 
+# --- F1 follow-up c: every iteration starts a FRESH session. The loop never
+#     resumes, continues or forks an earlier one, nor picks a session id —
+#     neither in the plan run nor in the fleet pass the server schedules. ----
+FAKE_CLAUDE_ARGS="$SANDBOX/fake-claude-args"
+ARGS_LOG="$SANDBOX/claude-args.log"
+cat > "$FAKE_CLAUDE_ARGS" <<FAKE
+#!/usr/bin/env bash
+printf '%s\n' "\$@" >> "$ARGS_LOG"
+echo "---" >> "$ARGS_LOG"
+exit 0
+FAKE
+chmod +x "$FAKE_CLAUDE_ARGS"
+: > "$ARGS_LOG"
+FRESH_PLAN="$SANDBOX/fresh-plan.yml"
+printf 'version: 1\ntasks:\n  - id: fresh\n    title: "Fresh"\n    type: feat\n' > "$FRESH_PLAN"
+DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" \
+  DEVLEAD_LOOP_SLEEP=0 DEVLEAD_LOOP_STALL=0 bash "$LOOP" --repo "$GIT_REPO_DIR" --plan "$FRESH_PLAN" --max-iterations 2 >/dev/null 2>&1
+( cd "$SANDBOX" && DEVLEAD_DOCTOR_BIN="$FAKE_DOCTOR_OK" DEVLEAD_LOOP_CLAUDE_ARGS="$TEST_CLAUDE_ARGS" DEVLEAD_CLAUDE_BIN="$FAKE_CLAUDE_ARGS" \
+  DEVLEAD_LOOP_SLEEP=0 bash "$LOOP" --max-iterations 1 -- --fleet >/dev/null 2>&1 )
+check "fresh sessions: the plan run and the fleet pass invoked claude three times" "$(grep -cx -- '---' "$ARGS_LOG")" "3"
+for flag in --resume -r --continue -c --fork-session --session-id --from-pr --teleport; do
+  check "fresh sessions: no iteration gets $flag" "$(grep -cxe "$flag" -e "$flag=.*" "$ARGS_LOG")" "0"
+done
+out="$(DEVLEAD_LOOP_DRYRUN=1 bash "$LOOP" --repo "$GIT_REPO_DIR" --plan "$FRESH_PLAN" --max-iterations 1 2>&1)"
+for flag in --resume --continue --fork-session --session-id; do
+  not_contains "fresh sessions: the dry-run command has no $flag" "$out" "$flag"
+done
+
 
 # ===========================================================================
 # Drift guard: sweep-loop refuses to run unattended when doctor.sh reports

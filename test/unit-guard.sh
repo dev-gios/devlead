@@ -313,6 +313,15 @@ export HOME="$_saved_home"
 blocked scope 'Write /opt/devlead-old/x (not the image tree)'  Write file_path /opt/devlead-old/x
 blocked scope 'Write /etc/claude-code.bak (not the image tree)' Write file_path /etc/claude-code.bak
 allowed 'Read the managed settings' Read file_path /etc/claude-code/managed-settings.json
+# The runner's records in the image (F2): the session ledger and the locks in
+# /var/lib/devlead hold the daily cap and one-session-at-a-time; the schedule
+# and the limits are /etc/devlead/crontab and /etc/devlead/runner.conf.
+blocked self-config 'Write the session ledger'          Write file_path /var/lib/devlead/sessions.tsv
+blocked self-config 'Edit the runner limits'            Edit file_path /etc/devlead/runner.conf
+bash_blocked self-config ': > /var/lib/devlead/sessions.tsv'
+bash_blocked self-config "echo '0 * * * * x' > /etc/devlead/crontab"
+blocked scope 'Write /var/lib/devlead-old/x (not the runner tree)' Write file_path /var/lib/devlead-old/x
+allowed 'Read the session ledger' Read file_path /var/lib/devlead/sessions.tsv
 
 echo "=== ordinary work is not blocked ==="
 bash_allowed 'git status -sb'

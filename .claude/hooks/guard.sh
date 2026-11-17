@@ -142,8 +142,10 @@ _check_secret_path() {
 # names what the file is. In the server image (docker/) DevLead's scripts and
 # hooks are installed in /opt/devlead — ~/.devlead/scripts and ~/.devlead/hooks
 # are links to it, and a path through them resolves there —, Claude Code's
-# managed settings and skills live in /etc/claude-code, and the server-mode
-# marker and git's global config in /etc/devlead.
+# managed settings and skills live in /etc/claude-code, the server-mode
+# marker, git's global config, the schedule and the session limits in
+# /etc/devlead, and the session ledger and locks that enforce those limits in
+# /var/lib/devlead.
 _check_self_config() {
   local abs
   abs="$(_abs "$1")"
@@ -151,6 +153,7 @@ _check_self_config() {
      || _under "$abs" /opt/devlead \
      || _under "$abs" /etc/claude-code \
      || _under "$abs" /etc/devlead \
+     || _under "$abs" /var/lib/devlead \
      || [[ "$abs" == "$HOME"/.claude/settings*.json ]] \
      || _under "$abs" "$HOME/.claude/hooks" \
      || [[ "$abs" == "$_root"/.claude/settings*.json ]] \
