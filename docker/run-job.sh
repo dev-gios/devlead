@@ -51,7 +51,11 @@
 #      output format is left alone — are copied to
 #      ~/.devlead/audit/runs/<run id>/, and one JSON line is appended to
 #      ~/.devlead/audit/YYYY-MM.jsonl and printed to the container log.
-#   9. A failed run sends one `need` (GOVERNANCE.md §escalation-channel):
+#   9. A run that opened PRs sends one `need` pr-opened, its message the PR
+#      links; one whose report parked work units sends one `need` park, its
+#      message the issue numbers (S19). The push carries the message — so
+#      the links — only with DEVLEAD_NOTIFY_DETAIL=1 (notify.sh).
+#      A failed run sends one `need` (GOVERNANCE.md §escalation-channel):
 #      job-failed (non-zero exit, a crash, a refused start, repos that could
 #      not be synced), job-timeout (a session or the whole job stopped at its
 #      time limit, or a job that waited past JOB_LOCK_WAIT), job-refused (a
@@ -68,13 +72,17 @@
 # clones as the job found them), sync_error (the repo and the reason, or
 # null), sessions
 # [{id, exit_code, timed_out}], session_ids, tool_uses {tool: count},
-# files_changed, prs_opened, transcripts_kept, outcome (ok, failed, timeout,
+# files_changed, prs_opened, parked {count, issues}, transcripts_kept,
+# outcome (ok, failed, timeout,
 # refused, paused, skipped), notified, notify_codes, leftovers_killed,
 # lock_wait_seconds, lock_timed_out (gave up waiting for the job lock),
 # job_timed_out (stopped at JOB_TIMEOUT), audit_intact. Files changed are those the sessions'
 # Write, Edit, MultiEdit and NotebookEdit calls name — a file a shell command
 # changes is not seen. PRs opened are the pull request URLs printed by an
-# open-pr.sh or gh pr create call. No environment variable is ever recorded,
+# open-pr.sh or gh pr create call. Parked work units are the rows the run's
+# own report (the Write of ~/.devlead/reports/<date>-execute.md) gives a
+# parked-* or escalated-* result; only their issue numbers are kept, never the
+# reason or a title. No environment variable is ever recorded,
 # and the env file never enters the container.
 #
 # What the user — and so a session — can still do. Everything here runs as the
@@ -358,13 +366,14 @@ _sessions_json() {
         refusals: [ $l[] | select(.[2] == "refused") | .[6] ] }'
 }
 
-# _transcript_stats <dir> — {tool_uses, files_changed, prs_opened} from the
-# transcripts copied there (subagents included).
+# _transcript_stats <dir> — {tool_uses, files_changed, prs_opened, parked}
+# from the transcripts copied there (subagents included).
+_NO_STATS='{"tool_uses":{},"files_changed":[],"prs_opened":[],"parked":{"count":0,"issues":[]}}'
 _transcript_stats() {
   local files=()
   mapfile -d '' files < <(find "$1" -type f -name '*.jsonl' -print0 2>/dev/null)
   if [[ ${#files[@]} -eq 0 ]]; then
-    echo '{"tool_uses":{},"files_changed":[],"prs_opened":[]}'
+    echo "$_NO_STATS"
     return
   fi
   cat -- "${files[@]}" | jq -R -n -c '
@@ -378,14 +387,21 @@ _transcript_stats() {
          | select(.type == "tool_result" and ((.tool_use_id as $i | $pr_ids | index($i)) != null))
          | (.content | if type == "string" then . elif type == "array" then (map(.text? // "") | join("\n")) else "" end)
          | scan("https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+") ] | unique) as $prs
-    | { tool_uses: $counts, files_changed: $changed, prs_opened: $prs }'
+    | ([ $uses[] | select(.name == "Write"
+           and ((.input.file_path // "") | strings | test("/reports/[0-9]{4}-[0-9]{2}-[0-9]{2}-execute\\.md$")))
+         | .input.content | strings ] | last // "") as $report
+    | [ $report | split("\n")[]
+        | capture("^\\|[[:space:]]*(?<first>[^|]*[^|[:space:]])?[[:space:]]*\\|[[:space:]]*(parked|escalated)-")? ] as $rows
+    | { tool_uses: $counts, files_changed: $changed, prs_opened: $prs,
+        parked: { count: ($rows | length),
+                  issues: ([ $rows[] | (.first // "") | capture("^#(?<n>[0-9]{1,9})$")? | .n | tonumber ] | unique) } }'
 }
 
 _audit() { # _audit <outcome> <exit code> [skipped reason]
   local outcome="$1" rc="$2" skipped="${3:-}" line month file
   local sessions="${SESSIONS_JSON:-}" stats="${STATS_JSON:-}" synced="${SYNCED_JSON:-[]}"
   [[ -n "$sessions" ]] || sessions='{"sessions":[],"refusals":[]}'
-  [[ -n "$stats" ]] || stats='{"tool_uses":{},"files_changed":[],"prs_opened":[]}'
+  [[ -n "$stats" ]] || stats="$_NO_STATS"
   line="$(jq -n -c \
     --arg run_id "$RUN_ID" --arg trigger "$JOB" --argjson repos "$(_repos_json "$JOB_REPOS")" \
     --arg started "$STARTED_AT" --arg ended "$(date -Is)" --argjson rc "$rc" \
@@ -406,6 +422,7 @@ _audit() { # _audit <outcome> <exit code> [skipped reason]
       synced: $synced, sync_error: (if $sync_error == "" then null else $sync_error end),
       sessions: $s.sessions, session_ids: [$s.sessions[].id],
       tool_uses: $stats.tool_uses, files_changed: $stats.files_changed, prs_opened: $stats.prs_opened,
+      parked: $stats.parked,
       transcripts_kept: $transcripts, outcome: $outcome,
       notified: ($codes | length > 0), notify_codes: $codes,
       leftovers_killed: $killed, lock_wait_seconds: $waited, lock_timed_out: $lock_timed_out,
@@ -652,6 +669,19 @@ if ! _still_there "$LEDGER" "$_fp_ledger" || ! _still_there "$_month_file" "$_fp
   AUDIT_INTACT=false
   echo "run-job: the session ledger or the audit log was rewritten during the run" >&2
   _need audit-tampered "$JOB: the audit log or the session ledger was rewritten during the run (run $RUN_ID)"
+fi
+
+# What it delivered (S19): one notice for the PRs it opened, one for the work
+# units its report parked. Links and issue numbers only: the URLs are matched
+# to github.com's pull URL shape above, the numbers are digits.
+_prs="$(jq -r '.prs_opened[]' <<<"$STATS_JSON" 2>/dev/null)"
+if [[ -n "$_prs" ]]; then
+  _need pr-opened "$JOB: $(grep -c . <<<"$_prs") PR(s) opened, waiting for you: $(paste -sd' ' - <<<"$_prs") (run $RUN_ID)"
+fi
+_parked="$(jq -r '.parked.count' <<<"$STATS_JSON" 2>/dev/null)"
+if [[ "$_parked" =~ ^[1-9][0-9]*$ ]]; then
+  _issues="$(jq -r '.parked.issues | map("#\(.)") | join(" ")' <<<"$STATS_JSON" 2>/dev/null)"
+  _need park "$JOB: $_parked work unit(s) parked${_issues:+ ($_issues)} — the reasons are in ~/.devlead/reports/$(date +%F)-execute.md (run $RUN_ID)"
 fi
 
 # Outcome.

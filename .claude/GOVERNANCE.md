@@ -252,7 +252,7 @@ El perfil interactivo. Reemplaza al antiguo perfil `manual`, que pedía confirma
 
 ## §escalation-channel — Avisar no es decidir
 
-La columna "Mid-run notify" de la tabla de perfiles describe lo que hace **DevLead dentro de un run**: los perfiles autónomos no se detienen a preguntar por cada issue aparcada, y eso no cambia. PARK sigue siendo silencioso hacia adentro del run y visible en el reporte.
+La columna "Mid-run notify" de la tabla de perfiles describe lo que hace **DevLead dentro de un run**: los perfiles autónomos no se detienen a preguntar por cada issue aparcada, y eso no cambia. PARK sigue siendo silencioso hacia adentro del run y visible en el reporte. En el servidor, además, el runner avisa al terminar el run (ver abajo, `park`).
 
 Lo que esta sección agrega es un canal de **escalada de nivel run**, implementado en código (`.devlead/scripts/notify.sh`), para el caso que la tabla no cubría: un run desatendido que **no puede seguir solo**. Hasta ahora ese caso terminaba en un archivo y una línea de journald que nadie leía.
 
@@ -280,10 +280,12 @@ Lo que esta sección agrega es un canal de **escalada de nivel run**, implementa
 - en el servidor, se rechazó una sesión de `claude` por el tope diario, porque otra sesión estaba corriendo, porque no se pudo abrir su lock o porque no se pudieron leer los límites (`job-refused`)
 - en el servidor, el log de auditoría o el registro de sesiones cambió durante una corrida, o el registro de sesiones apareció vaciado al empezar una (y el trabajo no corrió) (`audit-tampered`)
 - `doctor` avisa que el token de Claude tiene 11 meses o más, o que su fecha de emisión no es válida; como máximo un aviso por día, que dice cómo renovarlo sin repetir la fecha (`token-expiring`)
+- en el servidor, un trabajo abrió uno o más PRs, que esperan al usuario: un aviso por corrida con los links (`pr-opened`)
+- en el servidor, el reporte de un trabajo aparcó o escaló una o más unidades de trabajo: un aviso por corrida con la cantidad y los números de issue, nunca la razón ni el título (la razón queda en el reporte) (`park`)
 
-Los avisos del servidor llevan solo el nombre del trabajo, el motivo corto y el id de la corrida: nunca texto de issues, valores del entorno ni secretos. Pausar el servidor (`~/.devlead/PAUSE`) es una decisión del usuario y no avisa.
+Los avisos del servidor llevan solo el nombre del trabajo, el motivo corto, los links de los PRs, los números de issue y el id de la corrida: nunca texto de issues, valores del entorno ni secretos. El push lleva los links solo con `DEVLEAD_NOTIFY_DETAIL=1`; sin eso, solo el código. Pausar el servidor (`~/.devlead/PAUSE`) es una decisión del usuario y no avisa.
 
-Una issue aparcada por un gate rojo NO es un disparador: es el funcionamiento normal del perfil y va al reporte. Lo que escala es que el run entero dejó de avanzar. Única excepción: una issue que quedó fuera o aparcada por `untrusted-content` sí avisa, porque alguien intentó dar órdenes a DevLead desde GitHub y eso lo tiene que ver el usuario aunque el resto del run siga.
+**Decisión del usuario (D19-A, 2026-11-16):** En el servidor, una unidad de trabajo aparcada SÍ es un disparador (`park`), igual que un PR abierto (`pr-opened`): nadie está mirando, y el usuario se entera al terminar la corrida, no al día siguiente. Lo manda el runner (`docker/run-job.sh`), uno por corrida, a partir del reporte que escribió esa corrida; dentro del run el PARK sigue siendo silencioso. Fuera del servidor (los lanzadores del host) una issue aparcada no avisa: va al reporte, y lo que escala es que el run entero dejó de avanzar. En ambos casos, una issue que quedó fuera o aparcada por `untrusted-content` avisa además con su propio código, porque alguien intentó dar órdenes a DevLead desde GitHub.
 
 **Lo que el canal no puede hacer:**
 
