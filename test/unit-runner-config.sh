@@ -33,7 +33,7 @@ lacks() {
 
 # The settings come only from the variables given to each call: the caller's
 # shell gets no vote.
-SETTINGS=(TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER DEVLEAD_CRON_POLL
+SETTINGS=(TZ DEVLEAD_CRON_MORNING DEVLEAD_CRON_LOOP DEVLEAD_CRON_FLEET DEVLEAD_CRON_DISCOVER DEVLEAD_CRON_POLL DEVLEAD_CRON_ENDOFDAY
           DEVLEAD_MAX_SESSIONS_PER_DAY DEVLEAD_SESSION_TIMEOUT DEVLEAD_AUDIT_RETENTION_DAYS
           DEVLEAD_CLAUDE_BIN DEVLEAD_WORKSPACE DEVLEAD_REPOS DEVLEAD_LOOP_REPO DEVLEAD_STATE_DIR
           DEVLEAD_GIT_NAME DEVLEAD_GIT_EMAIL DEVLEAD_JOB_TIMEOUT DEVLEAD_JOB_LOCK_WAIT)
@@ -53,9 +53,9 @@ cron_ok() { env "${UNSET[@]}" bash "$CFG" check-cron "$1" >/dev/null 2>&1 && ech
 # ===========================================================================
 list="$(bash "$RUN_JOB" --list 2>&1)"
 check "run-job.sh --list prints the jobs, in order" "$(cut -d'|' -f1 <<<"$list" | paste -sd, -)" \
-  "morning,loop,fleet,discover,poll"
+  "morning,loop,fleet,discover,poll,endofday"
 check "each job is scheduled by its own variable" "$(cut -d'|' -f2 <<<"$list" | paste -sd, -)" \
-  "DEVLEAD_CRON_MORNING,DEVLEAD_CRON_LOOP,DEVLEAD_CRON_FLEET,DEVLEAD_CRON_DISCOVER,DEVLEAD_CRON_POLL"
+  "DEVLEAD_CRON_MORNING,DEVLEAD_CRON_LOOP,DEVLEAD_CRON_FLEET,DEVLEAD_CRON_DISCOVER,DEVLEAD_CRON_POLL,DEVLEAD_CRON_ENDOFDAY"
 
 # ===========================================================================
 # Defaults (S16; fleet keeps today's systemd timer, 22:30)
@@ -70,8 +70,9 @@ contains "default loop: 22:00 every day" "$crontab" "0 22 * * * $RUN_JOB loop"
 contains "default fleet: 22:30 every day, as devlead-fleet.timer" "$crontab" "30 22 * * * $RUN_JOB fleet"
 contains "default discover: Monday 05:00" "$crontab" "0 5 * * 1 $RUN_JOB discover"
 contains "default poll (S16): every 30 minutes from 07:00, the last at 19:30" "$crontab" "*/30 7-19 * * * $RUN_JOB poll"
+contains "default end of day (S16): 18:30 Monday to Friday" "$crontab" "30 18 * * 1-5 $RUN_JOB endofday"
 contains "transcripts are pruned daily" "$crontab" "$RUN_JOB --prune"
-check "the crontab has exactly six schedule lines" "$(grep -cv '^#' <<<"$crontab")" "6"
+check "the crontab has exactly seven schedule lines" "$(grep -cv '^#' <<<"$crontab")" "7"
 check "default limits" "$(grep -v '^#' <<<"$conf")" \
   "$(printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30\nJOB_TIMEOUT=4h\nJOB_KILL_AFTER=30s\nJOB_LOCK_WAIT=4h\nWORKSPACE=')"
 check "default: no repo enrolled" "$(grep -cv '^#' "$OUT/repos")" "0"
@@ -136,6 +137,7 @@ bad() { # bad <label> <expected message> VAR=value...
 bad "bad loop schedule" "DEVLEAD_CRON_LOOP='61 22 * * *' is not a valid schedule" 'DEVLEAD_CRON_LOOP=61 22 * * *'
 bad "bad fleet schedule" "DEVLEAD_CRON_FLEET='@daily' is not a valid schedule" 'DEVLEAD_CRON_FLEET=@daily'
 bad "bad poll schedule" "DEVLEAD_CRON_POLL='*/30 7-25 * * *' is not a valid schedule" 'DEVLEAD_CRON_POLL=*/30 7-25 * * *'
+bad "bad end-of-day schedule" "DEVLEAD_CRON_ENDOFDAY='30 18 * *' is not a valid schedule" 'DEVLEAD_CRON_ENDOFDAY=30 18 * *'
 out="$(render "$SANDBOX/poll-off" DEVLEAD_CRON_POLL=off)"
 contains "poll off: the crontab says so" "$(cat "$SANDBOX/poll-off/crontab")" "# poll: off (DEVLEAD_CRON_POLL=off)"
 bad "unknown time zone" "TZ='Mars/Olympus' is not a time zone" TZ=Mars/Olympus
@@ -263,7 +265,7 @@ bad "newline in the state dir" "DEVLEAD_STATE_DIR $CTRL" $'DEVLEAD_STATE_DIR=/ho
 OUT="$SANDBOX/f2"
 render "$OUT" >/dev/null
 check "without F3 settings: the crontab is the F2 one, plus the F4 jobs" "$(grep -v '^#' "$OUT/crontab")" \
-  "$(printf '30 6 * * 1-5 %s morning\n0 22 * * * %s loop\n30 22 * * * %s fleet\n0 5 * * 1 %s discover\n*/30 7-19 * * * %s poll\n17 4 * * * %s --prune' "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB")"
+  "$(printf '30 6 * * 1-5 %s morning\n0 22 * * * %s loop\n30 22 * * * %s fleet\n0 5 * * 1 %s discover\n*/30 7-19 * * * %s poll\n30 18 * * 1-5 %s endofday\n17 4 * * * %s --prune' "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB" "$RUN_JOB")"
 check "without F3 settings: the F2 limits keep their values" "$(grep -E '^(TZ|MAX_SESSIONS_PER_DAY|SESSION_TIMEOUT|SESSION_KILL_AFTER|AUDIT_RETENTION_DAYS)=' "$OUT/runner.conf")" \
   "$(printf 'TZ=UTC\nMAX_SESSIONS_PER_DAY=8\nSESSION_TIMEOUT=60m\nSESSION_KILL_AFTER=30s\nAUDIT_RETENTION_DAYS=30')"
 

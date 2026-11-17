@@ -140,6 +140,7 @@ JOBS=(
   "fleet|DEVLEAD_CRON_FLEET|30 22 * * *|autonomous-repos|enrolled|sweep-loop.sh --max-iterations 1 -- --fleet"
   "discover|DEVLEAD_CRON_DISCOVER|0 5 * * 1|autonomous-repos|enrolled|discover-fleet.sh"
   "poll|DEVLEAD_CRON_POLL|*/30 7-19 * * *|autonomous-repos|enrolled|poll-issues.sh"
+  "endofday|DEVLEAD_CRON_ENDOFDAY|30 18 * * 1-5|-|-|day-summary.sh"
 )
 
 _usage() { echo "usage: run-job.sh <job> | --list | --prune" >&2; }

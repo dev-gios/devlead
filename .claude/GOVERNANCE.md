@@ -261,7 +261,7 @@ Lo que esta sección agrega es un canal de **escalada de nivel run**, implementa
 | Nivel | Cuándo | A dónde va |
 |-------|--------|------------|
 | `need` | El run no puede continuar sin una decisión o una acción del usuario | Bandeja local + push al teléfono (prioridad alta) |
-| `agenda` | La lista de lo que DevLead va a trabajar hoy; no pide nada (§daily-agenda). Un solo emisor: `sweep.sh`, una vez por corrida | Bandeja local + push al teléfono (prioridad normal) |
+| `agenda` | Lo que DevLead va a trabajar hoy y, en el servidor, lo que hizo en el día; no pide nada. Dos emisores: `sweep.sh` a la mañana, una vez por corrida (§daily-agenda), y `day-summary.sh` al cierre del día, una vez por corrida (corridas, PRs abiertos, aparcadas, fallos y los PRs que esperan al usuario; el código lleva solo cantidades) | Bandeja local + push al teléfono (prioridad normal) |
 | `info` | Desenlace normal que conviene saber | Bandeja local únicamente |
 
 **Disparadores de `need` (lista cerrada; agregar uno es una edición de esta sección):**

@@ -82,7 +82,7 @@ rc=0
 printf 'END=%s\n' "$(date +%s.%N)" >> "$SANDBOX_LOG"
 exit "$rc"
 EOF
-for s in sweep.sh sweep-loop.sh discover-fleet.sh poll-issues.sh; do cp "$SCRIPTS/stub-job.sh" "$SCRIPTS/$s"; done
+for s in sweep.sh sweep-loop.sh discover-fleet.sh poll-issues.sh day-summary.sh; do cp "$SCRIPTS/stub-job.sh" "$SCRIPTS/$s"; done
 chmod +x "$SCRIPTS"/*.sh
 cp "$REPO_ROOT/.devlead/scripts/notify.sh" "$SCRIPTS/notify.sh"
 cat > "$SCRIPTS/doctor.sh" <<'EOF'
@@ -579,6 +579,13 @@ check "poll: ok" "$(field '[.outcome, .exit_code, .trigger]')" '["ok",0,"poll"]'
 contains "poll: the table's command" "$(joblog | head -n 1)" $'poll-issues.sh\tARGS=\t'
 contains "poll: every enrolled repo synced first" "$(synclog)" $'SYNC\tARGS=--all\t'
 check "poll with nothing new: no session, nothing notified" "$(field '[.session_ids, .notify_codes]')" '[[],[]]'
+
+# The end-of-day job (S1): no repo synced, no session, the table's command.
+fresh
+run endofday
+check "endofday: ok, no repos, nothing synced" "$(field '[.outcome, .repos, .synced]')" '["ok",[],[]]'
+contains "endofday: the table's command" "$(joblog | head -n 1)" $'day-summary.sh\tARGS=\t'
+check "endofday: no sync" "$(synclog)" ""
 
 # ===========================================================================
 # S19: PR opened and PARK, each one `need` per run; the link leaves the
