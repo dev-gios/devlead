@@ -8,4 +8,6 @@
 !docker/entrypoint.sh
 !docker/claude-wrapper.sh
 !docker/init-firewall.sh
+!docker/runner-config.sh
+!docker/run-job.sh
 !docker/managed-settings.json

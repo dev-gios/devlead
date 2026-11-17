@@ -1,9 +1,11 @@
-# DevLead server image (F1: S7-S10, S12, S15, S20). Built locally by
-# compose.yaml from this repository; .env.example lists the runtime settings.
+# DevLead server image (F1: S7-S10, S12, S15, S20; F2: S11, S16-S19). Built
+# locally by compose.yaml from this repository; docker/devlead.env.example
+# lists the runtime settings.
 #
-# Nothing here floats: the base image is pinned by digest, Claude Code by
-# version, and the two binaries downloaded below by version and SHA-256. To
-# update one, change it here and rebuild.
+# Nothing here floats: the base image is pinned by digest, its Debian packages
+# by the Debian snapshot it was built from, Claude Code by version, and the
+# three binaries downloaded below by version and SHA-256. To update one,
+# change it here and rebuild.
 FROM node:24-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0
 
 # Claude Code, pinned (S15). Updated only by rebuilding the image.
@@ -16,6 +18,15 @@ ARG GH_SHA256_ARM64=ee32df2323c8847f5fac6cb6b4b69ca75828e9329a8f22f677021f7b3306
 ARG YQ_VERSION=v4.54.1
 ARG YQ_SHA256_AMD64=8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f
 ARG YQ_SHA256_ARM64=189088da0c6429ec5178dfaab1a114805f6cab0b61b165ab236efedf1d57a71b
+# supercronic, the scheduler (S11): the SHA-256 GitHub publishes for each
+# release asset.
+ARG SUPERCRONIC_VERSION=v0.2.51
+ARG SUPERCRONIC_SHA256_AMD64=cc232108374e8e2b537045f2d5eaa1229f619db314c3ba6a14d38b35dc0aa123
+ARG SUPERCRONIC_SHA256_ARM64=4ae22576a78223d8ccdf5f3b3660a5cbb5288416bf0ca96afc4a36d195932b94
+# The Debian snapshot the base image was built from (its apt sources record
+# it). Packages come from that snapshot, so a rebuild installs the same
+# versions; the build stops if the base image moves to another one.
+ARG DEBIAN_SNAPSHOT=20261104T212339Z
 # The container runs as the host user (S9, and S14 later): compose passes the
 # host UID/GID. Root is refused.
 ARG DEVLEAD_UID=1000
@@ -23,16 +34,26 @@ ARG DEVLEAD_GID=1000
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      ca-certificates curl git iptables jq procps shellcheck tini util-linux \
- && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    src=/etc/apt/sources.list.d/debian.sources; \
+    if ! grep -qF "snapshot.debian.org/archive/debian/$DEBIAN_SNAPSHOT" "$src"; then \
+      echo "the base image was built from another Debian snapshot than DEBIAN_SNAPSHOT=$DEBIAN_SNAPSHOT — set it to the one $src names" >&2; exit 1; \
+    fi; \
+    sed -i \
+      -e "s|^URIs: http://deb.debian.org/debian-security\$|URIs: http://snapshot.debian.org/archive/debian-security/$DEBIAN_SNAPSHOT|" \
+      -e "s|^URIs: http://deb.debian.org/debian\$|URIs: http://snapshot.debian.org/archive/debian/$DEBIAN_SNAPSHOT|" \
+      -e "/^Signed-By:/a Check-Valid-Until: no" "$src"; \
+    if grep -q 'deb.debian.org' "$src"; then echo "$src still names deb.debian.org" >&2; exit 1; fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      ca-certificates curl git iptables jq procps shellcheck tini tzdata util-linux; \
+    rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
-      amd64) gh_sha="$GH_SHA256_AMD64"; yq_sha="$YQ_SHA256_AMD64" ;; \
-      arm64) gh_sha="$GH_SHA256_ARM64"; yq_sha="$YQ_SHA256_ARM64" ;; \
+      amd64) gh_sha="$GH_SHA256_AMD64"; yq_sha="$YQ_SHA256_AMD64"; sc_sha="$SUPERCRONIC_SHA256_AMD64" ;; \
+      arm64) gh_sha="$GH_SHA256_ARM64"; yq_sha="$YQ_SHA256_ARM64"; sc_sha="$SUPERCRONIC_SHA256_ARM64" ;; \
       *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
     esac; \
     tmp="$(mktemp -d)"; \
@@ -45,8 +66,12 @@ RUN set -eux; \
       "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${arch}"; \
     echo "$yq_sha  $tmp/yq" | sha256sum -c -; \
     install -m 0755 "$tmp/yq" /usr/local/bin/yq; \
+    curl -fsSL -o "$tmp/supercronic" \
+      "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${arch}"; \
+    echo "$sc_sha  $tmp/supercronic" | sha256sum -c -; \
+    install -m 0755 "$tmp/supercronic" /usr/local/bin/supercronic; \
     rm -rf "$tmp"; \
-    gh --version; yq --version
+    gh --version; yq --version; supercronic -version
 
 RUN npm install -g --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
  && npm cache clean --force \
@@ -70,7 +95,8 @@ COPY .devlead/scripts/ /opt/devlead/scripts/
 COPY .devlead/bin/devlead /opt/devlead/bin/devlead
 COPY .claude/hooks/ /opt/devlead/hooks/
 COPY .claude/commands/ /opt/devlead/commands/
-COPY docker/entrypoint.sh docker/init-firewall.sh docker/claude-wrapper.sh /opt/devlead/docker/
+COPY docker/entrypoint.sh docker/init-firewall.sh docker/claude-wrapper.sh \
+     docker/runner-config.sh docker/run-job.sh /opt/devlead/docker/
 # Hooks, deny rules and the bypass lock (S9): Claude Code's highest-precedence
 # settings, readable by the session (a file it cannot read is ignored) and
 # writable by root only.
@@ -84,7 +110,16 @@ COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
 #   /etc/devlead            root:root. server-mode: the marker that keeps
 #                           guard.sh on whatever the environment says.
 #                           gitconfig: git's only config file besides each
-#                           repo's own (GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM)
+#                           repo's own (GIT_CONFIG_GLOBAL, GIT_CONFIG_NOSYSTEM).
+#                           install-stamp: the source revision and the SHA-256
+#                           of every installed file (doctor.sh checks it).
+#                           crontab and runner.conf: the schedule and the
+#                           session limits, written by the entrypoint at start
+#                           from the env file (docker/runner-config.sh)
+#   /var/lib/devlead        root:root 0755, made by the entrypoint: the
+#                           session ledger (the user's, so the claude wrapper
+#                           can record sessions, but it cannot be removed or
+#                           replaced) and the root-owned lock files
 #   /home/devlead           root:root 0755: the user writes nothing directly
 #                           in it, so it cannot create ~/.gitconfig,
 #                           ~/.config/git or ~/.claude.json
@@ -112,6 +147,9 @@ COPY docker/managed-settings.json /etc/claude-code/managed-settings.json
 #                           use ($HOME/.devlead/scripts/...) keep working. The
 #                           state subdirectories, inbox.tsv and inbox.read.tsv
 #                           are the user's; notify.env is written at start.
+#                           audit/ holds the run log (S18). Only root can
+#                           create or remove ~/.devlead/PAUSE, the global
+#                           pause (S17).
 #                           F3 (S14) mounts the host's state over them.
 RUN set -eux; \
     install -d -m 0755 -o root -g root /etc/devlead; \
@@ -181,6 +219,30 @@ WORKDIR /home/devlead
 
 # The entrypoint needs root for the firewall, then drops to devlead for good.
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/devlead/docker/entrypoint.sh"]
-# F1: stay alive; the healthcheck watches the firewall. F2 (S11) replaces this
-# with supercronic.
-CMD ["sleep", "infinity"]
+# The install stamp (F1 follow-up a): what the build installed, and from which
+# revision. compose.yaml passes DEVLEAD_SOURCE_REV, the commit you build from;
+# without it doctor.sh reports STATUS: unknown and the unattended runs do not
+# start. Declared here, at the end, so a new revision rebuilds only this layer.
+ARG DEVLEAD_SOURCE_REV=
+RUN set -eux; \
+    case "$DEVLEAD_SOURCE_REV" in \
+      "") echo "DEVLEAD_SOURCE_REV is not set: doctor.sh will report this image as unknown" >&2 ;; \
+      *[!0-9a-f]*) echo "DEVLEAD_SOURCE_REV must be a git commit SHA (git rev-parse HEAD)" >&2; exit 1 ;; \
+    esac; \
+    if [ -n "$DEVLEAD_SOURCE_REV" ] && { [ "${#DEVLEAD_SOURCE_REV}" -lt 7 ] || [ "${#DEVLEAD_SOURCE_REV}" -gt 40 ]; }; then \
+      echo "DEVLEAD_SOURCE_REV must be a git commit SHA (git rev-parse HEAD)" >&2; exit 1; \
+    fi; \
+    { echo "# DevLead server image install stamp: written by docker/Dockerfile at build time, checked by doctor.sh"; \
+      echo "REVISION: $DEVLEAD_SOURCE_REV"; \
+      echo "ROOT: /opt/devlead"; \
+      echo "ROOT: /etc/claude-code"; \
+      find /opt/devlead /etc/claude-code -type f -print0 | sort -z | xargs -0 sha256sum; \
+      sha256sum /usr/local/bin/claude /usr/local/bin/supercronic /etc/devlead/server-mode /etc/devlead/gitconfig; \
+    } > /etc/devlead/install-stamp; \
+    chown root:root /etc/devlead/install-stamp; \
+    chmod 0644 /etc/devlead/install-stamp
+
+# The scheduler (S11), as the devlead user: the entrypoint writes the crontab
+# from the env file, then drops to devlead and runs this. supercronic never
+# makes up a run that was missed while the container was down.
+CMD ["/usr/local/bin/supercronic", "-passthrough-logs", "/etc/devlead/crontab"]

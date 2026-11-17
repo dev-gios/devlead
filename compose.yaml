@@ -1,9 +1,19 @@
 # DevLead server (S20): one long-lived container, built locally from this
-# repository.
+# repository, that runs DevLead's jobs on a schedule (S11).
 #
 #   cp docker/devlead.env.example .env && chmod 600 .env    # then fill it in
-#   docker compose up -d --build
+#   DEVLEAD_SOURCE_REV="$(git rev-parse HEAD)" docker compose up -d --build
 #   docker compose ps                         # STATUS shows (healthy)
+#   docker compose logs -f                    # the jobs and their audit lines
+#
+# DEVLEAD_SOURCE_REV records the commit the image is built from (doctor.sh
+# checks the image against it); without it the scheduled claude runs refuse to
+# start. The schedule, the time zone and the session limits are in .env
+# (docker/devlead.env.example lists them); restart the container after a
+# change. Pause every job and session, and resume:
+#   docker compose exec -u root devlead touch /home/devlead/.devlead/PAUSE
+#   docker compose exec -u root devlead rm /home/devlead/.devlead/PAUSE
+# Run a job now: docker compose exec -u devlead devlead /opt/devlead/docker/run-job.sh fleet
 #
 # Everything secret comes from .env, which stays out of git and out of the
 # image (.dockerignore). compose also reads DEVLEAD_UID and DEVLEAD_GID from it
@@ -21,6 +31,7 @@ services:
       args:
         DEVLEAD_UID: ${DEVLEAD_UID:?set DEVLEAD_UID in .env to the output of `id -u`}
         DEVLEAD_GID: ${DEVLEAD_GID:?set DEVLEAD_GID in .env to the output of `id -g`}
+        DEVLEAD_SOURCE_REV: ${DEVLEAD_SOURCE_REV:-}
     image: ${DEVLEAD_IMAGE:-devlead-server:local}
     restart: unless-stopped
     env_file:
