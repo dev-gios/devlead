@@ -97,9 +97,10 @@ services:
       - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/inbox.tsv", target: /home/devlead/.devlead/inbox.tsv, bind: {create_host_path: false}}
       - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/inbox.read.tsv", target: /home/devlead/.devlead/inbox.read.tsv, bind: {create_host_path: false}}
       # S25: the envelope store, the envelopes the user keeps outside the
-      # repos. Read-only, at a fixed root-owned path: no session can write what
-      # grants it authority, and envelope.sh never takes this path from HOME.
-      - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/envelopes", target: /etc/devlead/envelopes, read_only: true, bind: {create_host_path: false}}
+      # repos. Read-only, at a fixed path beside the loop's plan: no session can
+      # write what grants it authority, and envelope.sh never takes this path
+      # from HOME.
+      - {type: bind, source: "${DEVLEAD_STATE_DIR:?set DEVLEAD_STATE_DIR in .env to the absolute path of your ~/.devlead}/envelopes", target: /run/devlead/envelopes, read_only: true, bind: {create_host_path: false}}
       # L21 A2: the loop's plan, read-only, at a staging path; the entrypoint
       # validates it as root and installs a root-owned copy where the loop
       # reads it. Without DEVLEAD_LOOP_PLAN, docker/no-loop-plan.yml stands

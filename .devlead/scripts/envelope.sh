@@ -34,12 +34,13 @@ REPO_ENV_FILE="$(_repo_root)/.devlead/envelope.yml"
 # session every write under ~/.devlead. In the server it is the fixed path
 # below, where compose mounts the host's store read-only — never a path taken
 # from HOME or the environment, which a session sets for the commands it
-# runs. An entry the caller could write there grants nothing: show, plan and
+# runs. It sits beside the loop's plan, outside /etc/devlead: what compose
+# mounts from the host is the host user's, and /etc/devlead stays all root's. An entry the caller could write there grants nothing: show, plan and
 # check block (see the dispatch).
 # test/unit-envelope-store.sh rewrites these two paths in a copy.
 # ---------------------------------------------------------------------------
 SERVER_MARKER=/etc/devlead/server-mode
-SERVER_STORE=/etc/devlead/envelopes
+SERVER_STORE=/run/devlead/envelopes
 
 _store_root() {
   if [[ -e "$SERVER_MARKER" ]]; then
@@ -534,9 +535,11 @@ _origin_envelope() {
   local d _t=()
   command -v timeout &>/dev/null && _t=(timeout 60)
   _GH_ONLY=1
-  # The repo has an entry in the server's read-only store (S25): that is the
-  # envelope the user wrote, and no session can write it. Origin is not read.
-  [[ -n "$_FROM_STORE" ]] && return 0
+  # In the server, a repo with an entry in the read-only store (S25): that is
+  # the envelope the user wrote, and no session can write it. Origin is not
+  # read. Anywhere else --origin means origin: the store on the user's machine
+  # is found through HOME, which the caller sets.
+  [[ -n "$_FROM_STORE" && -e "$SERVER_MARKER" ]] && return 0
   d="$(_resolve_default_branch)" || d=""
   [[ -n "$d" ]] \
     || _block "cannot ask GitHub for origin's default branch — the envelope committed there cannot be read"

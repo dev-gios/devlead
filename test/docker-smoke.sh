@@ -82,6 +82,9 @@ CLONE="$WORKSPACE/hello"
 HOST_STATE="$SCRATCH/host-devlead"
 mkdir -p "$HOST_STATE"/{agenda,audit,decisions,envelopes,journals,learn,outcomes,reports,run-state}
 touch "$HOST_STATE/inbox.tsv" "$HOST_STATE/inbox.read.tsv"
+# S25: an entry in the envelope store for a repo the probe makes at this path.
+mkdir -p "$HOST_STATE/envelopes/tmp/storeprobe"
+bash "$REPO_ROOT/.devlead/scripts/envelope.sh" template > "$HOST_STATE/envelopes/tmp/storeprobe/envelope.yml"
 ( umask 077
   echo "github_pat_DECOY_host_token" > "$HOST_STATE/gh-token"
   echo "DEVLEAD_NTFY_URL=https://decoy.invalid/host-topic" > "$HOST_STATE/notify.env"
@@ -158,7 +161,7 @@ _planbind="$(DEVLEAD_UID="$HOST_UID" DEVLEAD_GID="$HOST_GID" DEVLEAD_ENV_FILE="$
   docker compose --project-directory "$REPO_ROOT" -f "$REPO_ROOT/compose.yaml" --env-file /dev/null config --format json 2>/dev/null \
   | jq -c '[.services.devlead.volumes[] | select(.type == "bind" and (.target | startswith("/home/devlead/") | not)) | [.source, .target, .read_only]]')"
 check "the only other binds, both read-only: the envelope store (S25) and the loop's plan stand-in (L21 A2)" "$_planbind" \
-  "[[\"$HOST_STATE/envelopes\",\"/etc/devlead/envelopes\",true],[\"$REPO_ROOT/docker/no-loop-plan.yml\",\"/run/devlead/host-plan.yml\",true]]"
+  "[[\"$HOST_STATE/envelopes\",\"/run/devlead/envelopes\",true],[\"$REPO_ROOT/docker/no-loop-plan.yml\",\"/run/devlead/host-plan.yml\",true]]"
 
 echo "=== build (project $PROJECT, image $IMAGE) ==="
 if ! compose build >"$SCRATCH/build.log" 2>&1; then
@@ -446,7 +449,8 @@ D="$HOME/.devlead"
 p host_decoys "$(yn test -e "$D/gh-token") $(yn test -e "$D/loop.env") $(grep -c decoy.invalid "$D/notify.env" 2>/dev/null || echo 0)"
 p state_owners "$(stat -c %u "$D/agenda" "$D/decisions" "$D/inbox.tsv" | sort -u | paste -sd' ' -)"
 p learn_ro "$(yn touch "$D/learn/planted")"
-p store_ro "$(yn touch /etc/devlead/envelopes/planted)"
+p store_ro "$(yn touch /run/devlead/envelopes/planted)"
+p store_read "$( { mkdir -p /tmp/storeprobe && cd /tmp/storeprobe && git init -q . 2>/dev/null && /opt/devlead/scripts/envelope.sh path 2>/dev/null; /opt/devlead/scripts/envelope.sh check 2>/dev/null | head -n 1; } | paste -sd' ' -)"
 ( cd "$WS/hello" && bash "$D/scripts/decisions.sh" record probe "the server's key" "same path as on the host" >/dev/null 2>&1 )
 p ident "$(git -C "$WS/hello" config user.name)|$(git -C "$WS/hello" config user.email)"
 p ident_meta "$(stat -c '%U %a' /etc/devlead/git-identity)"
@@ -609,6 +613,8 @@ check "none of the host's gh-token, loop.env or notify.env is in the container" 
 check "the mounted state is the host user's" "$(v state_owners)" "$HOST_UID"
 check "learn/ is read-only in the container" "$(v learn_ro)" "no"
 check "the envelope store is read-only in the container (S25)" "$(v store_ro)" "no"
+check "a repo with an entry in the store is read as enrolled, from the store" "$(v store_read)" \
+  "/run/devlead/envelopes/tmp/storeprobe/envelope.yml ENROLLED: true"
 check "what the container writes, the host sees (reports/)" \
   "$(stat -c '%u' "$HOST_STATE/reports/probe" 2>/dev/null || echo missing)" "$HOST_UID"
 check "the container's notices land in the host's inbox" "$(grep -c 'smoke-check' "$HOST_STATE/inbox.tsv")" "1"
@@ -1002,7 +1008,7 @@ _v+=(-v "$HOST_STATE/learn:/home/devlead/.devlead/learn:ro")
 out="$(docker run --rm "${_net[@]}" "${_v[@]}" --env-file "$ENV_FILE" "$IMAGE" id -u 2>&1)"; rc=$?
 check "without the envelope store mounted the container does not start (S25)" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
 contains "it names the store" "$out" "~/.devlead/envelopes is not mounted"
-out="$(docker run --rm "${_net[@]}" "${_v[@]}" -v "$HOST_STATE/envelopes:/etc/devlead/envelopes" --env-file "$ENV_FILE" "$IMAGE" id -u 2>&1)"; rc=$?
+out="$(docker run --rm "${_net[@]}" "${_v[@]}" -v "$HOST_STATE/envelopes:/run/devlead/envelopes" --env-file "$ENV_FILE" "$IMAGE" id -u 2>&1)"; rc=$?
 check "the envelope store mounted writable: the container does not start" "$([[ $rc -ne 0 ]] && echo refused || echo started)" "refused"
 contains "it says the store must be read-only" "$out" "must be mounted read-only: the envelopes there grant authority"
 

@@ -49,7 +49,7 @@ SERVER_STORE="$SANDBOX/etc-envelopes"
 check "envelope.sh has the fixed path SERVER_MARKER" "$(grep -c '^SERVER_MARKER=' "$SRV/envelope.sh")" "1"
 check "envelope.sh has the fixed path SERVER_STORE" "$(grep -c '^SERVER_STORE=' "$SRV/envelope.sh")" "1"
 check "the server store is not derived from HOME or the environment" \
-  "$(grep -c '^SERVER_STORE=/etc/devlead/envelopes$' "$REPO_ROOT/.devlead/scripts/envelope.sh")" "1"
+  "$(grep -c '^SERVER_STORE=/run/devlead/envelopes$' "$REPO_ROOT/.devlead/scripts/envelope.sh")" "1"
 sed -i "s|^SERVER_MARKER=.*|SERVER_MARKER=$MARKER|; s|^SERVER_STORE=.*|SERVER_STORE=$SERVER_STORE|" "$SRV/envelope.sh"
 ENVELOPE_SH="$SRV/envelope.sh"
 
@@ -141,25 +141,32 @@ check "T5: another repo is not enrolled by this repo's entry" "$(kv "$out" ENROL
 touch "$MARKER"
 SERVER_ENTRY="$SERVER_STORE$WORK/envelope.yml"
 
+# T5b — on the user's machine --origin still means origin: the HOME store
+# is found through HOME, which the caller sets.
+out="$(env_sh show --origin)"
+check "T5b: host: --origin does not read the HOME store" "$(kv "$out" STATUS)" "blocked"
+contains "T5b: host: --origin reads origin" "$out" "no envelope.yml on origin's default branch"
+
 # T6 — the HOME store is not read in the server: a session controls HOME.
 out="$(env_sh show --origin)"
 check "T6: server: the HOME store is ignored" "$(kv "$out" STATUS)" "blocked"
 contains "T6: server: with no entry the doors read origin" "$out" "no envelope.yml on origin's default branch"
 
 # T7 — an entry in the read-only server store is the doors' authority.
+# T8 — a store the caller could write grants nothing.
+# Both need a store this process cannot write; root can write any file.
 mkdir -p "$(dirname "$SERVER_ENTRY")"
 envelope true > "$SERVER_ENTRY"
-chmod -R a-w "$SERVER_STORE"
-out="$(env_sh show --origin)"
-check "T7: server: the doors read the store entry" "$(kv "$out" STATUS)" "ok"
-check "T7: server: the store entry's value" "$(kv "$out" ENABLED)" "true"
-out="$(env_sh show)"
-check "T7: server: plain show reads the store entry too" "$(kv "$out" ENABLED)" "true"
-
-# T8 — a store the caller could write grants nothing.
 if [[ "$(id -u)" == "0" ]]; then
-  echo "SKIP  T8: running as root, every file is writable"
+  echo "SKIP  T7, T8: running as root, no file is read-only here"
 else
+  chmod -R a-w "$SERVER_STORE"
+  out="$(env_sh show --origin)"
+  check "T7: server: the doors read the store entry" "$(kv "$out" STATUS)" "ok"
+  check "T7: server: the store entry's value" "$(kv "$out" ENABLED)" "true"
+  out="$(env_sh show)"
+  check "T7: server: plain show reads the store entry too" "$(kv "$out" ENABLED)" "true"
+
   chmod -R u+w "$SERVER_STORE"
   for sub in "show --origin" "show" "plan" "check"; do
     # shellcheck disable=SC2086

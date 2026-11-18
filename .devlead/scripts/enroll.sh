@@ -369,7 +369,6 @@ _show_list() {
           what="${R_SLUG[$i]} — default branch ${R_DEF[$i]}, gets the answers below"
         fi ;;
       opened) what="${R_SLUG[$i]} — PR opened: ${R_PR[$i]}" ;;
-      written) what="${R_SLUG[$i]} — envelope written: $(_store_file "${R_PATH[$i]}")" ;;
       *)      what="${R_NOTE[$i]}" ;;
     esac
     _line "${R_NAME[$i]}" "$what"
@@ -482,7 +481,7 @@ else
 fi
 
 if ! (cd "$ANSWERS" && env -u GH_REPO DEVLEAD_CONFIG_ENVELOPE_ONLY=1 bash "$CONFIG_BIN"); then
-  echo "enroll: the envelope editor stopped with an error — nothing was pushed" >&2
+  echo "enroll: the envelope editor stopped with an error — nothing was written or pushed" >&2
   exit 1
 fi
 

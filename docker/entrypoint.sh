@@ -184,7 +184,7 @@ unset _m _p _ro
 # The envelope store (S25): the envelopes the user keeps outside the repos.
 # Read-only or nothing: an entry here is merge authority, and envelope.sh
 # reads it instead of origin.
-_p=/etc/devlead/envelopes
+_p=/run/devlead/envelopes
 _store="the envelope store (~/.devlead/envelopes on the host)"
 # shellcheck disable=SC2088 # "~/.devlead/..." in the message is display text
 _is_mount "$_p" || die "~/.devlead/envelopes is not mounted from the host's DEVLEAD_STATE_DIR — compose.yaml mounts it (create it on the host first: mkdir -p ~/.devlead/envelopes); the container does not start"
