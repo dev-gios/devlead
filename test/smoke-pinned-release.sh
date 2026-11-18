@@ -610,6 +610,50 @@ s9_fault_injection_heal_on_rerun() {
     || fail "S9 REQ-11 run2: SOURCE_REPO missing/stale on heal run"
 }
 
+# ===========================================================================
+# S10 — an installed copy older than the source publishes with the SOURCE's
+# manifest. `devlead upgrade` runs the installed envelope.sh, which sources
+# the installed bootstrap-lib.sh; a file the source added to the manifest
+# since the last install must still be published before VERSION advances.
+# ===========================================================================
+s10_installed_copy_uses_source_manifest() {
+  local home src; home="$(fresh_home s10)"; src="$(fresh_src_copy s10)"
+  seed_source_repo "$home" "$src"
+  envelope "$home" "$src" upgrade >/dev/null
+
+  # An install made before enroll.sh joined the manifest: the installed lib
+  # has no entry for it and no published copy exists.
+  sed -i '/scripts\/enroll\.sh|/d' "$home/.devlead/scripts/bootstrap-lib.sh"
+  rm -f "$home/.devlead/scripts/enroll.sh"
+  git -C "$src" -c user.name=smoke -c user.email=smoke@example.invalid \
+    commit -q --allow-empty -m "test: advance HEAD"
+  local expect_sha; expect_sha="$(git -C "$src" rev-parse --short HEAD)"
+
+  local out rc
+  out="$(cd "$src" && HOME="$home" PATH="$FAKEBIN:$PATH" bash "$home/.local/bin/devlead" upgrade 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] && pass "S10 exit code 0" || fail "S10 exit code was $rc"
+  echo "$out" | grep -q "^STATUS: ok" && pass "S10 installed upgrade: STATUS: ok" \
+    || fail "S10 installed upgrade: expected STATUS: ok — got: $out"
+  if [[ -f "$home/.devlead/scripts/enroll.sh" && -x "$home/.devlead/scripts/enroll.sh" ]] \
+     && cmp -s "$src/.devlead/scripts/enroll.sh" "$home/.devlead/scripts/enroll.sh"; then
+    pass "S10 a file missing from the installed manifest is published from the source's manifest"
+  else
+    fail "S10 enroll.sh not published by an upgrade run from the installed copy"
+  fi
+  cmp -s "$src/.devlead/scripts/bootstrap-lib.sh" "$home/.devlead/scripts/bootstrap-lib.sh" \
+    && pass "S10 the installed bootstrap-lib.sh now matches the source" \
+    || fail "S10 the installed bootstrap-lib.sh still differs from the source"
+  grep -q "^SHA: $expect_sha$" "$home/.devlead/VERSION" \
+    && pass "S10 VERSION advanced to the source HEAD" \
+    || fail "S10 VERSION not at $expect_sha — $(cat "$home/.devlead/VERSION" 2>&1)"
+
+  local out2
+  out2="$(cd "$src" && HOME="$home" PATH="$FAKEBIN:$PATH" bash "$home/.local/bin/devlead" upgrade 2>&1)"
+  echo "$out2" | grep -q "^STATUS: up-to-date" \
+    && pass "S10 a second installed upgrade at the same HEAD is a no-op" \
+    || fail "S10 second installed upgrade: expected STATUS: up-to-date — got: $out2"
+}
+
 main() {
   : > "$RESULTS_FILE"
   s1_fresh_publish
@@ -624,6 +668,7 @@ main() {
   s7_out_of_scope_guard
   s8_no_tag_fallback
   s9_fault_injection_heal_on_rerun
+  s10_installed_copy_uses_source_manifest
 
   echo ""
   echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SMOKE_ROOT) ==="
