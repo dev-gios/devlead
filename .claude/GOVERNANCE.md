@@ -73,6 +73,19 @@ Si alguna vía autónoma puede invocarlo alguna vez, A3 está **roto** — no fl
 
 **El precedente ya existe en este código; el mecanismo no es nuevo.** `_do_optin` en `.devlead/scripts/envelope.sh` gatea su única pregunta con `[[ ! -t 0 ]] → return 0`: sin TTY no pregunta, no escribe `~/.devlead/autonomous-repos` y no toca el timer. Y `envelope.sh init` (`_do_init`) ya escribe el scaffold del envelope — lo crea solo si no existe, nunca lo sobrescribe, y lo deja en `merge.mode: never`. Los caminos autónomos llaman `check` y `plan`, ambos de solo lectura. Esta cláusula nombra lo que el código ya hacía.
 
+**`devlead enroll` es el mismo editor, para una carpeta entera.** Hace las preguntas del envelope una sola vez con el editor de `devlead config` (no tiene menú propio), valida las respuestas contra cada repo con `envelope.sh show` (la regla de la cláusula 2 rechaza el repo cuya rama por defecto es la rama de integración elegida, y solo ese), muestra qué le va a pasar a cada repo y pide confirmación antes de empujar nada. Por repo abre un PR que agrega `.devlead/envelope.yml` a la rama por defecto: el envelope entra a esa rama solo cuando el usuario mergea ese PR.
+
+**Una pty no convierte a una sesión en el usuario.** Una sesión puede fabricar una terminal (`script`, el `pty` de Python, `unbuffer`, `expect`, `socat`), así que el requisito 1 solo no alcanza. Entre una sesión y los dos editores del envelope (`devlead config` y `devlead enroll`) hay estas capas:
+
+1. **TTY:** sin terminal no corren (requisito 1).
+2. **`CLAUDECODE`:** se niegan dentro de una sesión de Claude Code, que marca así los comandos que lanza.
+3. **Ancestros:** recorren la cadena de procesos padre en `/proc` y se niegan si alguno es Claude Code (el binario `claude` o `claude.exe`, o node corriendo su CLI). No depende del entorno ni del texto del comando: `env -u CLAUDECODE`, `setsid`, `script`, el `pty` de Python, `unbuffer`, `expect` y `socat` no la esquivan. En Linux, si `/proc` no se puede leer, se niegan (falla cerrado); en un sistema sin `/proc` quedan las demás capas.
+4. **Corrida desatendida y servidor:** `enroll` se niega con `DEVLEAD_GUARD=1` y donde está el marcador del servidor (`/etc/devlead/server-mode`).
+5. **`guard.sh`** (§hard-limits, `self-config`): en las sesiones de DevLead bloquea los dos comandos, también en un comando que usa una herramienta de pty. Compara texto: un comando armado para esconderse puede pasarlo.
+6. **El merge del usuario:** `enroll` no escribe en la rama por defecto. Abre un PR por repo, y el envelope llega a esa rama solo cuando el usuario lo mergea. Esa es la última barrera.
+
+**Lo que todavía escapa, dicho sin rodeos:** un proceso que arranca fuera del árbol de procesos de la sesión no tiene a Claude Code como ancestro. Por ejemplo, `tmux send-keys` a un panel ya abierto, `systemd-run --user --pty`, o un doble fork (`(… &)`, `nohup … &`) cuyo huérfano el kernel le entrega a `systemd --user`. Contra eso quedan `CLAUDECODE` si la sesión no lo borró, `guard.sh` si el comando nombra a los editores de forma reconocible y, para `enroll`, el merge de cada PR.
+
 **Chequeo narrow-not-widen:** antes, un humano escribía YAML a mano en un editor de texto. Después, un humano contesta prompts y se escriben las elecciones de ese mismo humano. El conjunto de configuraciones alcanzables no crece — no hay valor que el editor pueda escribir que el humano no pudiera haber tipeado, y `default-branch` lo sigue rechazando `_do_show` igual que antes. Lo único que cambia es cuánto tiene que saber el humano para llegar a ellas. DevLead no gana nada: su autoridad de merge la sigue concediendo el envelope, y el envelope lo siguen decidiendo humanos.
 
 ### §A4 — PARK siempre con razón exacta
@@ -95,7 +108,7 @@ DevLead trabaja por su cuenta. Lo que NO puede hacer no depende de una frase en 
 | `database` | Todo lo que apunte a una base de datos que no esté en esta máquina, incluida una dirección tomada de una variable |
 | `secrets` | Leer o escribir un archivo de credenciales fuera de los lugares permitidos; volcar el entorno; `gh auth token`; leer el entorno de otro proceso (`/proc/<pid>/environ` en cualquier grafía o patrón, `ps` con la opción `e` o el formato `environ`, una búsqueda recursiva sobre `/`, `/etc` o `/proc`); en el servidor, las variables del pool de cuentas de Claude y su archivo de tokens |
 | `scope` | Escribir un archivo fuera del repositorio en el que se inició la sesión |
-| `self-config` | Cambiar los archivos que configuran estos límites: `~/.devlead/`, los settings de Claude Code y el `envelope.yml` del repo (§A3: el envelope lo escribe el usuario) |
+| `self-config` | Cambiar los archivos que configuran estos límites: `~/.devlead/`, los settings de Claude Code y el `envelope.yml` del repo (§A3: el envelope lo escribe el usuario); correr `devlead enroll` o `devlead config` (`enroll.sh`, `config.sh`), los dos que escriben el envelope: directo, con un intérprete, o en un comando que también usa una pty (`script`, `unbuffer`, `expect`, `socat`, el `pty` de Python). Un envoltorio no oculta el programa en ninguna regla: `env` con sus opciones (`-u`, `-i`, `--`), `setsid`, `exec` o un grupo `{ …; }` |
 
 **Quién concede una excepción.** Solo el usuario, y solo para credenciales: los lugares desde donde DevLead puede leer una clave se listan, un glob por línea, en `~/.devlead/secrets-allow`. Ningún script de DevLead escribe ese archivo y el guard bloquea a la sesión que lo intente. Los otros límites no tienen excepción.
 

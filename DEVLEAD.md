@@ -215,6 +215,10 @@ echo /ruta/absoluta/al/repo >> ~/.devlead/autonomous-repos
 
 Además, el repo necesita `enabled: true` en su `envelope.yml`. El scaffold por defecto es `enabled: false` (kill-switch de seguridad): un repo debe habilitarse **explícitamente** para ser barrido.
 
+### Enrollar una carpeta entera (`devlead enroll`)
+
+`devlead enroll <carpeta>` enrola de una vez todos los repos git que están directamente dentro de la carpeta. Hace las preguntas del envelope una sola vez, con el mismo editor de `devlead config` (arranca de `merge.mode: never` y `budget.max_issues: 3`), las valida contra cada repo con `envelope.sh`, y por cada repo abre un PR que agrega `.devlead/envelope.yml` a su rama por defecto, sin tocar tu copia de trabajo: en cada repo solo cambian `refs/remotes/origin/<rama por defecto>`, `refs/remotes/origin/devlead/enroll` y `FETCH_HEAD`. Antes de empujar muestra el plan y pide confirmación; `--dry-run` solo muestra el plan. Al final imprime las líneas `DEVLEAD_WORKSPACE=` y `DEVLEAD_REPOS=` para el servidor (`docker/README.md`). Corre solo desde tu terminal, no con el prefijo `!` de Claude Code: igual que `devlead config`, se niega sin TTY, dentro de una sesión de Claude Code y cuando Claude Code está entre sus procesos padre; además se niega en las corridas desatendidas, y `guard.sh` lo bloquea en las sesiones de DevLead (`.claude/GOVERNANCE.md` §A3).
+
 ### Activar el timer
 
 ```bash
@@ -468,7 +472,7 @@ Vocabulario de resultado por issue: `pr-created (URL)` / `parked-<razón>` / `es
 
 ## Servidor local 24/7 (Docker)
 
-DevLead también puede correr como un servidor en tu propia máquina: un contenedor encendido todo el día, con tu suscripción de Claude, que reemplaza a los timers de systemd. Detecta issues nuevas, abre PRs en borrador, manda la agenda y el resumen del día, y deja todo en el mismo estado que lee `/devlead`. La instalación paso a paso, el uso diario y los límites están en [`docker/README.md`](docker/README.md); el diseño votado, en `.devlead/specs/design-proactive-local-server.md`.
+DevLead también puede correr como un servidor en tu propia máquina: un contenedor encendido todo el día, con tu suscripción de Claude, que reemplaza a los timers de systemd. Detecta issues nuevas, abre PRs en borrador, manda la agenda y el resumen del día, y deja todo en el mismo estado que lee `/devlead`. Para enrolar de una vez todos los repos de una carpeta, `devlead enroll <carpeta>` (ver «Enrollar una carpeta entera»). La instalación paso a paso, el uso diario y los límites están en [`docker/README.md`](docker/README.md); el diseño votado, en `.devlead/specs/design-proactive-local-server.md`.
 
 ---
 

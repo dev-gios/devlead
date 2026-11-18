@@ -47,6 +47,12 @@ commands:
            what DevLead plans to work on today in this repo. `first` and
            `skip` reorder or drop issues of that plan; they can never add
            one. With no argument, shows the agenda.
+  enroll <folder> [--dry-run]
+           enroll every git repo directly under <folder>: asks the envelope
+           questions once (the same editor as `config`), then opens one PR
+           per repo adding .devlead/envelope.yml to its default branch.
+           Never touches your working copies. Prints the DEVLEAD_REPOS line
+           for the server's .env. Terminal only, like `config`.
   help     show this help
 
 All commands forward to ~/.devlead/scripts/ unchanged.
@@ -75,6 +81,10 @@ case "$_cmd" in
   agenda)
     shift
     exec bash "$SCRIPTS_DIR/agenda.sh" "$@"
+    ;;
+  enroll)
+    shift
+    exec bash "$SCRIPTS_DIR/enroll.sh" "$@"
     ;;
   # To route a NEW command to a DIFFERENT script later, add its name here:
   #   state)

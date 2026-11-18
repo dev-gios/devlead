@@ -242,6 +242,7 @@ bootstrap_symlinks() {
     "$repo_dir/.devlead/scripts/day-summary.sh|$devlead_dir/scripts/day-summary.sh|x"
     "$repo_dir/.devlead/scripts/doctor.sh|$devlead_dir/scripts/doctor.sh|x"
     "$repo_dir/.devlead/scripts/config.sh|$devlead_dir/scripts/config.sh|x"
+    "$repo_dir/.devlead/scripts/enroll.sh|$devlead_dir/scripts/enroll.sh|x"
     "$repo_dir/.devlead/scripts/untrusted.sh|$devlead_dir/scripts/untrusted.sh|x"
     "$repo_dir/.devlead/bin/devlead|$local_bin/devlead|x"
     "$repo_dir/.claude/hooks/guard.sh|$devlead_dir/hooks/guard.sh|x"

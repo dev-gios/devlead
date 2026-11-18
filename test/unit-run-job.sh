@@ -631,7 +631,9 @@ check "the same stretch: still limited, still exit 0" "$(field '[.outcome, .exit
 run morning
 check "a job with no session in the same stretch: no notice either" "$(need_codes)" "claude-limited"
 # A new stretch: team's reset passed, a new mark rests it again.
-printf 'team\t%s\tfive_hour\t2026-11-17T23:59:59Z\tx\tother-run\treported\n' "$(( $(date +%s) + 7200 ))" >> "$MARKS"
+# Its set time comes from the clock, after the marks of the runs above, so it
+# is the newest one whatever day the suite runs.
+printf 'team\t%s\tfive_hour\t%s\tx\tother-run\treported\n' "$(( $(date +%s) + 7200 ))" "$(TZ=UTC date -d "@$(( $(date +%s) + 5 ))" '+%Y-%m-%dT%H:%M:%SZ')" >> "$MARKS"
 run fleet
 check "a new stretch: a new notice" "$(need_codes)" "claude-limited,claude-limited"
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # envelope.sh — DevLead persisted per-repo envelope: parser + enrollment + dry-run planner.
-# Subcommands: check | init | show [--origin] | plan | upgrade | schema. KEY:value stdout. Always exits 0 on operational outcomes.
+# Subcommands: check | init | show [--origin] | plan | upgrade | schema | template. KEY:value stdout
+# (template: the scaffold YAML init writes). Always exits 0 on operational outcomes.
 # Envelope file: <git-root>/.devlead/envelope.yml (committed, auditable). READ-ONLY except `init` scaffold.
 set -uo pipefail
 
@@ -168,19 +169,11 @@ _do_check() {
 }
 
 # ---------------------------------------------------------------------------
-# init — copy-if-not-exists; never overwrites.
-# NOTE: `return 0`, not `exit 0` — this runs as the middle phase of the
-# `init)` dispatch case (bootstrap -> _do_init -> _do_optin); exiting here
-# would skip the opt-in question entirely.
+# template — the scaffold, on stdout. The one copy of it: `init` writes it,
+# and `devlead enroll` (enroll.sh) starts its answers from it. Writes nothing.
 # ---------------------------------------------------------------------------
-_do_init() {
-  mkdir -p "$(dirname "$ENV_FILE")"
-  if [[ -f "$ENV_FILE" ]]; then
-    echo "STATUS: exists"
-    echo "PATH:   $ENV_FILE"
-    return 0
-  fi
-  cat > "$ENV_FILE" <<'YML'
+_template() {
+  cat <<'YML'
 # DevLead envelope — persisted per-repo authorization (Nivel 2 substrate).
 version: 1
 enabled: false
@@ -227,6 +220,22 @@ merge:
 report:
   to: journal-per-repo
 YML
+}
+
+# ---------------------------------------------------------------------------
+# init — copy-if-not-exists; never overwrites.
+# NOTE: `return 0`, not `exit 0` — this runs as the middle phase of the
+# `init)` dispatch case (bootstrap -> _do_init -> _do_optin); exiting here
+# would skip the opt-in question entirely.
+# ---------------------------------------------------------------------------
+_do_init() {
+  mkdir -p "$(dirname "$ENV_FILE")"
+  if [[ -f "$ENV_FILE" ]]; then
+    echo "STATUS: exists"
+    echo "PATH:   $ENV_FILE"
+    return 0
+  fi
+  _template > "$ENV_FILE"
   echo "STATUS: created"
   echo "PATH:   $ENV_FILE"
   return 0
@@ -1434,5 +1443,6 @@ case "$_cmd" in
     _do_show ;;
   plan)   _do_plan ;;
   schema) _do_schema ;;
+  template) _template; exit 0 ;;
   *) echo "uso: envelope.sh {check|init|show [--origin]|plan|upgrade|schema}" >&2; exit 2 ;;
 esac

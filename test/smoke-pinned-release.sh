@@ -98,6 +98,7 @@ all_publish_targets() {
 .devlead/scripts/day-summary.sh
 .devlead/scripts/doctor.sh
 .devlead/scripts/config.sh
+.devlead/scripts/enroll.sh
 .devlead/scripts/untrusted.sh
 .local/bin/devlead
 .devlead/hooks/guard.sh
@@ -145,6 +146,7 @@ all_source_paths() {
 .devlead/scripts/day-summary.sh
 .devlead/scripts/doctor.sh
 .devlead/scripts/config.sh
+.devlead/scripts/enroll.sh
 .devlead/scripts/untrusted.sh
 .devlead/bin/devlead
 .claude/hooks/guard.sh

@@ -18,8 +18,11 @@
 #      (sweep-execute / sweep-loop / sweep-discover), directly or through a
 #      wrapper. It is wired ONLY into the `devlead config` CLI entry point,
 #      which a human runs by hand.
+#   3. It refuses inside a Claude Code session and under a Claude Code
+#      ancestor process (the session gate after the TTY gate), and guard.sh
+#      blocks a session that names it: a pty a session sets up is not a human.
 #
-# Both are load-bearing, not decorative — see test/unit-config-menu.sh.
+# All three are load-bearing, not decorative — see test/unit-config-menu.sh.
 #
 # Machine-setup actions reuse the existing scripts (doctor.sh for install
 # state, envelope.sh for the 4-step auth chain's own file convention) rather
@@ -51,6 +54,79 @@ if [[ ! -t 0 ]]; then
   echo "config: run this from an interactive shell." >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Session gate — right after the TTY gate, still before anything is read or
+# written. A pty is not a human: a Claude Code session can fake one (script,
+# python's pty). So this refuses inside a Claude Code session (CLAUDECODE) and,
+# whatever the environment says, under a Claude Code ancestor process. Run
+# from the user's own terminal, both pass silently.
+# ---------------------------------------------------------------------------
+if [[ -n "${CLAUDECODE:-}" ]]; then
+  echo "config: refusing to run inside a Claude Code session (GOVERNANCE.md §A3):" >&2
+  echo "        only you write the envelope. Run devlead config from your own terminal," >&2
+  echo "        not through Claude Code's ! prefix." >&2
+  exit 1
+fi
+# >>> _claude_code_ancestor — kept identical in config.sh and enroll.sh
+# (test/unit-enroll.sh E12 compares the two copies).
+# Is any ancestor of this process Claude Code? Walks the parent chain through
+# /proc (the ppid field of /proc/<pid>/stat) and looks at each process's comm,
+# exe and argv[0]: the claude binary (claude, claude.exe, or an exe under
+# .../claude/versions/), or node, bun or deno running Claude Code's CLI
+# (@anthropic-ai/claude-code in its argv). CLAUDECODE and guard.sh's text
+# rules can be got around from inside a session (env -u, a pty tool, setsid);
+# the session's own process tree cannot.
+# Prints "<pid> <comm>" and returns 0 on a match. Returns 1 when no ancestor
+# is Claude Code, and on a system without /proc (not Linux), where the other
+# checks still apply. Returns 2 when /proc cannot be read on Linux: the
+# caller fails closed.
+_claude_code_ancestor() {
+  local pid="$$" ppid stat comm exe argv0 cmd n=0
+  if [[ ! -r "/proc/$$/stat" ]]; then
+    [[ "$(uname -s 2>/dev/null)" == Linux ]] && return 2
+    return 1
+  fi
+  while [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 1 && n < 512 )); do
+    n=$((n + 1))
+    stat="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 2
+    [[ -n "$stat" ]] || return 2
+    # comm sits in parentheses and may hold spaces or ')': the state and the
+    # ppid are the first two fields after the LAST ') '.
+    read -r _ ppid _ <<<"${stat##*) }"
+    comm="$(cat "/proc/$pid/comm" 2>/dev/null)"
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
+    exe="${exe% (deleted)}"
+    cmd="$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null)"
+    argv0="${cmd%%$'\n'*}"
+    case "$comm" in claude|claude.exe) printf '%s %s\n' "$pid" "$comm"; return 0 ;; esac
+    case "${exe##*/}" in claude|claude.exe) printf '%s %s\n' "$pid" "$comm"; return 0 ;; esac
+    case "${argv0##*/}" in claude|claude.exe) printf '%s %s\n' "$pid" "$comm"; return 0 ;; esac
+    case "$exe" in */claude/versions/*) printf '%s %s\n' "$pid" "$comm"; return 0 ;; esac
+    case "$comm|${exe##*/}" in
+      node\|*|nodejs\|*|bun\|*|deno\|*|*\|node|*\|nodejs|*\|bun|*\|deno)
+        if [[ "$cmd" == *@anthropic-ai/claude-code* ]]; then
+          printf '%s %s\n' "$pid" "$comm"; return 0
+        fi ;;
+    esac
+    [[ "$ppid" =~ ^[0-9]+$ ]] || return 2
+    pid="$ppid"
+  done
+  return 1
+}
+# <<< _claude_code_ancestor
+_cc="$(_claude_code_ancestor)"
+case $? in
+  0)
+    echo "config: refusing to run under Claude Code (process ${_cc}) — GOVERNANCE.md §A3:" >&2
+    echo "        only you write the envelope. Run devlead config from your own terminal," >&2
+    echo "        not through Claude Code's ! prefix or a session." >&2
+    exit 1 ;;
+  2)
+    echo "config: cannot read /proc to check what started this command — refusing" >&2
+    echo "        (fail closed, GOVERNANCE.md §A3)." >&2
+    exit 1 ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Paths — resolved as self-resolved siblings (same convention envelope.sh
@@ -984,5 +1060,15 @@ _main_menu() {
     esac
   done
 }
+
+# `devlead enroll` (enroll.sh) asks the envelope questions once for a whole
+# folder of repos. It does not carry a menu of its own: it runs THIS editor,
+# behind the same TTY gate, on a draft envelope in a scratch repo, and sets
+# DEVLEAD_CONFIG_ENVELOPE_ONLY=1 so only the envelope section opens. Every
+# write still goes through _commit_change and `envelope.sh show`.
+if [[ "${DEVLEAD_CONFIG_ENVELOPE_ONLY:-0}" == "1" ]]; then
+  _envelope_menu
+  exit $?
+fi
 
 _main_menu
