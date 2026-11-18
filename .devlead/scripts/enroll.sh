@@ -150,7 +150,7 @@ _within() { [[ "$1" == "$2" || "$1" == "$2"/* ]]; }
 
 _usage() {
   cat <<'EOF'
-usage: devlead enroll <folder> [--dry-run]
+usage: devlead enroll <folder> [--dry-run] [--publish]
 
 Enrolls every git repository directly under <folder> in DevLead, in one go:
   1. lists them, with the reason for each one it leaves out
@@ -158,21 +158,28 @@ Enrolls every git repository directly under <folder> in DevLead, in one go:
      `devlead config`; they start from the scaffold's safe defaults
      (merge.mode never: draft PRs only; budget.max_issues 3; enabled false)
   3. checks the answers against each repo with envelope.sh
-  4. shows what will happen to each repo and asks before pushing anything
-  5. per repo: commits .devlead/envelope.yml on a new branch, devlead/enroll,
-     made from origin's default branch, pushes it and opens one PR to that
-     default branch
-  6. prints the PR links and the DEVLEAD_WORKSPACE and DEVLEAD_REPOS lines
-     for the server's .env
+  4. shows what will happen to each repo and asks before writing anything
+  5. per repo: writes the envelope to your own store, outside the repo:
+     ~/.devlead/envelopes/<the repo's path>/envelope.yml
+  6. prints the DEVLEAD_WORKSPACE and DEVLEAD_REPOS lines for the server's
+     .env
 
-Your working copies, current branches, index and stashes are never touched.
-In each repo only three refs change: refs/remotes/origin/<default branch>
-and FETCH_HEAD (the fetch) and refs/remotes/origin/devlead/enroll (the push).
-A repo that already has .devlead/envelope.yml on its default branch is left
-as it is; a local copy of that file the PR will collide with is named in the
-plan. A repo counts as enrolled for the server once its PR is merged.
+Nothing is added to your repos and nothing is pushed: the envelope is your
+tool's configuration, not the project's. DevLead on this machine and the
+server (which gets the store as a read-only mount) both read it from there.
+A repo that already has an envelope in the store is left as it is; change it
+with `devlead config` in that repo.
 
-  --dry-run   ask the questions and show the plan; commit, push and open nothing
+  --dry-run   ask the questions and show the plan; write, push and open nothing
+  --publish   commit the envelope to each repo instead of the store: per repo,
+              .devlead/envelope.yml on a new branch, devlead/enroll, made from
+              origin's default branch, pushed, with one PR to that default
+              branch. Your working copies, current branches, index and stashes
+              are never touched; only three refs change per repo:
+              refs/remotes/origin/<default branch> and FETCH_HEAD (the fetch)
+              and refs/remotes/origin/devlead/enroll (the push). A repo that
+              already has the file on its default branch is left as it is, and
+              a repo counts as enrolled for the server once its PR is merged.
 
 Terminal only: it refuses without a TTY, inside a Claude Code session, when
 Claude Code is among its parent processes, and in unattended runs
@@ -183,10 +190,12 @@ EOF
 
 # --- Arguments -------------------------------------------------------------------
 DRY_RUN=0
+PUBLISH=0
 FOLDER=""
 for _a in "$@"; do
   case "$_a" in
     --dry-run) DRY_RUN=1 ;;
+    --publish) PUBLISH=1 ;;
     -h|--help) _usage; exit 0 ;;
     -*) echo "enroll: unknown option '$_a'" >&2; _usage >&2; exit 2 ;;
     *)
@@ -211,10 +220,15 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/devlead-enroll.XXXXXX")" \
 trap 'rm -rf "$WORK"' EXIT
 trap 'exit 130' INT TERM
 
+# The envelope store (S25): one file per repo, outside the repos, keyed by the
+# repo's absolute path. envelope.sh reads it from the same place.
+STORE="$HOME/.devlead/envelopes"
+_store_file() { printf '%s%s/envelope.yml' "$STORE" "$1"; }
+
 # --- Per-repo records --------------------------------------------------------------
-# R_STATE: skip | error | refused | has-envelope | pending | ready | opened
-#   has-envelope and pending still go into DEVLEAD_REPOS: the envelope is, or
-#   will be once an open PR merges, on the default branch.
+# R_STATE: skip | error | refused | has-envelope | pending | ready | opened | written
+#   has-envelope and pending still go into DEVLEAD_REPOS: the envelope is in
+#   the store, or is (or will be once an open PR merges) on the default branch.
 R_NAME=() R_PATH=() R_SLUG=() R_DEF=() R_BASE=() R_STATE=() R_NOTE=() R_PR=()
 # R_WARN: a local .devlead/envelope.yml in the user's copy that the merged PR
 # will collide with (A5); shown under the repo's line.
@@ -268,6 +282,18 @@ _remote_state() {
   esac
 }
 
+# _store_state <i> — without --publish: the repo already has an entry in the
+# store (left as is), or it is ready for one.
+_store_state() {
+  local i="$1" f
+  f="$(_store_file "${R_PATH[$1]}")"
+  if [[ -e "$f" || -L "$f" ]]; then
+    _set "$i" has-envelope "skip: already has an envelope in your store ($f) — left as is (change it with devlead config in that repo)"
+  else
+    _set "$i" ready ""
+  fi
+}
+
 # _local_envelope <i> — the user's copy holds its own .devlead/envelope.yml
 # (untracked, ignored or changed): once the PR merges, `git pull` collides
 # with it. Read-only: --no-optional-locks keeps status from rewriting the
@@ -317,8 +343,12 @@ _discover() {
       _set "$i" skip "skip: GitHub names a default branch DevLead does not read"; continue
     fi
     R_DEF[i]="$def"
-    _local_envelope "$i"
-    _remote_state "$i"
+    if [[ "$PUBLISH" == "1" ]]; then
+      _local_envelope "$i"
+      _remote_state "$i"
+    else
+      _store_state "$i"
+    fi
   done
 }
 
@@ -331,7 +361,9 @@ _show_list() {
   for i in "${!R_NAME[@]}"; do
     case "${R_STATE[$i]}" in
       ready)
-        if [[ "${1:-}" == plan ]]; then
+        if [[ "${1:-}" == plan && "$PUBLISH" != "1" ]]; then
+          what="${R_SLUG[$i]} — write $(_store_file "${R_PATH[$i]}")"
+        elif [[ "${1:-}" == plan ]]; then
           what="${R_SLUG[$i]} — open a PR to ${R_DEF[$i]} adding $ENVELOPE_PATH (branch $BRANCH)"
         else
           what="${R_SLUG[$i]} — default branch ${R_DEF[$i]}, gets the answers below"
@@ -390,9 +422,16 @@ _env_lines() {
     echo "If DEVLEAD_REPOS already lists repos outside $FOLDER, set DEVLEAD_WORKSPACE to a"
     echo "folder that holds them all and add these entries to that list."
   fi
-  echo "A repo counts as enrolled for the server only once its PR is merged: the server"
-  echo "reads $ENVELOPE_PATH from origin's default branch. After you edit .env, run"
-  echo "docker compose up -d so the container picks it up."
+  if [[ "$PUBLISH" == "1" ]]; then
+    echo "A repo counts as enrolled for the server only once its PR is merged: the server"
+    echo "reads $ENVELOPE_PATH from origin's default branch. After you edit .env, run"
+    echo "docker compose up -d so the container picks it up."
+  else
+    echo "Nothing was added to your repos. The server reads these envelopes from"
+    echo "$STORE, which compose.yaml mounts read-only (it is under"
+    echo "DEVLEAD_STATE_DIR). After you edit .env, run docker compose up -d so the"
+    echo "container picks it up."
+  fi
 }
 
 _exit_code() { [[ "$(_count error)" -eq 0 ]]; }
@@ -433,11 +472,16 @@ SHOW="$(_answers_show)"
 echo ""
 echo "The envelope questions, asked once for these $N_READY repos. The draft starts"
 echo "from the scaffold: enabled $(_show_kv "$SHOW" ENABLED), merge.mode $(_show_kv "$SHOW" MERGE_MODE), budget.max_issues $(_show_kv "$SHOW" MAX_ISSUES)."
-echo "Pick a field to change it; Back (b) when the answers are right. Nothing reaches"
-echo "your repos until you confirm the plan."
+if [[ "$PUBLISH" == "1" ]]; then
+  echo "Pick a field to change it; Back (b) when the answers are right. Nothing reaches"
+  echo "your repos until you confirm the plan."
+else
+  echo "Pick a field to change it; Back (b) when the answers are right. Nothing is"
+  echo "written until you confirm the plan, and nothing is added to your repos."
+fi
 
 if ! (cd "$ANSWERS" && env -u GH_REPO DEVLEAD_CONFIG_ENVELOPE_ONLY=1 bash "$CONFIG_BIN"); then
-  echo "enroll: the envelope editor stopped with an error — nothing was pushed" >&2
+  echo "enroll: the envelope editor stopped with an error — nothing was written or pushed" >&2
   exit 1
 fi
 
@@ -482,35 +526,72 @@ echo "Plan — answers: $ANSWER_LINE"
 _show_list plan
 if [[ "$ENABLED" == "false" ]]; then
   echo ""
-  echo "Note: enabled is false — once merged, DevLead reads these repos but takes no"
-  echo "work in them until a repo's envelope says enabled: true."
+  if [[ "$PUBLISH" == "1" ]]; then
+    echo "Note: enabled is false — once merged, DevLead reads these repos but takes no"
+    echo "work in them until a repo's envelope says enabled: true."
+  else
+    echo "Note: enabled is false — DevLead reads these repos but takes no work in them"
+    echo "until a repo's envelope says enabled: true."
+  fi
 fi
 
 N_READY="$(_count ready)"
 if [[ "$DRY_RUN" == "1" ]]; then
   echo ""
-  echo "dry run: nothing was committed, pushed or opened."
+  if [[ "$PUBLISH" == "1" ]]; then echo "dry run: nothing was committed, pushed or opened."; else echo "dry run: nothing was written."; fi
   _env_lines ready has-envelope pending
   _exit_code; exit $?
 fi
 if [[ "$N_READY" -eq 0 ]]; then
   echo ""
-  echo "Nothing to push."
+  if [[ "$PUBLISH" == "1" ]]; then echo "Nothing to push."; else echo "Nothing to write."; fi
   _env_lines has-envelope pending
   _exit_code; exit $?
 fi
 
 echo ""
-if [[ "$N_READY" -eq 1 ]]; then _q="Push 1 branch and open 1 PR?"; else _q="Push $N_READY branches and open $N_READY PRs?"; fi
+if [[ "$PUBLISH" != "1" ]]; then
+  if [[ "$N_READY" -eq 1 ]]; then _q="Write 1 envelope under $STORE?"; else _q="Write $N_READY envelopes under $STORE?"; fi
+elif [[ "$N_READY" -eq 1 ]]; then _q="Push 1 branch and open 1 PR?"
+else _q="Push $N_READY branches and open $N_READY PRs?"
+fi
 read -r -p "$_q [y/N] " _ans || _ans=""
 case "${_ans,,}" in
   y|yes|si|sí) ;;
   *)
-    echo "Cancelled — nothing was pushed."
+    if [[ "$PUBLISH" == "1" ]]; then echo "Cancelled — nothing was pushed."; else echo "Cancelled — nothing was written."; fi
     _exit_code; exit $? ;;
 esac
 
-# --- 5. Commit, push, open ------------------------------------------------------------
+# --- 5. Write the store ---------------------------------------------------------------
+# Without --publish this is all that happens: one file per repo, outside the
+# repos. Written to a sibling temporary file and renamed, so an entry is never
+# half an envelope; an entry that appeared since the listing is left alone.
+if [[ "$PUBLISH" != "1" ]]; then
+  echo ""
+  for i in "${!R_NAME[@]}"; do
+    [[ "${R_STATE[$i]}" == "ready" ]] || continue
+    f="$(_store_file "${R_PATH[$i]}")"
+    if [[ -e "$f" || -L "$f" ]]; then
+      _set "$i" error "error: $f appeared while this ran — left as is"
+    elif mkdir -p "$(dirname "$f")" 2>/dev/null \
+         && cp "$ANSWERS/$ENVELOPE_PATH" "$f.tmp.$$" 2>/dev/null \
+         && mv -n "$f.tmp.$$" "$f" 2>/dev/null && [[ ! -e "$f.tmp.$$" ]]; then
+      _set "$i" written ""
+    else
+      rm -f "$f.tmp.$$" 2>/dev/null
+      _set "$i" error "error: cannot write $f"
+    fi
+    case "${R_STATE[$i]}" in
+      written) _line "${R_NAME[$i]}" "${R_SLUG[$i]} — envelope written: $f" ;;
+      *)       _line "${R_NAME[$i]}" "${R_NOTE[$i]}" ;;
+    esac
+  done
+  _env_lines written has-envelope
+  _exit_code; exit $?
+fi
+
+# --- 5 (--publish). Commit, push, open ------------------------------------------------
 COMMIT_BODY="Enrolls this repo in DevLead with the answers given once to \`devlead enroll\` for every repo in its folder."
 PR_BODY="Adds \`$ENVELOPE_PATH\`: the answers given once to \`devlead enroll\` for every repo in the folder.
 

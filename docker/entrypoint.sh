@@ -181,6 +181,18 @@ for _m in agenda audit decisions journals outcomes reports run-state learn inbox
 done
 unset _m _p _ro
 
+# The envelope store (S25): the envelopes the user keeps outside the repos.
+# Read-only or nothing: an entry here is merge authority, and envelope.sh
+# reads it instead of origin.
+_p=/run/devlead/envelopes
+_store="the envelope store (~/.devlead/envelopes on the host)"
+# shellcheck disable=SC2088 # "~/.devlead/..." in the message is display text
+_is_mount "$_p" || die "~/.devlead/envelopes is not mounted from the host's DEVLEAD_STATE_DIR — compose.yaml mounts it (create it on the host first: mkdir -p ~/.devlead/envelopes); the container does not start"
+[[ -d "$_p" && ! -L "$_p" ]] || die "$_store is not a directory"
+[[ ",$(_mount_opts "$_p")," == *,ro,* ]] \
+  || die "$_store must be mounted read-only: the envelopes there grant authority, and only you write them"
+unset _p _store
+
 # The loop's plan (L21 A2): read-only from the host, validated here, then
 # root's, so no session can change what the next night's loop works on.
 _staged=/run/devlead/host-plan.yml

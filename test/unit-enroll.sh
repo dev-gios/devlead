@@ -283,7 +283,7 @@ e3_folder() {
   idx_web="$(sha256sum < "$ws/web/.git/index")"; idx_api="$(sha256sum < "$ws/api/.git/index")"
   : > "$FAKE_GH_DIR/calls"
 
-  _enroll "'$ws'" b y
+  _enroll "--publish '$ws'" b y
 
   check_eq "E3: exit 0" "$RC" "0"
   contains "E3: the envelope questions are config.sh's own editor" "$OUT" "Envelope ("
@@ -348,7 +348,7 @@ e4_per_repo_refusal() {
   git clone -q https://github.com/acme/dev-repo.git "$ws/dev-repo"
   : > "$FAKE_GH_DIR/calls"
 
-  _enroll "'$ws'" base.integration_branch dev y merge.mode integration-branch y b y
+  _enroll "--publish '$ws'" base.integration_branch dev y merge.mode integration-branch y b y
 
   check_eq "E4: exit 0 (a refusal is reported, not an error)" "$RC" "0"
   contains "E4: dev-repo is refused with envelope.sh's reason" "$OUT" \
@@ -371,7 +371,7 @@ e5_dry_run() {
   git clone -q https://github.com/acme/dry.git "$TMP_WS/dry"
   : > "$FAKE_GH_DIR/calls"
 
-  _enroll "--dry-run '$TMP_WS'" b
+  _enroll "--publish --dry-run '$TMP_WS'" b
 
   check_eq "E5: exit 0" "$RC" "0"
   contains "E5: the plan names the PR it would open" "$OUT" "open a PR to main"
@@ -392,7 +392,7 @@ e6_decline() {
   _remote acme/no main
   git clone -q https://github.com/acme/no.git "$ws/no"
   : > "$FAKE_GH_DIR/calls"
-  _enroll "'$ws'" b n
+  _enroll "--publish '$ws'" b n
   check_eq "E6: exit 0" "$RC" "0"
   contains "E6: says nothing was pushed" "$OUT" "nothing was pushed"
   _has_branch acme/no && fail "E6: a branch was pushed" || pass "E6: nothing pushed"
@@ -417,7 +417,7 @@ e7_errors_continue() {
   git init -q "$ws/ghost"; git -C "$ws/ghost" remote add origin git@github.com:acme/ghost.git
   : > "$FAKE_GH_DIR/calls"
 
-  FAKE_GH_PR_FAIL=acme/prfail _enroll "'$ws'" b y
+  FAKE_GH_PR_FAIL=acme/prfail _enroll "--publish '$ws'" b y
 
   check_eq "E7: exit 1 when a repo ended in an error" "$RC" "1"
   contains "E7: the failed PR is reported with a link to open it" "$OUT" \
@@ -437,7 +437,7 @@ e8_nothing() {
   local ws="$SANDBOX/ws8"
   mkdir -p "$ws/plain"
   git init -q "$ws/solo"
-  _enroll "'$ws'"
+  _enroll "--publish '$ws'"
   check_eq "E8: exit 0" "$RC" "0"
   contains "E8: says there is nothing to enroll" "$OUT" "Nothing to enroll"
   not_contains "E8: the envelope editor is not opened" "$OUT" "Envelope ("
@@ -565,7 +565,7 @@ e13_decline_with_error() {
   git clone -q https://github.com/acme/ok13.git "$ws/ok13"
   printf 'acme/gone13\tmain\n' >> "$FAKE_GH_DIR/repos.tsv"     # GitHub knows it, the fetch fails
   git init -q "$ws/gone13"; git -C "$ws/gone13" remote add origin https://github.com/acme/gone13.git
-  _enroll "'$ws'" b n
+  _enroll "--publish '$ws'" b n
   check_eq "E13: declined with an errored repo → exit 1" "$RC" "1"
   contains "E13: says nothing was pushed" "$OUT" "nothing was pushed"
   _has_branch acme/ok13 && fail "E13: a branch was pushed" || pass "E13: nothing pushed"
@@ -594,7 +594,7 @@ e14_local_envelope_and_hidden() {
   local idx_untr idx_modi
   idx_untr="$(sha256sum < "$ws/untr/.git/index")"; idx_modi="$(sha256sum < "$ws/modi/.git/index")"
 
-  _enroll "--dry-run '$ws'" b
+  _enroll "--publish --dry-run '$ws'" b
 
   check_eq "E14: exit 0" "$RC" "0"
   local plan="${OUT#*Plan — }"
@@ -634,7 +634,7 @@ e15_refs_that_change() {
   head_before="$(git -C "$r" symbolic-ref HEAD) $(git -C "$r" rev-parse HEAD)"
   fh_before="$(cat "$r/.git/FETCH_HEAD" 2>/dev/null || echo none)"
 
-  _enroll "'$ws'" b y
+  _enroll "--publish '$ws'" b y
 
   check_eq "E15: exit 0" "$RC" "0"
   after="$(git -C "$r" for-each-ref --format="$fmt" | sort)"
@@ -648,6 +648,78 @@ e15_refs_that_change() {
     "$(git -C "$r" symbolic-ref HEAD) $(git -C "$r" rev-parse HEAD)" "$head_before"
   [[ "$(cat "$r/.git/FETCH_HEAD" 2>/dev/null || echo none)" != "$fh_before" ]] \
     && pass "E15: FETCH_HEAD is written by the fetch" || fail "E15: FETCH_HEAD did not change"
+}
+
+# ===========================================================================
+# E16 — S25, the default: the envelopes go to the user's store, outside the
+# repos. Nothing is committed, fetched, pushed or opened, the working copies
+# stay as they were, and envelope.sh then reads each repo as enrolled.
+# ===========================================================================
+e16_store() {
+  local ws="$SANDBOX/ws16" store="$HOME/.devlead/envelopes"
+  mkdir -p "$ws"
+  _remote acme/s-web main
+  _remote acme/s-api dev
+  _remote acme/s-kept main
+  git clone -q https://github.com/acme/s-web.git "$ws/web"
+  git clone -q https://github.com/acme/s-api.git "$ws/api"
+  git clone -q https://github.com/acme/s-kept.git "$ws/kept"
+  _dirty "$ws/web"
+  mkdir -p "$store$ws/kept"; printf 'version: 1 # mine\n' > "$store$ws/kept/envelope.yml"
+  local snap refs fh
+  snap="$(_snapshot "$ws/web")"
+  refs="$(git -C "$ws/web" for-each-ref --format='%(refname) %(objectname)')"
+  fh="$(cat "$ws/web/.git/FETCH_HEAD" 2>/dev/null || echo none)"
+
+  # --dry-run: the plan, and nothing written.
+  : > "$FAKE_GH_DIR/calls"
+  _enroll "--dry-run '$ws'" b
+  check_eq "E16: dry run: exit 0" "$RC" "0"
+  contains "E16: dry run: the plan names the store file" "$OUT" "write $store$ws/web/envelope.yml"
+  contains "E16: dry run: says nothing was written" "$OUT" "dry run: nothing was written"
+  [[ -e "$store$ws/web" ]] && fail "E16: dry run wrote the store" || pass "E16: dry run: store untouched"
+
+  # Declined: nothing written.
+  _enroll "'$ws'" b n
+  check_eq "E16: declined: exit 0" "$RC" "0"
+  contains "E16: declined: says nothing was written" "$OUT" "Cancelled — nothing was written"
+  [[ -e "$store$ws/web" ]] && fail "E16: a declined run wrote the store" || pass "E16: declined: store untouched"
+
+  # Confirmed.
+  _enroll "'$ws'" b y
+  check_eq "E16: exit 0" "$RC" "0"
+  contains "E16: asks before writing, naming the store" "$OUT" "Write 2 envelopes under $store?"
+  not_contains "E16: never offers to push" "$OUT" "Push "
+  contains "E16: web's envelope is written" "$OUT" "acme/s-web — envelope written: $store$ws/web/envelope.yml"
+  check_eq "E16: web's entry is the answers" "$(cat "$store$ws/web/envelope.yml" 2>/dev/null)" "$TEMPLATE"
+  check_eq "E16: api's entry is the answers" "$(cat "$store$ws/api/envelope.yml" 2>/dev/null)" "$TEMPLATE"
+  contains "E16: a repo already in the store is left as is" "$OUT" "already has an envelope in your store"
+  check_eq "E16: the existing entry is untouched" "$(cat "$store$ws/kept/envelope.yml")" "version: 1 # mine"
+  check_eq "E16: no temporary file is left in the store" "$(find "$store" -name '*.tmp.*' | wc -l | tr -d ' ')" "0"
+
+  # Nothing reaches the repos or GitHub.
+  check_eq "E16: web's working copy, branches, index and stash are untouched" "$(_snapshot "$ws/web")" "$snap"
+  check_eq "E16: no ref of web changed" "$(git -C "$ws/web" for-each-ref --format='%(refname) %(objectname)')" "$refs"
+  check_eq "E16: nothing was fetched" "$(cat "$ws/web/.git/FETCH_HEAD" 2>/dev/null || echo none)" "$fh"
+  [[ -e "$ws/api/.devlead" ]] && fail "E16: .devlead appeared in a repo" || pass "E16: no .devlead directory in the repo"
+  _has_branch acme/s-web && fail "E16: a branch was pushed" || pass "E16: no branch pushed"
+  not_contains "E16: no PR was created" "$(cat "$FAKE_GH_DIR/calls")" "pr create"
+
+  # The server's lines, and what reads the store.
+  contains "E16: DEVLEAD_REPOS lists the written repos and the one already there" "$OUT" \
+    "DEVLEAD_REPOS=$ws/api=acme/s-api,$ws/kept=acme/s-kept,$ws/web=acme/s-web"
+  contains "E16: says nothing was added to the repos" "$OUT" "Nothing was added to your repos"
+  not_contains "E16: does not ask to merge a PR" "$OUT" "once its PR is merged"
+  contains "E16: envelope.sh reads the repo as enrolled" \
+    "$(cd "$ws/api" && bash "$HOME/.devlead/scripts/envelope.sh" check 2>/dev/null)" "ENROLLED: true"
+  check_eq "E16: envelope.sh names the store file as the envelope in use" \
+    "$(cd "$ws/api" && bash "$HOME/.devlead/scripts/envelope.sh" path 2>/dev/null)" "$store$ws/api/envelope.yml"
+
+  # A second run has nothing to write and still prints the lines.
+  _enroll "'$ws'"
+  check_eq "E16: second run: exit 0" "$RC" "0"
+  contains "E16: second run: nothing to enroll" "$OUT" "Nothing to enroll"
+  contains "E16: second run: the lines are still shown" "$OUT" "DEVLEAD_REPOS=$ws/api=acme/s-api"
 }
 
 main() {
@@ -666,6 +738,7 @@ main() {
   e13_decline_with_error
   e14_local_envelope_and_hidden
   e15_refs_that_change
+  e16_store
   echo ""
   echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed ==="
   [[ "$FAIL_COUNT" -eq 0 ]]
