@@ -140,7 +140,14 @@ DOCTOR_BIN="$_SELF_DIR/doctor.sh"
 
 _repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
 REPO_ROOT="$(_repo_root)"
-ENV_FILE="$REPO_ROOT/.devlead/envelope.yml"
+# The envelope file in use, asked from envelope.sh so both always agree: the
+# repo's entry in the envelope store outside the repos (S25) when it has one,
+# otherwise the repo's own .devlead/envelope.yml. ENV_WHERE is how the screens
+# name it.
+REPO_ENV_FILE="$REPO_ROOT/.devlead/envelope.yml"
+ENV_FILE="$(bash "$ENVELOPE_BIN" path </dev/null 2>/dev/null | head -n 1)"
+[[ "$ENV_FILE" == /*/envelope.yml ]] || ENV_FILE="$REPO_ENV_FILE"
+if [[ "$ENV_FILE" == "$REPO_ENV_FILE" ]]; then ENV_WHERE=".devlead/envelope.yml"; else ENV_WHERE="$ENV_FILE"; fi
 
 # ---------------------------------------------------------------------------
 # Small shared helpers
@@ -517,7 +524,7 @@ _fleet_render() {
     echo ""
     echo "fleet list (~/.devlead/autonomous-repos): $list_label"
     echo "  grants: WHERE the nightly sweep looks. Listing alone authorizes no work."
-    echo "envelope (.devlead/envelope.yml): $env_label"
+    echo "envelope ($ENV_WHERE): $env_label"
     echo "  grants: WHETHER this repo may work, and how far. Without it every visit ends in a skip."
     echo ""
     echo "verdict: $verdict"

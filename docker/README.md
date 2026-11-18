@@ -69,32 +69,36 @@ Crea un token *fine-grained* en GitHub → Settings → Developer settings → F
 
 - **Protección de la rama por defecto:** activa la protección de rama, o un ruleset, sobre la rama por defecto. Es la red de respaldo; DevLead no la configura.
 - **Borrado automático de ramas:** activa *Settings → General → Automatically delete head branches*. El servidor no borra ramas, así que sin esto las ramas mergeadas quedan en GitHub y las tareas apiladas sobre ellas terminan en PARK.
-- **Envelope:** commitea `.devlead/envelope.yml` en la rama por defecto. El servidor lee el envelope, `CLAUDE.md` y `.claude/` desde origin. Sin envelope en esa rama, el repo cuenta como no enrolado.
+- **Envelope:** vive en tu máquina, fuera del repo, en `~/.devlead/envelopes/<ruta del repo>/envelope.yml`. Lo escribe `devlead enroll` (abajo) y el contenedor lo recibe montado en solo lectura. No se commitea nada de DevLead en tus repos. Un repo sin envelope ahí cuenta como no enrolado, salvo que tenga `.devlead/envelope.yml` commiteado en su rama por defecto (el modo anterior, que sigue funcionando). Si existen los dos, manda el de tu máquina. El servidor sigue leyendo `CLAUDE.md` y `.claude/` desde origin.
 
 #### Enrolar una carpeta entera
 
 Si tus repos viven en una misma carpeta (por ejemplo `~/Work/Ivolution`), un solo comando, desde tu terminal, deja el envelope en todos. Si tu `devlead` todavía no lo conoce, corre antes `devlead upgrade` desde este repo actualizado:
 
 ```bash
-devlead enroll ~/Work/Ivolution --dry-run   # muestra el plan; no empuja nada
+devlead enroll ~/Work/Ivolution --dry-run   # muestra el plan; no escribe nada
 devlead enroll ~/Work/Ivolution
 ```
 
-1. Recorre los repos git que están directamente dentro de la carpeta y dice, por cada directorio, qué hará o por qué lo deja fuera: es un directorio oculto, no es un repo, es un worktree enlazado, no tiene `origin` en GitHub, o ya tiene `.devlead/envelope.yml` en su rama por defecto (ese no se toca).
+1. Recorre los repos git que están directamente dentro de la carpeta y dice, por cada directorio, qué hará o por qué lo deja fuera: es un directorio oculto, no es un repo, es un worktree enlazado, no tiene `origin` en GitHub, o ya tiene un envelope en tu almacén (ese no se toca).
 2. Hace las preguntas del envelope **una sola vez**, con el mismo editor de `devlead config`. Arrancan de los valores seguros del scaffold: `merge.mode: never` (solo PRs en borrador), `budget.max_issues: 3` y `enabled: false`. Para que el servidor trabaje en esos repos, pon `enabled` en `true`.
 3. Valida las respuestas contra cada repo con `envelope.sh`. Un repo que no las admite queda rechazado con la razón exacta y los demás siguen; por ejemplo, el repo cuya rama por defecto es la `base.integration_branch` que elegiste.
-4. Muestra el plan y pide confirmación antes de empujar nada. Si tu copia de un repo tiene su propio `.devlead/envelope.yml` (sin seguimiento o con cambios), el plan lo avisa: cuando el PR se mergee, `git pull` choca con ese archivo, así que muévelo o bórralo antes de hacer pull.
-5. Por cada repo crea la rama `devlead/enroll` desde la rama por defecto de origin, con un commit que solo agrega `.devlead/envelope.yml`, la empuja y abre un PR hacia la rama por defecto. Nunca toca tus copias de trabajo: ni la rama actual, ni el índice, ni los stash, ni lo que no commiteaste. En cada repo cambian exactamente tres refs: `refs/remotes/origin/<rama por defecto>` y `FETCH_HEAD`, que escribe el fetch, y `refs/remotes/origin/devlead/enroll`, que escribe el push; además se guardan los objetos del commit nuevo.
-6. Al final imprime los enlaces de los PRs y las líneas `DEVLEAD_WORKSPACE=` y `DEVLEAD_REPOS=` listas para pegar en el `.env` del paso 5.
+4. Muestra el plan y pide confirmación antes de escribir nada.
+5. Por cada repo escribe `~/.devlead/envelopes/<ruta del repo>/envelope.yml`. No commitea, no hace fetch, no empuja y no abre PRs: tus repos y GitHub quedan como estaban.
+6. Al final imprime las líneas `DEVLEAD_WORKSPACE=` y `DEVLEAD_REPOS=` listas para pegar en el `.env` del paso 5.
 
-Un repo cuenta como enrolado para el servidor solo cuando mergeas su PR. Usa tu sesión de `gh`; ningún token aparece en la salida. Igual que `devlead config`, se niega a correr sin terminal, dentro de una sesión de Claude Code o cuando Claude Code está entre sus procesos padre: córrelo desde tu propia terminal, no con el prefijo `!` de Claude Code. Además se niega en una corrida desatendida, y `guard.sh` lo bloquea en cualquier sesión de DevLead: el envelope lo escribes solo tú (`.claude/GOVERNANCE.md` §A3).
+El repo queda enrolado en cuanto se escribe su envelope: lo leen tu `/devlead` y el servidor. Para cambiarlo después, corre `devlead config` dentro del repo; edita ese mismo archivo. Para sacar un repo, borra su carpeta en `~/.devlead/envelopes/` y quítalo de `DEVLEAD_REPOS`. El contenedor ve los cambios al instante porque el almacén está montado, sin reiniciar.
+
+Igual que `devlead config`, se niega a correr sin terminal, dentro de una sesión de Claude Code o cuando Claude Code está entre sus procesos padre: córrelo desde tu propia terminal, no con el prefijo `!` de Claude Code. Además se niega en una corrida desatendida, y `guard.sh` lo bloquea en las sesiones. Solo tú escribes el almacén: `guard.sh` niega a las sesiones toda escritura bajo `~/.devlead`, y en el servidor el almacén es de solo lectura (si no lo es, el contenedor no arranca).
+
+**Si prefieres commitear el envelope en cada repo**, usa `devlead enroll <carpeta> --publish`: por cada repo crea la rama `devlead/enroll` desde la rama por defecto de origin con un commit que solo agrega `.devlead/envelope.yml`, la empuja y abre un PR. Nunca toca tus copias de trabajo. En ese modo el repo cuenta como enrolado para el servidor solo cuando mergeas su PR.
 
 ### 4. Estado compartido con tu `/devlead`
 
 El contenedor monta solo estas carpetas de tu `~/.devlead`. Nunca monta `gh-token`, `notify.env` ni `loop.env`. Créalas una vez:
 
 ```bash
-mkdir -p ~/.devlead/{agenda,audit,decisions,journals,learn,outcomes,reports,run-state}
+mkdir -p ~/.devlead/{agenda,audit,decisions,envelopes,journals,learn,outcomes,reports,run-state}
 touch ~/.devlead/inbox.tsv ~/.devlead/inbox.read.tsv
 ```
 

@@ -790,6 +790,34 @@ t17_proc_unreadable_fails_closed() {
   check_eq "T17: envelope untouched" "$(cat "$dir/.devlead/envelope.yml")" "${DEFAULT_ENVELOPE%$'\n'}"
 }
 
+# ===========================================================================
+# T18 — S25: a repo with an entry in the envelope store is edited there. The
+# repo's own .devlead/envelope.yml is not written, and the screens name the
+# file in use.
+# ===========================================================================
+t18_store_entry_is_the_file_edited() {
+  read -r dir home < <(_new_sandbox t18)
+  local entry repo_before out show_out
+  entry="$home/.devlead/envelopes$(cd "$dir" && pwd -P)/envelope.yml"
+  mkdir -p "$(dirname "$entry")"
+  printf '%s' "$DEFAULT_ENVELOPE" > "$entry"
+  repo_before="$(sha256sum < "$dir/.devlead/envelope.yml")"
+
+  out="$(_drive "$dir" "$home" "3" "select.require_readiness" "no" "y" "b" "q")"
+
+  check_eq "T18: the store entry holds the change" "$(yq e '.select.require_readiness' "$entry")" "false"
+  check_eq "T18: the repo's own envelope.yml is byte-for-byte unchanged" \
+    "$(sha256sum < "$dir/.devlead/envelope.yml")" "$repo_before"
+  contains "T18: the editor names the store file" "$out" "Envelope ($entry)"
+  show_out="$( (cd "$dir" && HOME="$home" bash .devlead/scripts/envelope.sh show) 2>&1 )"
+  contains "T18: envelope.sh reads the changed value" "$show_out" "REQUIRE_READINESS: false"
+  check_eq "T18: no backup or temporary file is left in the store" \
+    "$(find "$(dirname "$entry")" -type f | wc -l | tr -d ' ')" "1"
+
+  out="$(_drive "$dir" "$home" "2" "b" "q")"
+  contains "T18: the enrollment screen names the store file" "$out" "envelope ($entry):"
+}
+
 main() {
   t1_tty_gate
   t2_no_hardcoded_field_list
@@ -811,6 +839,7 @@ main() {
   t15_claude_ancestor_refused
   t16_node_claude_code_ancestor_refused
   t17_proc_unreadable_fails_closed
+  t18_store_entry_is_the_file_edited
 
   echo ""
   echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="

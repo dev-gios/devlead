@@ -47,12 +47,15 @@ commands:
            what DevLead plans to work on today in this repo. `first` and
            `skip` reorder or drop issues of that plan; they can never add
            one. With no argument, shows the agenda.
-  enroll <folder> [--dry-run]
+  enroll <folder> [--dry-run] [--publish]
            enroll every git repo directly under <folder>: asks the envelope
-           questions once (the same editor as `config`), then opens one PR
-           per repo adding .devlead/envelope.yml to its default branch.
-           Never touches your working copies. Prints the DEVLEAD_REPOS line
-           for the server's .env. Terminal only, like `config`.
+           questions once (the same editor as `config`), then writes each
+           repo's envelope to your own store, outside the repo:
+           ~/.devlead/envelopes/<repo path>/envelope.yml. Nothing is added
+           to your repos and nothing is pushed. With --publish it opens one
+           PR per repo adding .devlead/envelope.yml to its default branch
+           instead. Prints the DEVLEAD_REPOS line for the server's .env.
+           Terminal only, like `config`.
   help     show this help
 
 All commands forward to ~/.devlead/scripts/ unchanged.
