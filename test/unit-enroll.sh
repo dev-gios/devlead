@@ -94,6 +94,11 @@ export DEVLEAD_NO_GUM=1
 export SHELL=/bin/bash
 export LC_ALL=C
 unset CLAUDECODE DEVLEAD_GUARD GH_REPO GH_TOKEN GITHUB_TOKEN GH_HOST
+# enroll.sh refuses under a Claude Code ancestor; the suite may run inside a
+# Claude Code session, so every pty run starts outside this process tree.
+# shellcheck source=test/lib-outside-session.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib-outside-session.sh"
+export RUN_OUTSIDE_PACE=0.3
 
 # A fake gh: answers `auth status`, `repo view` (by slug, or from the cwd's
 # origin like the real one) and `pr create` (refuses a head branch the bare
@@ -200,18 +205,17 @@ _snapshot() {
 _has_branch() { git --git-dir="$REMOTES/$1.git" rev-parse -q --verify "refs/heads/$BRANCH" >/dev/null; }
 
 # _enroll <args> <input line>... — runs `devlead enroll <args>` through the CLI
-# over a real pty (script), typing the given lines. Sets OUT (CR stripped)
-# and RC. `timeout` keeps a test bug from hanging the suite on a read.
-OUT="" RC=0
+# over a real pty, outside this process tree (run_outside), typing the given
+# lines. Sets OUT (CR stripped) and RC. The timeout keeps a test bug from
+# hanging the suite on a read. _ENROLL_VIA, when set, is a program the run
+# goes through (a fake ancestor, run as `<via> -c "<cmd>" [_ENROLL_ARG0]`).
+OUT="" RC=0 _ENROLL_VIA="" _ENROLL_ARG0=""
 _enroll() {
-  local args="$1"; shift
-  OUT="$( (
-    local l
-    for l in "$@"; do printf '%s\n' "$l"; sleep 0.3; done
-    sleep 2
-  ) | timeout 120 script -qec "bash '$CLI' enroll $args" /dev/null 2>&1 )"
+  local args="$1" cmd; shift
+  cmd="bash '$CLI' enroll $args"
+  [[ -n "$_ENROLL_VIA" ]] && cmd="$_ENROLL_VIA -c \"$cmd; exit \\\$?\" $_ENROLL_ARG0"
+  OUT="$(run_outside 120 "$(lines_file "$SANDBOX" "$@")" "$cmd")"
   RC=$?
-  OUT="${OUT//$'\r'/}"
 }
 
 TEMPLATE="$(bash "$SCRIPTS_SRC/envelope.sh" template 2>/dev/null)"
@@ -492,7 +496,7 @@ e11_existing_behavior() {
   local cfg="$SANDBOX/cfg"
   git init -q "$cfg"
   local out
-  out="$( (printf 'q\n'; sleep 1) | (cd "$cfg" && timeout 30 script -qec "bash '$HOME/.devlead/scripts/config.sh'" /dev/null 2>&1) )"
+  out="$(run_outside 60 "$(lines_file "$SANDBOX" q)" "cd '$cfg' && bash '$HOME/.devlead/scripts/config.sh'")"
   contains "E11: devlead config still opens the main menu" "$out" "=== DevLead config"
   contains "E11: the main menu still offers Machine setup" "$out" "Machine setup"
 
@@ -509,6 +513,47 @@ e11_existing_behavior() {
   contains "E11: the scaffold keeps enabled: false" "$TEMPLATE" "enabled: false"
 }
 
+# ===========================================================================
+# E12 — Inv 3: the process tree, not the environment. Under a Claude Code
+# ancestor (the claude binary, or node running Claude Code's CLI) the command
+# refuses with CLAUDECODE unset, before it asks or pushes anything; /proc
+# unreadable on Linux refuses too (fail closed).
+# ===========================================================================
+e12_claude_ancestor() {
+  local fake="$SANDBOX/fake-ancestors"
+  mkdir -p "$fake"
+  cp "$(command -v bash)" "$fake/claude"
+  cp "$(command -v bash)" "$fake/node"
+  : > "$FAKE_GH_DIR/calls"
+
+  _ENROLL_VIA="'$fake/claude'" _enroll "'$SANDBOX/ws-tty'" b y
+  [[ $RC -ne 0 ]] && pass "E12: refused under a claude ancestor" || fail "E12: expected non-zero exit under claude, got $RC"
+  contains "E12: names Claude Code as the reason" "$OUT" "refusing to run under Claude Code"
+  contains "E12: points at the user's own terminal, not the ! prefix" "$OUT" "not through Claude Code's ! prefix"
+
+  _ENROLL_VIA="'$fake/node'" _ENROLL_ARG0=/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js _enroll "'$SANDBOX/ws-tty'" b y
+  [[ $RC -ne 0 ]] && pass "E12: refused under node running Claude Code's CLI" || fail "E12: expected non-zero exit under node, got $RC"
+  contains "E12: node form names Claude Code as the reason" "$OUT" "refusing to run under Claude Code"
+
+  check_eq "E12: gh was never called" "$(cat "$FAKE_GH_DIR/calls")" ""
+  _has_branch acme/tty && fail "E12: a branch was pushed" || pass "E12: nothing pushed"
+
+  if unshare -rm true 2>/dev/null; then
+    OUT="$(run_outside 60 /dev/null "unshare -rm bash -c 'mount -t tmpfs none /proc && bash \"$CLI\" enroll \"$SANDBOX/ws-tty\"'")"; RC=$?
+    [[ $RC -ne 0 ]] && pass "E12: /proc unreadable on Linux: refused (fail closed)" || fail "E12: expected non-zero exit without /proc, got $RC"
+    contains "E12: says why" "$OUT" "cannot read /proc"
+  else
+    echo "NOTE  E12 /proc case skipped: unshare -rm is not available here"
+  fi
+
+  # One walker, two copies: config.sh and enroll.sh are separate scripts.
+  _walker() { sed -n '/^# >>> _claude_code_ancestor/,/^# <<< _claude_code_ancestor/p' "$1"; }
+  local a b
+  a="$(_walker "$SCRIPTS_SRC/enroll.sh")"; b="$(_walker "$SCRIPTS_SRC/config.sh")"
+  [[ -n "$a" ]] && pass "E12: enroll.sh carries the ancestor walker" || fail "E12: enroll.sh has no ancestor walker"
+  check_eq "E12: config.sh carries the same walker" "$b" "$a"
+}
+
 main() {
   e1_tty_gate
   e2_session_gate
@@ -521,6 +566,7 @@ main() {
   e9_usage
   e10_wiring
   e11_existing_behavior
+  e12_claude_ancestor
   echo ""
   echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed ==="
   [[ "$FAIL_COUNT" -eq 0 ]]

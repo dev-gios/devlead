@@ -87,7 +87,7 @@ devlead enroll ~/Work/Ivolution
 5. Por cada repo crea la rama `devlead/enroll` desde la rama por defecto de origin, con un commit que solo agrega `.devlead/envelope.yml`, la empuja y abre un PR hacia la rama por defecto. Nunca toca tus copias de trabajo: ni la rama actual, ni el índice, ni los stash, ni lo que no commiteaste.
 6. Al final imprime los enlaces de los PRs y las líneas `DEVLEAD_WORKSPACE=` y `DEVLEAD_REPOS=` listas para pegar en el `.env` del paso 5.
 
-Un repo cuenta como enrolado para el servidor solo cuando mergeas su PR. Usa tu sesión de `gh`; ningún token aparece en la salida. Igual que `devlead config`, se niega a correr sin terminal; además se niega dentro de una sesión de Claude Code y en una corrida desatendida, y `guard.sh` lo bloquea en cualquier sesión de DevLead: el envelope lo escribes solo tú (`.claude/GOVERNANCE.md` §A3).
+Un repo cuenta como enrolado para el servidor solo cuando mergeas su PR. Usa tu sesión de `gh`; ningún token aparece en la salida. Igual que `devlead config`, se niega a correr sin terminal, dentro de una sesión de Claude Code o cuando Claude Code está entre sus procesos padre: córrelo desde tu propia terminal, no con el prefijo `!` de Claude Code. Además se niega en una corrida desatendida, y `guard.sh` lo bloquea en cualquier sesión de DevLead: el envelope lo escribes solo tú (`.claude/GOVERNANCE.md` §A3).
 
 ### 4. Estado compartido con tu `/devlead`
 

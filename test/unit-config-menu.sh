@@ -35,6 +35,12 @@
 # has its own scenarios at the end, which assert the branch is chosen
 # correctly without trying to type at a selector.
 export DEVLEAD_NO_GUM=1
+# config.sh refuses inside a Claude Code session (CLAUDECODE) and under a
+# Claude Code ancestor. The suite may itself run in one, so the marker is
+# dropped and every pty run starts outside this process tree (run_outside).
+unset CLAUDECODE
+# shellcheck source=test/lib-outside-session.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib-outside-session.sh"
 #
 # SAFETY: every sandbox is a throwaway /tmp directory. HOME is always
 # overridden. Nothing here touches the real repo's own envelope.yml or the
@@ -119,14 +125,9 @@ _new_sandbox() {
 # what config.sh itself writes.
 _drive() {
   local dir="$1" home="$2"; shift 2
-  local -a lines=("$@")
-  (
-    local l
-    for l in "${lines[@]}"; do
-      printf '%s\n' "$l"
-      sleep 0.15
-    done
-  ) | ( cd "$dir" && HOME="$home" script -qec "bash .devlead/scripts/config.sh" /dev/null 2>&1 )
+  local in
+  in="$(lines_file "$SANDBOX" "$@")"
+  HOME="$home" run_outside 60 "$in" "cd '$dir' && bash .devlead/scripts/config.sh"
 }
 
 # ===========================================================================
@@ -315,8 +316,8 @@ STUB
 
   local calls="$SANDBOX/t7/gum-calls"; : > "$calls"
   local out
-  out="$( (cd "$dir" && HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" \
-      DEVLEAD_NO_GUM=0 script -qec "bash .devlead/scripts/config.sh" /dev/null) 2>&1 )"
+  out="$(HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" DEVLEAD_NO_GUM=0 \
+      run_outside 60 /dev/null "cd '$dir' && bash .devlead/scripts/config.sh")"
 
   contains "T7: gum is invoked when present and not opted out" \
     "$(cat "$calls")" "gum called: choose"
@@ -446,8 +447,8 @@ STUB
   chmod +x "$stubdir/gum"
 
   local calls="$SANDBOX/t9/gum-calls"; : > "$calls"
-  ( cd "$dir" && HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" \
-      DEVLEAD_NO_GUM=0 script -qec "bash .devlead/scripts/config.sh" /dev/null ) >/dev/null 2>&1
+  HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" DEVLEAD_NO_GUM=0 \
+      run_outside 60 /dev/null "cd '$dir' && bash .devlead/scripts/config.sh" >/dev/null
 
   contains "T9: gum is invoked for the fleet screen" \
     "$(cat "$calls")" "gum called: choose"
@@ -585,8 +586,8 @@ STUB
   local calls="$SANDBOX/t11/gum-calls"; : > "$calls"
   local before after
   before="$(cat "$dir/.devlead/envelope.yml")"
-  ( cd "$dir" && HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" \
-      DEVLEAD_NO_GUM=0 script -qec "bash .devlead/scripts/config.sh" /dev/null ) >/dev/null 2>&1
+  HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" DEVLEAD_NO_GUM=0 \
+      run_outside 60 /dev/null "cd '$dir' && bash .devlead/scripts/config.sh" >/dev/null
   after="$(cat "$dir/.devlead/envelope.yml")"
 
   contains "T11: envelope dispatch is rendered via gum choose with the Envelope header" \
@@ -649,8 +650,8 @@ STUB
   local calls="$SANDBOX/t12/gum-calls"; : > "$calls"
   local before after
   before="$(cat "$dir/.devlead/envelope.yml")"
-  ( cd "$dir" && HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" \
-      DEVLEAD_NO_GUM=0 script -qec "bash .devlead/scripts/config.sh" /dev/null ) >/dev/null 2>&1
+  HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" DEVLEAD_NO_GUM=0 \
+      run_outside 60 /dev/null "cd '$dir' && bash .devlead/scripts/config.sh" >/dev/null
   after="$(cat "$dir/.devlead/envelope.yml")"
 
   contains "T12: gum input is invoked prefilled with the current stored value" \
@@ -702,8 +703,8 @@ STUB
   local calls="$SANDBOX/t13/gum-calls"; : > "$calls"
   local before after
   before="$(cat "$dir/.devlead/envelope.yml")"
-  ( cd "$dir" && HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" \
-      DEVLEAD_NO_GUM=0 script -qec "bash .devlead/scripts/config.sh" /dev/null ) >/dev/null 2>&1
+  HOME="$home" GUM_CALLS="$calls" PATH="$stubdir:$PATH" DEVLEAD_NO_GUM=0 \
+      run_outside 60 /dev/null "cd '$dir' && bash .devlead/scripts/config.sh" >/dev/null
   after="$(cat "$dir/.devlead/envelope.yml")"
 
   local input_call
@@ -713,6 +714,70 @@ STUB
   not_contains "T13: the decorated 'unset' placeholder never reaches gum input" \
     "$input_call" "unset"
   check_eq "T13: envelope.yml is byte-identical (blank submit -> confirm decline)" "$after" "$before"
+}
+
+# ===========================================================================
+# T14-T17 — Inv 3: a pty is not the user. config.sh refuses inside a Claude
+# Code session (CLAUDECODE), under a Claude Code ancestor (found in /proc,
+# whatever the environment says), and when /proc cannot be read on Linux.
+# Every refusal happens before the envelope is read or written.
+# ===========================================================================
+_fake_ancestor() { # <name> — a copy of bash under that name: a renamed process
+  local d="$SANDBOX/fake-ancestors"
+  mkdir -p "$d"
+  cp "$(command -v bash)" "$d/$1"
+  printf '%s' "$d/$1"
+}
+
+t14_claudecode_refused() {
+  local dir home out rc
+  read -r dir home < <(_new_sandbox t14)
+  out="$(HOME="$home" CLAUDECODE=1 run_outside 60 /dev/null "cd '$dir' && bash .devlead/scripts/config.sh")"; rc=$?
+  [[ $rc -ne 0 ]] && pass "T14: refused inside a Claude Code session" || fail "T14: expected non-zero exit, got $rc"
+  contains "T14: says it is a Claude Code session" "$out" "Claude Code session"
+  contains "T14: points at the user's own terminal, not the ! prefix" "$out" "not through Claude Code's ! prefix"
+  not_contains "T14: no menu was shown" "$out" "=== DevLead config"
+  check_eq "T14: envelope untouched" "$(cat "$dir/.devlead/envelope.yml")" "${DEFAULT_ENVELOPE%$'\n'}"
+}
+
+t15_claude_ancestor_refused() {
+  local dir home out rc claude in
+  read -r dir home < <(_new_sandbox t15)
+  claude="$(_fake_ancestor claude)"
+  in="$(lines_file "$SANDBOX" 3 enabled yes y b q)"
+  out="$(HOME="$home" run_outside 60 "$in" "'$claude' -c 'cd \"$dir\" && bash .devlead/scripts/config.sh; exit \$?'")"; rc=$?
+  [[ $rc -ne 0 ]] && pass "T15: refused under a claude ancestor, with CLAUDECODE unset" || fail "T15: expected non-zero exit, got $rc"
+  contains "T15: names Claude Code as the reason" "$out" "refusing to run under Claude Code"
+  contains "T15: names the ancestor" "$out" "claude"
+  contains "T15: points at the user's own terminal" "$out" "from your own terminal"
+  not_contains "T15: no menu was shown" "$out" "=== DevLead config"
+  check_eq "T15: envelope untouched" "$(cat "$dir/.devlead/envelope.yml")" "${DEFAULT_ENVELOPE%$'\n'}"
+}
+
+t16_node_claude_code_ancestor_refused() {
+  local dir home out rc node
+  read -r dir home < <(_new_sandbox t16)
+  node="$(_fake_ancestor node)"
+  out="$(HOME="$home" run_outside 60 /dev/null "'$node' -c 'cd \"$dir\" && bash .devlead/scripts/config.sh; exit \$?' /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js")"; rc=$?
+  [[ $rc -ne 0 ]] && pass "T16: refused under node running Claude Code's CLI" || fail "T16: expected non-zero exit, got $rc"
+  contains "T16: names Claude Code as the reason" "$out" "refusing to run under Claude Code"
+  # A node process that is not Claude Code is no reason to refuse.
+  out="$(HOME="$home" run_outside 60 "$(lines_file "$SANDBOX" q)" "'$node' -c 'cd \"$dir\" && bash .devlead/scripts/config.sh; exit \$?' /srv/app/server.js")"; rc=$?
+  check_eq "T16: another node program as ancestor: config runs (exit 0)" "$rc" "0"
+  contains "T16: ...and shows its menu" "$out" "=== DevLead config"
+}
+
+t17_proc_unreadable_fails_closed() {
+  if ! unshare -rm true 2>/dev/null; then
+    echo "NOTE  T17 skipped: unshare -rm is not available here"
+    return 0
+  fi
+  local dir home out rc
+  read -r dir home < <(_new_sandbox t17)
+  out="$(HOME="$home" run_outside 60 /dev/null "unshare -rm bash -c 'mount -t tmpfs none /proc && cd \"$dir\" && bash .devlead/scripts/config.sh'")"; rc=$?
+  [[ $rc -ne 0 ]] && pass "T17: /proc unreadable on Linux: refused (fail closed)" || fail "T17: expected non-zero exit, got $rc"
+  contains "T17: says why" "$out" "cannot read /proc"
+  check_eq "T17: envelope untouched" "$(cat "$dir/.devlead/envelope.yml")" "${DEFAULT_ENVELOPE%$'\n'}"
 }
 
 main() {
@@ -732,6 +797,10 @@ main() {
   t11_gum_envelope_dispatch_and_bool
   t12_gum_input_prefill
   t13_gum_input_nullable_blank_prefill
+  t14_claudecode_refused
+  t15_claude_ancestor_refused
+  t16_node_claude_code_ancestor_refused
+  t17_proc_unreadable_fails_closed
 
   echo ""
   echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed (sandbox: $SANDBOX) ==="
