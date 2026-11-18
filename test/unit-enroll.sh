@@ -554,6 +554,102 @@ e12_claude_ancestor() {
   check_eq "E12: config.sh carries the same walker" "$b" "$a"
 }
 
+# ===========================================================================
+# E13 — A4: a declined confirmation still reports an errored repo: exit 1,
+# like the run and the dry run.
+# ===========================================================================
+e13_decline_with_error() {
+  local ws="$SANDBOX/ws13"
+  mkdir -p "$ws"
+  _remote acme/ok13 main
+  git clone -q https://github.com/acme/ok13.git "$ws/ok13"
+  printf 'acme/gone13\tmain\n' >> "$FAKE_GH_DIR/repos.tsv"     # GitHub knows it, the fetch fails
+  git init -q "$ws/gone13"; git -C "$ws/gone13" remote add origin https://github.com/acme/gone13.git
+  _enroll "'$ws'" b n
+  check_eq "E13: declined with an errored repo → exit 1" "$RC" "1"
+  contains "E13: says nothing was pushed" "$OUT" "nothing was pushed"
+  _has_branch acme/ok13 && fail "E13: a branch was pushed" || pass "E13: nothing pushed"
+}
+
+# ===========================================================================
+# E14 — A5 and A6: a local .devlead/envelope.yml the PR will collide with is
+# named in the plan, with what to do; hidden directories get a skip line.
+# ===========================================================================
+e14_local_envelope_and_hidden() {
+  local ws="$SANDBOX/ws14"
+  mkdir -p "$ws"
+  _remote acme/untr main
+  _remote acme/modi main
+  _remote acme/clean main
+  git clone -q https://github.com/acme/untr.git "$ws/untr"
+  git clone -q https://github.com/acme/modi.git "$ws/modi"
+  git clone -q https://github.com/acme/clean.git "$ws/clean"
+  mkdir -p "$ws/untr/.devlead"; printf 'version: 1 # mine\n' > "$ws/untr/.devlead/envelope.yml"
+  git -C "$ws/modi" checkout -q -b feat/env
+  mkdir -p "$ws/modi/.devlead"; printf 'version: 1 # mine\n' > "$ws/modi/.devlead/envelope.yml"
+  git -C "$ws/modi" add .devlead/envelope.yml && git -C "$ws/modi" commit -qm "local envelope"
+  printf 'enabled: true\n' >> "$ws/modi/.devlead/envelope.yml"
+  mkdir -p "$ws/.cache"
+  git init -q "$ws/.hidden-repo"
+  local idx_untr idx_modi
+  idx_untr="$(sha256sum < "$ws/untr/.git/index")"; idx_modi="$(sha256sum < "$ws/modi/.git/index")"
+
+  _enroll "--dry-run '$ws'" b
+
+  check_eq "E14: exit 0" "$RC" "0"
+  local plan="${OUT#*Plan — }"
+  contains "E14: the untracked local envelope is named in the plan" "$plan" \
+    "untr                         note: your copy has an untracked .devlead/envelope.yml"
+  contains "E14: the modified local envelope is named in the plan" "$plan" \
+    "modi                         note: your copy has local changes to .devlead/envelope.yml"
+  contains "E14: the consequence and the remedy are given" "$plan" \
+    "after the PR merges, git pull conflicts on it: move or delete your local file"
+  not_contains "E14: a clean copy gets no note" "$plan" "clean                        note:"
+  contains "E14: a hidden directory gets a skip line" "$OUT" ".cache                       skip: hidden directory"
+  contains "E14: a hidden git repo gets a skip line" "$OUT" ".hidden-repo                 skip: hidden directory"
+  check_eq "E14: the check did not write the untracked copy's index" "$(sha256sum < "$ws/untr/.git/index")" "$idx_untr"
+  check_eq "E14: the check did not write the modified copy's index" "$(sha256sum < "$ws/modi/.git/index")" "$idx_modi"
+}
+
+# ===========================================================================
+# E15 — A2: exactly which refs change in the user's repo. The fetch moves
+# refs/remotes/origin/<default> and writes FETCH_HEAD; the push adds
+# refs/remotes/origin/devlead/enroll. Nothing else: no local branch, no HEAD.
+# ===========================================================================
+e15_refs_that_change() {
+  local ws="$SANDBOX/ws15" seed
+  mkdir -p "$ws"
+  _remote acme/refs main
+  git clone -q https://github.com/acme/refs.git "$ws/refs"
+  # origin's main moves after the clone, so the fetch has something to do.
+  seed="$(mktemp -d "$SANDBOX/seed.XXXXXX")"
+  git clone -q https://github.com/acme/refs.git "$seed/c"
+  printf 'later\n' >> "$seed/c/README.md"
+  git -C "$seed/c" commit -qam later && git -C "$seed/c" push -q origin HEAD:main
+  local r="$ws/refs" before after head_before fh_before
+  # A symbolic ref (origin/HEAD) is compared by its target, not by the
+  # object it resolves to, which moves with origin/main.
+  local fmt='%(refname) %(if)%(symref)%(then)-> %(symref)%(else)%(objectname)%(end)'
+  before="$(git -C "$r" for-each-ref --format="$fmt" | sort)"
+  head_before="$(git -C "$r" symbolic-ref HEAD) $(git -C "$r" rev-parse HEAD)"
+  fh_before="$(cat "$r/.git/FETCH_HEAD" 2>/dev/null || echo none)"
+
+  _enroll "'$ws'" b y
+
+  check_eq "E15: exit 0" "$RC" "0"
+  after="$(git -C "$r" for-each-ref --format="$fmt" | sort)"
+  local changed
+  changed="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed -n 's/^[<>] \([^ ]*\) .*/\1/p' | sort -u | tr '\n' ' ')"
+  check_eq "E15: only refs/remotes/origin/devlead/enroll and refs/remotes/origin/main change" \
+    "$changed" "refs/remotes/origin/devlead/enroll refs/remotes/origin/main "
+  check_eq "E15: refs/remotes/origin/main is origin's new main" \
+    "$(git -C "$r" rev-parse refs/remotes/origin/main)" "$(git --git-dir="$REMOTES/acme/refs.git" rev-parse main)"
+  check_eq "E15: HEAD and the checked-out branch are unchanged" \
+    "$(git -C "$r" symbolic-ref HEAD) $(git -C "$r" rev-parse HEAD)" "$head_before"
+  [[ "$(cat "$r/.git/FETCH_HEAD" 2>/dev/null || echo none)" != "$fh_before" ]] \
+    && pass "E15: FETCH_HEAD is written by the fetch" || fail "E15: FETCH_HEAD did not change"
+}
+
 main() {
   e1_tty_gate
   e2_session_gate
@@ -567,6 +663,9 @@ main() {
   e10_wiring
   e11_existing_behavior
   e12_claude_ancestor
+  e13_decline_with_error
+  e14_local_envelope_and_hidden
+  e15_refs_that_change
   echo ""
   echo "=== SUMMARY: $PASS_COUNT passed, $FAIL_COUNT failed ==="
   [[ "$FAIL_COUNT" -eq 0 ]]

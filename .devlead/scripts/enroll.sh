@@ -29,10 +29,12 @@
 #
 # The user's working copies are never touched: no checkout, no worktree, no
 # change to the current branch, the index or the stash. Per repo, it fetches
-# origin's default branch into its remote-tracking ref (what a plain `git
-# fetch` does), builds the commit with git plumbing in a private index, and
-# pushes it to a new branch. No hook of the repo runs: nothing here commits or
-# checks out in the user's tree.
+# origin's default branch, builds the commit with git plumbing in a private
+# index, and pushes it to a new branch. In the user's repo exactly three refs
+# change (test/unit-enroll.sh E15): refs/remotes/origin/<default> and
+# FETCH_HEAD, written by the fetch, and refs/remotes/origin/devlead/enroll,
+# written by the push; plus the new commit's objects. No hook of the repo
+# runs: nothing here commits or checks out in the user's tree.
 set -uo pipefail
 
 # ---------------------------------------------------------------------------
@@ -164,8 +166,11 @@ Enrolls every git repository directly under <folder> in DevLead, in one go:
      for the server's .env
 
 Your working copies, current branches, index and stashes are never touched.
+In each repo only three refs change: refs/remotes/origin/<default branch>
+and FETCH_HEAD (the fetch) and refs/remotes/origin/devlead/enroll (the push).
 A repo that already has .devlead/envelope.yml on its default branch is left
-as it is. A repo counts as enrolled for the server once its PR is merged.
+as it is; a local copy of that file the PR will collide with is named in the
+plan. A repo counts as enrolled for the server once its PR is merged.
 
   --dry-run   ask the questions and show the plan; commit, push and open nothing
 
@@ -211,6 +216,9 @@ trap 'exit 130' INT TERM
 #   has-envelope and pending still go into DEVLEAD_REPOS: the envelope is, or
 #   will be once an open PR merges, on the default branch.
 R_NAME=() R_PATH=() R_SLUG=() R_DEF=() R_BASE=() R_STATE=() R_NOTE=() R_PR=()
+# R_WARN: a local .devlead/envelope.yml in the user's copy that the merged PR
+# will collide with (A5); shown under the repo's line.
+R_WARN=()
 _set() { R_STATE[$1]="$2"; R_NOTE[$1]="$3"; }
 _line() { printf '  %-28s %s\n' "$1" "$2"; }
 
@@ -260,17 +268,34 @@ _remote_state() {
   esac
 }
 
+# _local_envelope <i> — the user's copy holds its own .devlead/envelope.yml
+# (untracked, ignored or changed): once the PR merges, `git pull` collides
+# with it. Read-only: --no-optional-locks keeps status from rewriting the
+# index.
+_local_envelope() {
+  local i="$1" st
+  st="$(_g "${R_PATH[$i]}" --no-optional-locks status --porcelain=v1 --untracked-files=all \
+        --ignored=matching -- "$ENVELOPE_PATH" </dev/null 2>/dev/null | head -n 1)"
+  case "${st:0:2}" in
+    "") return 0 ;;
+    "??") R_WARN[i]="note: your copy has an untracked $ENVELOPE_PATH — after the PR merges, git pull conflicts on it: move or delete your local file before you pull" ;;
+    "!!") R_WARN[i]="note: your copy has an ignored $ENVELOPE_PATH — after the PR merges, git pull replaces it: move your local file first if you want to keep it" ;;
+    *)    R_WARN[i]="note: your copy has local changes to $ENVELOPE_PATH — after the PR merges, git pull conflicts on it: move or delete your local file before you pull" ;;
+  esac
+}
+
 # --- 1. Discover -------------------------------------------------------------------
 _discover() {
   local d name i url slug info canon def
   local -a entries=()
-  shopt -s nullglob
+  shopt -s nullglob dotglob
   entries=("$FOLDER"/*/)
-  shopt -u nullglob
+  shopt -u nullglob dotglob
   for d in "${entries[@]}"; do
     d="${d%/}"; name="${d##*/}"
     i=${#R_NAME[@]}
-    R_NAME[i]="$name"; R_PATH[i]="$d"; R_SLUG[i]=""; R_DEF[i]=""; R_BASE[i]=""; R_PR[i]=""
+    R_NAME[i]="$name"; R_PATH[i]="$d"; R_SLUG[i]=""; R_DEF[i]=""; R_BASE[i]=""; R_PR[i]=""; R_WARN[i]=""
+    if [[ "$name" == .* ]]; then _set "$i" skip "skip: hidden directory"; continue; fi
     if [[ -L "$d" ]]; then _set "$i" skip "skip: symbolic link — enroll the directory it points to"; continue; fi
     if [[ -f "$d/.git" ]]; then _set "$i" skip "skip: linked worktree or submodule (.git is a file)"; continue; fi
     if [[ ! -d "$d/.git" ]]; then _set "$i" skip "skip: not a git repository"; continue; fi
@@ -292,6 +317,7 @@ _discover() {
       _set "$i" skip "skip: GitHub names a default branch DevLead does not read"; continue
     fi
     R_DEF[i]="$def"
+    _local_envelope "$i"
     _remote_state "$i"
   done
 }
@@ -314,6 +340,9 @@ _show_list() {
       *)      what="${R_NOTE[$i]}" ;;
     esac
     _line "${R_NAME[$i]}" "$what"
+    case "${R_STATE[$i]}" in
+      ready|pending|opened) [[ -n "${R_WARN[$i]}" ]] && _line "${R_NAME[$i]}" "${R_WARN[$i]}" ;;
+    esac
   done
 }
 
@@ -476,7 +505,9 @@ if [[ "$N_READY" -eq 1 ]]; then _q="Push 1 branch and open 1 PR?"; else _q="Push
 read -r -p "$_q [y/N] " _ans || _ans=""
 case "${_ans,,}" in
   y|yes|si|sí) ;;
-  *) echo "Cancelled — nothing was pushed."; exit 0 ;;
+  *)
+    echo "Cancelled — nothing was pushed."
+    _exit_code; exit $? ;;
 esac
 
 # --- 5. Commit, push, open ------------------------------------------------------------
