@@ -136,16 +136,18 @@ out="$(cd "$SANDBOX/other" && env_sh check)"
 check "T5: another repo is not enrolled by this repo's entry" "$(kv "$out" ENROLLED)" "false"
 
 # ===========================================================================
+# T6a — on the user's machine --origin still means origin: the HOME store
+# is found through HOME, which the caller sets.
+# ===========================================================================
+out="$(env_sh show --origin)"
+check "T6a: host: --origin does not read the HOME store" "$(kv "$out" STATUS)" "blocked"
+contains "T6a: host: --origin reads origin" "$out" "no envelope.yml on origin's default branch"
+
+# ===========================================================================
 # Server mode: the store is the fixed path, read-only
 # ===========================================================================
 touch "$MARKER"
 SERVER_ENTRY="$SERVER_STORE$WORK/envelope.yml"
-
-# T5b — on the user's machine --origin still means origin: the HOME store
-# is found through HOME, which the caller sets.
-out="$(env_sh show --origin)"
-check "T5b: host: --origin does not read the HOME store" "$(kv "$out" STATUS)" "blocked"
-contains "T5b: host: --origin reads origin" "$out" "no envelope.yml on origin's default branch"
 
 # T6 — the HOME store is not read in the server: a session controls HOME.
 out="$(env_sh show --origin)"
