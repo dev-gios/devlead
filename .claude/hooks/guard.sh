@@ -238,10 +238,12 @@ done
 
 _NL=$'\n'
 # Where a command can start: the beginning, or after ; & | ( ` $( or a newline,
-# then any number of wrappers (sudo, npx, bash -c, VAR=value ...) and an
-# optional path in front of the program name. Matching only there keeps a word
-# that is merely an argument from looking like a command.
-_CS="(^|[;&|(\`${_NL}]|\\\$\\()[[:space:]]*((sudo|npx|bunx|time|nohup|command|exec|then|do|else|env)[[:space:]]+|timeout[[:space:]]+[^[:space:]]+[[:space:]]+|xargs[[:space:]]+(-[^[:space:]]+[[:space:]]+)*|(bash|sh|zsh)[[:space:]]+-[a-z]*c[[:space:]]+[\"']?|(python3?|uv|pipx)[[:space:]]+(-m|run|tool run)[[:space:]]+|(pnpm|yarn|npm|bun)[[:space:]]+(dlx|exec|x)[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?"
+# then any number of wrappers (sudo, npx, bash -c, VAR=value, a { group ...)
+# and an optional path in front of the program name. Matching only there keeps
+# a word that is merely an argument from looking like a command. env, setsid
+# and exec take options first (env -u NAME, env -i, env --, setsid -w,
+# exec -a NAME): an option and the name it takes are not the program either.
+_CS="(^|[;&|(\`${_NL}]|\\\$\\()[[:space:]]*((sudo|npx|bunx|time|nohup|command|then|do|else|\\{)[[:space:]]+|(env|setsid|exec)([[:space:]]+-[^[:space:];&|]*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)?)*[[:space:]]+|timeout[[:space:]]+[^[:space:]]+[[:space:]]+|xargs[[:space:]]+(-[^[:space:]]+[[:space:]]+)*|(bash|sh|zsh)[[:space:]]+-[a-z]*c[[:space:]]+[\"']?|(python3?|uv|pipx)[[:space:]]+(-m|run|tool run)[[:space:]]+|(pnpm|yarn|npm|bun)[[:space:]]+(dlx|exec|x)[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?"
 _ARGS='([^;&|]*[[:space:]])?'      # options before the subcommand, same simple command
 _END="(\$|[[:space:];&|)\"'])"
 
@@ -328,7 +330,17 @@ while IFS= read -r _line || [[ -n "$_line" ]]; do
   _i=0
   while [[ $_i -lt ${#_w[@]} ]]; do
     case "${_w[$_i]}" in
-      sudo|command|exec|time|nohup|then|do|else|env) _i=$((_i + 1)) ;;
+      sudo|command|time|nohup|then|do|else|'{') _i=$((_i + 1)) ;;
+      env|setsid|exec)
+        # Their options, and the name env -u / exec -a take, are not the program.
+        _i=$((_i + 1))
+        while [[ $_i -lt ${#_w[@]} && "${_w[$_i]}" == -* ]]; do
+          case "${_w[$_i]}" in
+            -u|--unset|-a) _i=$((_i + 2)) ;;
+            *) _i=$((_i + 1)) ;;
+          esac
+        done
+        ;;
       [A-Za-z_]*=*) [[ "${_w[$_i]%%=*}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || break; _i=$((_i + 1)) ;;
       *) break ;;
     esac
@@ -468,14 +480,22 @@ done <<<"$_simple"
 if [[ "$_scan" =~ secrets-allow ]]; then
   _deny self-config "the command names ~/.devlead/secrets-allow; only the user reads or changes that list"
 fi
-# `devlead enroll` (enroll.sh) writes, commits and pushes the envelope of every
-# repo in a folder (S24, §A3): the user runs it, from a terminal. Matched where
-# a command starts, run directly, through an interpreter or through a pty
-# (`script -c`), so reading or checking the file stays allowed.
-_enroll='(([^[:space:];&|]*/)?devlead[[:space:]]+enroll|([^[:space:];&|]*/)?enroll\.sh)'
-if _runs "$_scan" "${_enroll}${_END}" \
-   || _runs "$_scan" "(bash|sh|zsh|dash|ksh|source|\\.|script)[[:space:]]+([^;&|]*[[:space:]\"'])?${_enroll}${_END}"; then
-  _deny self-config "devlead enroll writes the envelope of every repo in a folder; only the user runs it, from their own terminal"
+# The two commands that write the envelope (§A3): `devlead enroll`
+# (enroll.sh), for every repo in a folder, and `devlead config` (config.sh).
+# The user runs them, from a terminal; a session never does. Matched where a
+# command starts, run directly, through an interpreter or through `script`, so
+# reading or checking the files stays allowed. config.sh is a common name, so
+# only DevLead's own copy counts (.devlead/scripts/, /opt/devlead/scripts/).
+_writer='(([^[:space:];&|]*/)?devlead[[:space:]]+(enroll|config)|([^[:space:];&|]*/)?enroll\.sh|([^[:space:];&|]*/)?\.?devlead/scripts/config\.sh)'
+# A pty is how a session would fake that terminal: a pty tool (script,
+# unbuffer, expect, socat, python's pty, ...) in the same command as either
+# command, however its argv is spelled (pty.spawn(["devlead", "config"])).
+_ptytool='(^|[^A-Za-z0-9_.-])(script|unbuffer|expect|socat|empty|pty\.(spawn|fork|openpty)|openpty|forkpty|pexpect|ptyprocess|node-pty)([^A-Za-z0-9_-]|$)'
+_writer_any="(^|[^A-Za-z0-9_.-])devlead[]\"'[:space:],]+(enroll|config)([^A-Za-z0-9_-]|\$)|(^|[/\"'[:space:],(=])enroll\\.sh([^A-Za-z0-9_-]|\$)|devlead/scripts/config\\.sh"
+if _runs "$_scan" "${_writer}${_END}" \
+   || _runs "$_scan" "(bash|sh|zsh|dash|ksh|source|\\.|script)[[:space:]]+([^;&|]*[[:space:]\"'])?${_writer}${_END}" \
+   || { [[ "$_scan" =~ $_ptytool ]] && [[ "$_scan" =~ $_writer_any ]]; }; then
+  _deny self-config "devlead enroll and devlead config write the envelope; only the user runs them, from their own terminal (§A3)"
 fi
 
 # -- production

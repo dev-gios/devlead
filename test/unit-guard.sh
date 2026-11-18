@@ -390,7 +390,47 @@ bash_allowed 'grep -n "devlead enroll" DEVLEAD.md'
 bash_allowed 'git commit -m "feat(cli): add devlead enroll"'
 bash_allowed 'devlead agenda skip 3'
 bash_allowed 'devlead help'
-bash_allowed 'devlead config'
+
+echo "=== self-config: devlead config (Inv 3) ==="
+# The other writer of the envelope: the same treatment as enroll. Without a
+# terminal it refuses anyway; a pty is what a session would use to fake one.
+bash_blocked self-config 'devlead config'
+bash_blocked self-config '~/.local/bin/devlead config'
+bash_blocked self-config 'bash ~/.devlead/scripts/config.sh'
+bash_blocked self-config 'bash -c "devlead config"'
+bash_blocked self-config 'script -qec "devlead config" /dev/null'
+bash_blocked self-config "printf '3\\nb\\nq\\n' | script -qec 'bash ~/.devlead/scripts/config.sh' /dev/null"
+bash_blocked self-config "python3 -c 'import pty; pty.spawn([\"devlead\", \"config\"])'"
+bash_blocked self-config "python3 -c 'import pty; pty.spawn([\"bash\", \"/opt/devlead/scripts/config.sh\"])'"
+bash_blocked self-config "unbuffer devlead enroll ~/Work"
+bash_allowed 'cat ~/.devlead/scripts/config.sh'
+bash_allowed 'shellcheck -S warning .devlead/scripts/config.sh'
+bash_allowed 'bash test/unit-config-menu.sh'
+bash_allowed 'bash docker/runner-config.sh check-cron "0 6 * * *"'
+bash_allowed 'grep -n "devlead config" DEVLEAD.md'
+bash_allowed 'script -qec "npm test" /dev/null'
+bash_allowed "python3 -c 'import pty; pty.spawn([\"npm\", \"test\"])'"
+
+echo "=== wrappers do not hide the program (env options, setsid, { }, exec) ==="
+bash_blocked production 'env -u FOO vercel --prod'
+bash_blocked production 'env -i vercel --prod'
+bash_blocked production 'env -- vercel --prod'
+bash_blocked production 'env -i PATH=/usr/bin vercel --prod'
+bash_blocked production 'setsid vercel --prod'
+bash_blocked production 'setsid -w vercel --prod'
+bash_blocked secrets '{ gh auth token; }'
+bash_blocked self-config 'setsid -w devlead enroll x'
+bash_blocked self-config 'exec devlead enroll x'
+bash_blocked self-config 'env -u CLAUDECODE devlead config'
+bash_blocked self-config '{ devlead enroll x; }'
+bash_blocked self-config 'env -u FOO rm ~/.devlead/hooks/guard.sh'
+bash_blocked self-config 'setsid rm ~/.devlead/hooks/guard.sh'
+bash_blocked self-config '{ rm ~/.devlead/hooks/guard.sh; }'
+bash_allowed 'env -u FOO npm test'
+bash_allowed 'env -i PATH=/usr/bin ls'
+bash_allowed 'setsid -w npm test'
+bash_allowed '{ npm test; npm run lint; }'
+bash_allowed 'exec npm test'
 
 echo "=== self-config: the server image (docker/) ==="
 # In the image, DevLead's scripts and hooks live in /opt/devlead (root-owned)
