@@ -160,6 +160,10 @@ ENV_FILE="$REPO_ROOT/.devlead/envelope.yml"
 #     nothing to gum's selector, so the suite exports the opt-out and keeps
 #     exercising the plain path end to end.
 #
+# gum draws its selector and input box on stderr and prints only the answer on
+# stdout, so its stderr must reach the terminal: discarding it leaves the
+# person at a menu they cannot see, waiting on keys.
+#
 # Choosing is presentation. What a choice DOES is unchanged, and the TTY gate
 # above still governs whether any of this runs at all.
 _has_gum() {
@@ -179,7 +183,7 @@ _menu() {
   if _has_gum; then
     local _pick
     _pick="$(printf '%s\n' "${_labels[@]}" "Back" \
-      | gum choose --header "$_header" 2>/dev/null)" || { printf 'b'; return 0; }
+      | gum choose --header "$_header")" || { printf 'b'; return 0; }
     local _i
     for _i in "${!_labels[@]}"; do
       if [[ "${_labels[$_i]}" == "$_pick" ]]; then
@@ -240,7 +244,7 @@ _input() {
   local _prompt="$1" _cur="$2"
   if _has_gum; then
     local _v
-    _v="$(gum input --header "${_prompt%: }" --value "$_cur" 2>/dev/null)" || return 1
+    _v="$(gum input --header "${_prompt%: }" --value "$_cur")" || return 1
     printf '%s' "$_v"
     return 0
   fi
@@ -878,7 +882,7 @@ _edit_field() {
       # turn a plain "no" answer into __invalid__no under DEVLEAD_NO_GUM=1.
       if _has_gum; then
         ans="$(printf '%s\n' true false \
-          | gum choose --header "New value for $field" 2>/dev/null)" || ans=""
+          | gum choose --header "New value for $field")" || ans=""
       else
         read -r -p "New value for $field — yes/no (blank = cancel): " ans || ans=""
       fi

@@ -302,6 +302,10 @@ t7_gum_branch() {
   cat > "$stubdir/gum" <<'STUB'
 #!/usr/bin/env bash
 echo "gum called: $*" >> "$GUM_CALLS"
+# Real gum draws its selector on stderr and prints only the pick on stdout.
+# The stub draws a marker the same way, so a caller that discards gum's
+# stderr hides the menu from the person at the terminal, and this test sees it.
+echo "gum drew: ${1:-}" >&2
 case "${1:-}" in
   choose)
     n=$(cat "$GUM_CALLS.n" 2>/dev/null || echo 0)
@@ -325,6 +329,12 @@ STUB
     "$(cat "$calls")" "DevLead config"
   not_contains "T7: the numbered fallback prompt is not rendered too" \
     "$out" "b) Back"
+  contains "T7: gum's selector reaches the terminal (gum draws on stderr)" \
+    "$out" "gum drew: choose"
+  # Every gum call keeps stderr, not only the one this run reaches: input and
+  # the boolean chooser sit behind a field edit the stub does not walk into.
+  not_contains "T7: no gum call in config.sh discards gum's stderr" \
+    "$(grep -E 'gum (choose|input|confirm)' "$CONFIG_SRC" | grep -v '^[[:space:]]*#')" "2>/dev/null"
 
   # These two exercise the FALLBACK, which reads from the pty — so they must
   # be typed at, exactly like every other scenario here. Redirecting stdin from
