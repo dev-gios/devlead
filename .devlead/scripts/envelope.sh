@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # envelope.sh — DevLead persisted per-repo envelope: parser + enrollment + dry-run planner.
-# Subcommands: check | init | show [--origin] | plan | upgrade | schema | template. KEY:value stdout
-# (template: the scaffold YAML init writes). Always exits 0 on operational outcomes.
-# Envelope file: <git-root>/.devlead/envelope.yml (committed, auditable). READ-ONLY except `init` scaffold.
+# Subcommands: check | init | show [--origin] | plan | upgrade | schema | template | path. KEY:value stdout
+# (template: the scaffold YAML init writes; path: the envelope file in use). Always exits 0 on operational outcomes.
+# Envelope file: this repo's entry in the envelope store outside the repos (S25, below) when it has one,
+# otherwise <git-root>/.devlead/envelope.yml (committed, auditable). READ-ONLY except `init` scaffold.
 set -uo pipefail
 
 # Sourced as a self-resolved sibling (NOT a hardcoded ~/.devlead/scripts path):
@@ -18,7 +19,82 @@ _repo_root() { git rev-parse --show-toplevel 2>/dev/null || pwd; }
 # sibling of this script's real location — same resolution as bootstrap-lib.
 # Missing or failing, every candidate issue fails closed in `plan`.
 UNTRUSTED_BIN="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/untrusted.sh"
-ENV_FILE="$(_repo_root)/.devlead/envelope.yml"
+REPO_ENV_FILE="$(_repo_root)/.devlead/envelope.yml"
+
+# ---------------------------------------------------------------------------
+# The envelope store (S25): an envelope kept outside the repo, so nothing of
+# DevLead's is committed to it. One file per repo, keyed by the repo's
+# absolute path:
+#   <store>/<absolute repo path>/envelope.yml
+# Where a repo has an entry, that file is its envelope for every reader here
+# and it wins over a committed .devlead/envelope.yml. A linked worktree reads
+# its main checkout's entry.
+#
+# On the user's machine the store is ~/.devlead/envelopes; guard.sh denies a
+# session every write under ~/.devlead. In the server it is the fixed path
+# below, where compose mounts the host's store read-only — never a path taken
+# from HOME or the environment, which a session sets for the commands it
+# runs. An entry the caller could write there grants nothing: show, plan and
+# check block (see the dispatch).
+# test/unit-envelope-store.sh rewrites these two paths in a copy.
+# ---------------------------------------------------------------------------
+SERVER_MARKER=/etc/devlead/server-mode
+SERVER_STORE=/etc/devlead/envelopes
+
+_store_root() {
+  if [[ -e "$SERVER_MARKER" ]]; then
+    printf '%s' "$SERVER_STORE"
+  else
+    printf '%s' "${HOME:-/nonexistent}/.devlead/envelopes"
+  fi
+}
+
+# _main_checkout — the main checkout of the repo this worktree belongs to.
+_main_checkout() {
+  local c
+  c="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  [[ "$c" == /*/.git ]] || return 1
+  printf '%s' "${c%/.git}"
+}
+
+# _store_entry — this repo's store file, when it has one.
+_store_entry() {
+  local root top p f
+  root="$(_store_root)"
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+  for p in "$top" "$(_main_checkout)"; do
+    [[ "$p" == /* && "$p" != *"/.."* ]] || continue
+    f="$root$p/envelope.yml"
+    if [[ -f "$f" ]]; then printf '%s' "$f"; return 0; fi
+  done
+  return 1
+}
+
+# _store_writable <entry> — the caller can write the entry, or a directory
+# between it and the store's root: it could replace the entry.
+_store_writable() {
+  local root d
+  root="$(_store_root)"
+  [[ -w "$1" ]] && return 0
+  d="$(dirname "$1")"
+  while [[ "$d" == "$root" || "$d" == "$root"/* ]]; do
+    [[ -w "$d" ]] && return 0
+    d="$(dirname "$d")"
+  done
+  return 1
+}
+
+ENV_FILE="$REPO_ENV_FILE"
+_FROM_STORE=""
+_STORE_UNSAFE=""
+if _entry="$(_store_entry)"; then
+  if [[ -e "$SERVER_MARKER" ]] && _store_writable "$_entry"; then
+    _STORE_UNSAFE=1
+  else
+    ENV_FILE="$_entry"
+    _FROM_STORE=1
+  fi
+fi
 
 # LOCKED schema whitelists (D5)
 _TOP_REQUIRED="version enabled select order budget base forbidden_zones on_failure merge report"
@@ -458,6 +534,9 @@ _origin_envelope() {
   local d _t=()
   command -v timeout &>/dev/null && _t=(timeout 60)
   _GH_ONLY=1
+  # The repo has an entry in the server's read-only store (S25): that is the
+  # envelope the user wrote, and no session can write it. Origin is not read.
+  [[ -n "$_FROM_STORE" ]] && return 0
   d="$(_resolve_default_branch)" || d=""
   [[ -n "$d" ]] \
     || _block "cannot ask GitHub for origin's default branch — the envelope committed there cannot be read"
@@ -1424,6 +1503,14 @@ _do_schema() {
 # Dispatch
 # ---------------------------------------------------------------------------
 _cmd="${1:-check}"
+# A store entry a session could write is nobody's envelope (S25): every read
+# that grants or reports authority stops here.
+if [[ -n "$_STORE_UNSAFE" ]]; then
+  case "$_cmd" in
+    show|plan|check|path)
+      _block "the envelope store $SERVER_STORE is writable here — the server reads it only from a read-only mount (compose.yaml mounts it read-only; recreate the container with that file)" ;;
+  esac
+fi
 case "$_cmd" in
   check) _do_check ;;
   init)
@@ -1451,13 +1538,15 @@ case "$_cmd" in
     exit 0
     ;;
   upgrade) _do_upgrade "${2:-}" --from-source; exit 0 ;;
+  path) printf '%s\n' "$ENV_FILE"; exit 0 ;;
   show)
     # `show --origin`: read the envelope committed on origin's default branch
-    # (see _origin_envelope). Plain `show` reads the working tree, as always.
+    # (see _origin_envelope), unless the repo has an entry in the server's
+    # store. Plain `show` reads the store entry or the working tree.
     [[ "${2:-}" == "--origin" ]] && _origin_envelope
     _do_show ;;
   plan)   _do_plan ;;
   schema) _do_schema ;;
   template) _template; exit 0 ;;
-  *) echo "uso: envelope.sh {check|init|show [--origin]|plan|upgrade|schema}" >&2; exit 2 ;;
+  *) echo "uso: envelope.sh {check|init|show [--origin]|plan|upgrade|schema|path}" >&2; exit 2 ;;
 esac
