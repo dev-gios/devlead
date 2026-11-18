@@ -356,6 +356,21 @@ _do_upgrade() {
     return 0
   fi
 
+  # The publish set is the SOURCE's manifest. `devlead upgrade` runs the
+  # installed envelope.sh, which sourced the installed bootstrap-lib.sh: a
+  # file the source added to the manifest since the last install would be
+  # skipped while VERSION still advanced to HEAD, and every later run would
+  # then report up-to-date. Hand the run, once, to the source checkout's own
+  # envelope.sh, after the clean-tree gate so only committed code runs.
+  if [[ "${2:-}" == "--from-source" && "${DEVLEAD_UPGRADE_FROM_SOURCE:-}" != "1" ]]; then
+    local _self_dir _src_dir
+    _self_dir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+    _src_dir="$(readlink -f "$src/.devlead/scripts" 2>/dev/null || true)"
+    if [[ -n "$_src_dir" && "$_src_dir" != "$_self_dir" && -f "$_src_dir/envelope.sh" ]]; then
+      DEVLEAD_UPGRADE_FROM_SOURCE=1 exec bash "$_src_dir/envelope.sh" upgrade "$src"
+    fi
+  fi
+
   local head_sha head_branch
   head_sha="$(git -C "$src" rev-parse --short HEAD 2>/dev/null)"
   if [[ -z "$head_sha" ]]; then
@@ -1435,7 +1450,7 @@ case "$_cmd" in
     _do_optin
     exit 0
     ;;
-  upgrade) _do_upgrade "${2:-}"; exit 0 ;;
+  upgrade) _do_upgrade "${2:-}" --from-source; exit 0 ;;
   show)
     # `show --origin`: read the envelope committed on origin's default branch
     # (see _origin_envelope). Plain `show` reads the working tree, as always.
